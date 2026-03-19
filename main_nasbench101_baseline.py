@@ -12,6 +12,7 @@ import argparse
 import os
 import pickle
 import random
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -138,7 +139,7 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
     elif method in ('samos-rfr', 'samos-xgb'):
         n_doe    = n_doe    if n_doe    is not None else pop_size
         n_infill = n_infill if n_infill is not None else pop_size
-        inner_pop_size = inner_pop_size if inner_pop_size is not None else pop_size
+        inner_pop_size = inner_pop_size if inner_pop_size is not None else pop_size * 10
         predict_obj = predict_obj if predict_obj is not None else ['val_err_12']
         real_obj    = real_obj    if real_obj    is not None else ['n_params']
         print(f'  [SAMOS] predict={predict_obj}  real={real_obj}')
@@ -163,7 +164,7 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
             n_infill=n_infill,
             n_gen_inner=n_gen_inner,
             ga_pop_size=inner_pop_size,
-            use_subset_selection=True,
+            use_subset_selection=False,
             eliminate_duplicates=elim_dupes,
             dedup_key_fn=dedup_key_fn,
         )
@@ -261,12 +262,9 @@ def main(args):
 
     generate_latex_table_nasbench101(
         methods=methods,
+        n_gen=args.n_gen,
         results_root=RESULTS_ROOT,
-        bench_db=bench_db,
-        pareto_ref=pareto_ref,
-        acc_key='test_acc_108',
-        eval_checkpoint=1000,
-        pop_size=args.pop_size,
+        save_dir=Path(RESULTS_ROOT),
     )
 
 
