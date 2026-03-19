@@ -38,8 +38,7 @@ from analysis.latex_table_generator import generate_latex_table_nasbench101
 
 # ─── file-level constants ─────────────────────────────────────────────────────
 
-RESULTS_ROOT = 'results/nasbench101_baseline'
-DATA_FILE    = 'problem/data/data_nasbench101.pkl'
+DATA_FILE = 'problem/data/data_nasbench101.pkl'
 
 
 # ─── main run logic ───────────────────────────────────────────────────────────
@@ -189,6 +188,8 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
 
 
 def main(args):
+    results_root = os.path.join('results', args.experiment_name)
+
     print(f'Loading benchmark data from {DATA_FILE} …')
     bench_db = _load_bench_db()
     print(f'  {len(bench_db):,} architectures')
@@ -214,7 +215,7 @@ def main(args):
         methods = ['random', 'random_ga', 'nsga2', 'nsga2-single', 'samos-rfr', 'samos-xgb']
 
     for method in methods:
-        save_dir = os.path.join(RESULTS_ROOT, method)
+        save_dir = os.path.join(results_root, method)
         os.makedirs(save_dir, exist_ok=True)
 
         for seed in args.seeds:
@@ -242,16 +243,16 @@ def main(args):
           f'test_err=[{pareto_ref[:,0].min():.4f}, {pareto_ref[:,0].max():.4f}]  '
           f'n_params_norm=[{pareto_ref[:,1].min():.4f}, {pareto_ref[:,1].max():.4f}]  '
           f'hv_ceiling={hv_ceiling:.6f}')
-    plot_out = os.path.join(RESULTS_ROOT, 'baseline_hv_igd.png')
+    plot_out = os.path.join(results_root, 'baseline_hv_igd.png')
     print(f'\nGenerating HV / IGD+ plot …')
     plot_results(methods, args.n_gen, args.pop_size, hv_ceiling, plot_out,
-                 results_root=RESULTS_ROOT)
+                 results_root=results_root)
 
-    coverage_out = os.path.join(RESULTS_ROOT, 'baseline_coverage.png')
+    coverage_out = os.path.join(results_root, 'baseline_coverage.png')
     print(f'\nGenerating exploration coverage plot …')
     plot_exploration_coverage(
         methods=methods,
-        results_root=RESULTS_ROOT,
+        results_root=results_root,
         bench_db=bench_db,
         pareto_ref=pareto_ref,
         acc_key='test_acc_108',
@@ -263,8 +264,8 @@ def main(args):
     generate_latex_table_nasbench101(
         methods=methods,
         n_gen=args.n_gen,
-        results_root=RESULTS_ROOT,
-        save_dir=Path(RESULTS_ROOT),
+        results_root=results_root,
+        save_dir=Path(results_root),
     )
 
 
@@ -307,6 +308,8 @@ if __name__ == '__main__':
                         help='Duplicate elimination strategy: arch_str (canonical ModelSpec hash, '
                              'catches phenotypically identical architectures) or '
                              'pymoo_default (raw vector comparison). Default: arch_str')
+    parser.add_argument('--experiment_name', type=str, default='nasbench101_baseline',
+                        help='Experiment name; results are saved to results/<experiment_name>/')
     parser.add_argument('--overwrite', action='store_true',
                         help='Re-run even if result file already exists')
 

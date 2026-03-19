@@ -14,7 +14,9 @@
 #SBATCH --qos research-deadline
 
 # Variables
+EXPERIMENT_NAME=nasbench101_baseline_pop20_gen50_can500
 POP_SIZE=20
+POP_SIZE_INNER=500
 N_GEN=50
 N_GEN_INNER=20
 
@@ -144,7 +146,9 @@ while (( IDX < TOTAL )); do
     echo "  method=$LABEL"
 
     python main_nasbench101_baseline.py \
+        --experiment_name ${EXPERIMENT_NAME} \
         --pop_size ${POP_SIZE} \
+        --pop_size_inner ${POP_SIZE_INNER} \
         --n_gen ${N_GEN} \
         --n_gen_inner ${N_GEN_INNER} \
         --seeds ${SEED} \
