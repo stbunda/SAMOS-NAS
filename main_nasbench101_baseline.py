@@ -297,7 +297,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_gen_inner', type=int, default=20,
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size', type=int, default=None,
-                        help='SAMOS: inner NSGA-II population size (default: same as --pop_size)')
+                        help='SAMOS: inner NSGA-II population size (default: pop_size * 10)')
     parser.add_argument('--predict_obj', type=str, nargs='+', default=['val_err_12'],
                         help='SAMOS: objectives approximated by surrogates (default: val_err_12)')
     parser.add_argument('--real_obj', type=str, nargs='*', default=['n_params'],

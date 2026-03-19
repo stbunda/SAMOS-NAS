@@ -61,7 +61,7 @@ def _fast_canonical_bytes(vec_int: np.ndarray) -> 'bytes | None':
 
     valid = fwd & bwd
     pruned_mat = mat[np.ix_(valid, valid)]
-    pruned_ops = ops[valid[1:-1]]   # intermediate nodes only
+    pruned_ops = ops[valid[1:-1]].astype(np.int8)   # int8 matches LUT build dtype
     return pruned_mat.tobytes() + pruned_ops.tobytes()
 
 
@@ -149,11 +149,16 @@ def build_nasbench101_lut(lut_path: str = LUT_PATH) -> dict:
 
 
 def load_nasbench101_lut(lut_path: str = LUT_PATH) -> 'dict | None':
-    """Load the precomputed LUT from disk.  Returns None if not found."""
+    """Load the precomputed LUT from disk.  Returns None if not found or incomplete."""
     if not os.path.exists(lut_path):
         return None
     with open(lut_path, 'rb') as f:
-        return pickle.load(f)
+        lut = pickle.load(f)
+    if len(lut) < 400_000:
+        print(f'[WARNING] LUT at {lut_path} has only {len(lut):,} entries '
+              f'(expected ~423k). Falling back to ModelSpec.')
+        return None
+    return lut
 
 
 # ─── vector conversion helpers ────────────────────────────────────────────────
