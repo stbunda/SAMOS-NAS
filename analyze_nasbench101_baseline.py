@@ -34,7 +34,7 @@ def _load_test_pareto_ref() -> np.ndarray:
             c = pickle.load(f)
         return np.array(c['pareto_front'])
 
-    print('  Building test-acc Pareto front from scratch …')
+    print('  Building test-acc Pareto front from scratch ...')
     db = _load_bench_db()
     F_all = np.array([
         [1.0 - v['test_acc_108'],
@@ -70,11 +70,11 @@ def main(args):
     if not methods:
         methods = ['random', 'random_ga', 'nsga2', 'nsga2-single', 'samos-rfr', 'samos-xgb']
 
-    print(f'Loading benchmark data from {DATA_FILE} …')
+    print(f'Loading benchmark data from {DATA_FILE} ...')
     bench_db = _load_bench_db()
     print(f'  {len(bench_db):,} architectures')
 
-    print('Loading test-acc Pareto reference front …')
+    print('Loading test-acc Pareto reference front ...')
     pareto_ref = _load_test_pareto_ref()
     print(f'  {len(pareto_ref)} non-dominated points')
 
@@ -85,12 +85,12 @@ def main(args):
           f'hv_ceiling={hv_ceiling:.6f}')
 
     plot_out = os.path.join(RESULTS_ROOT, 'baseline_hv_igd.png')
-    print(f'\nGenerating HV / IGD+ plot …')
+    print(f'\nGenerating HV / IGD+ plot ...')
     plot_results(methods, args.n_gen, args.pop_size, hv_ceiling, plot_out,
                  results_root=RESULTS_ROOT)
 
     coverage_out = os.path.join(RESULTS_ROOT, 'baseline_coverage.png')
-    print(f'\nGenerating exploration coverage plot …')
+    print(f'\nGenerating exploration coverage plot ...')
     plot_exploration_coverage(
         methods=methods,
         results_root=RESULTS_ROOT,

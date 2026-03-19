@@ -264,9 +264,9 @@ def generate_latex_table_all_datasets(
     if save_dir is not None:
         save_dir.mkdir(parents=True, exist_ok=True)
         out_path = save_dir / output_filename
-        with open(out_path, "w") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
-        print(f"[✓] Saved combined LaTeX table: {out_path}")
+        print(f"[OK] Saved combined LaTeX table: {out_path}")
 
     return "\n".join(lines)
 
@@ -407,8 +407,8 @@ def generate_latex_table_nasbench101(
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         out_path = save_dir / output_filename
-        with open(out_path, "w") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write(tex)
-        print(f"[✓] Saved NASBench-101 LaTeX table: {out_path}")
+        print(f"[OK] Saved NASBench-101 LaTeX table: {out_path}")
 
     return tex
