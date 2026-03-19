@@ -70,28 +70,42 @@ class NASBench101DuplicateElimination(DuplicateElimination):
     def __init__(self, bench_db: dict, **kwargs):
         super().__init__(**kwargs)
         self.bench_db = bench_db
-        # Cache: tuple(vec_int) -> arch_str | None.  Avoids rebuilding ModelSpec
-        # for vectors that appear in multiple generations.
+        # Cache: bytes(vec_int8) -> arch_str | None.  Avoids rebuilding ModelSpec
+        # for vectors that appear in multiple generations.  tobytes() on an int8
+        # array is ~5x faster to hash than tuple(int_list).
         self._cache: dict = {}
 
     def key(self, x: np.ndarray) -> 'str | None':
-        """Return the canonical arch_str for vector x, with caching."""
-        k = tuple(np.round(x).astype(int).tolist())
+        """Return the canonical arch_str for vector x, with caching.
+
+        Accepts float or integer arrays; rounding is applied internally.
+        """
+        k = np.round(x).astype(np.int8).tobytes()
         if k not in self._cache:
-            self._cache[k] = _vec_to_arch_str(np.asarray(k, dtype=int), self.bench_db)
+            self._cache[k] = _vec_to_arch_str(
+                np.frombuffer(k, dtype=np.int8).astype(int), self.bench_db
+            )
         return self._cache[k]
 
     def _do(self, pop, other, is_duplicate):
+        # Batch-round once per population to avoid repeated numpy overhead
+        # inside key() for each individual.
         seen = {}
 
         if other is not None:
-            for x in self.func(other):
-                arch = self.key(x)
+            for row in np.round(self.func(other)).astype(np.int8):
+                k = row.tobytes()
+                if k not in self._cache:
+                    self._cache[k] = _vec_to_arch_str(row.astype(int), self.bench_db)
+                arch = self._cache[k]
                 if arch is not None:
                     seen[arch] = True
 
-        for i, x in enumerate(self.func(pop)):
-            arch = self.key(x)
+        for i, row in enumerate(np.round(self.func(pop)).astype(np.int8)):
+            k = row.tobytes()
+            if k not in self._cache:
+                self._cache[k] = _vec_to_arch_str(row.astype(int), self.bench_db)
+            arch = self._cache[k]
             if arch is None or arch in seen:
                 is_duplicate[i] = True
             else:

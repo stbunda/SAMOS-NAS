@@ -96,9 +96,10 @@ class SAMOSMinimal(Algorithm):
         self._dedup_key = dedup_key_fn if dedup_key_fn is not None \
             else lambda x: tuple(np.round(x).astype(int).tolist())
 
-        self._archive   = Population()
-        self._init      = Initialization(sampling)
-        self._prev_nd_F = None          # for eps / indicator convergence display
+        self._archive      = Population()
+        self._archive_keys: set = set()   # incrementally maintained dedup keys
+        self._init         = Initialization(sampling)
+        self._prev_nd_F    = None          # for eps / indicator convergence display
 
     def _setup(self, problem, **kwargs):
         pass
@@ -111,6 +112,7 @@ class SAMOSMinimal(Algorithm):
 
     def _initialize_advance(self, infills=None, **kwargs):
         self._archive = Population.merge(self._archive, infills)
+        self._add_to_archive_keys(infills)
         self.pop = infills
 
     # ── surrogate-assisted infill ─────────────────────────────────────────────
@@ -206,9 +208,8 @@ class SAMOSMinimal(Algorithm):
         # 4. Deduplicate candidates against the evaluated archive
         cand_pop = res.pop if res.pop is not None else Population.empty()
         if len(cand_pop) > 0:
-            arc_keys = {self._dedup_key(x) for x in X_arc}
             not_dup = np.array([
-                self._dedup_key(cx) not in arc_keys
+                self._dedup_key(cx) not in self._archive_keys
                 for cx in cand_pop.get('X')
             ], dtype=bool)
             cand_pop = cand_pop[not_dup]
@@ -221,6 +222,7 @@ class SAMOSMinimal(Algorithm):
 
     def _advance(self, infills=None, **kwargs):
         self._archive = Population.merge(self._archive, infills)
+        self._add_to_archive_keys(infills)
         self.pop = infills
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -247,9 +249,17 @@ class SAMOSMinimal(Algorithm):
             return Population.merge(extra, found) if len(extra) > 0 else found
         return found
 
+    def _add_to_archive_keys(self, infills):
+        """Incrementally update _archive_keys when new individuals are added."""
+        if infills is not None and len(infills) > 0:
+            for x in infills.get('X'):
+                k = self._dedup_key(x)
+                if k is not None:
+                    self._archive_keys.add(k)
+
     def _sample_dedup(self, n, extra_ref=None, max_tries_factor=20):
         """Sample n candidates not already in the archive (nor in extra_ref)."""
-        arc_keys = {self._dedup_key(x) for x in self._archive.get('X')}
+        arc_keys = self._archive_keys.copy()
         if extra_ref is not None and len(extra_ref) > 0:
             arc_keys |= {self._dedup_key(x) for x in extra_ref.get('X')}
 

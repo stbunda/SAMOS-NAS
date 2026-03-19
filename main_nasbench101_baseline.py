@@ -33,6 +33,7 @@ from strategy.sampler import ValidRandomSampling101
 from strategy.operations.crossover import NoCrossover101, TwoPointCrossover101
 from strategy.operations.mutation import UniformMutation101, SinglePointMutation101
 from analysis.plotter import plot_results, plot_exploration_coverage
+from analysis.latex_table_generator import generate_latex_table_nasbench101
 
 # ─── file-level constants ─────────────────────────────────────────────────────
 
@@ -256,6 +257,16 @@ def main(args):
         eval_checkpoints=(200, 500, 1000),
         pop_size=args.pop_size,
         out_path=coverage_out,
+    )
+
+    generate_latex_table_nasbench101(
+        methods=methods,
+        results_root=RESULTS_ROOT,
+        bench_db=bench_db,
+        pareto_ref=pareto_ref,
+        acc_key='test_acc_108',
+        eval_checkpoint=1000,
+        pop_size=args.pop_size,
     )
 
 
