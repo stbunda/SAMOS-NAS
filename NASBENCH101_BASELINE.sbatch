@@ -148,7 +148,7 @@ while (( IDX < TOTAL )); do
     python main_nasbench101_baseline.py \
         --experiment_name ${EXPERIMENT_NAME} \
         --pop_size ${POP_SIZE} \
-        --pop_size_inner ${POP_SIZE_INNER} \
+        --inner_pop_size ${POP_SIZE_INNER} \
         --n_gen ${N_GEN} \
         --n_gen_inner ${N_GEN_INNER} \
         --seeds ${SEED} \
