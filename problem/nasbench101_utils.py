@@ -3,6 +3,9 @@ Shared constants, vector-conversion helpers, and archive utilities for the
 integer-vector NASBench-101 search space (26 genes: 5 ops + 21 edges).
 """
 
+import os
+import pickle
+
 import numpy as np
 from pymoo.core.duplicate import DuplicateElimination
 
@@ -21,6 +24,136 @@ MAX_PARAMS = 49_979_274
 
 XL = np.array([0] * N_OPS + [0] * N_EDGES, dtype=int)
 XU = np.array([2] * N_OPS + [1] * N_EDGES, dtype=int)
+
+# Precomputed upper-triangular indices for the 7×7 adjacency matrix (21 edges).
+_TRIU_I, _TRIU_J = np.triu_indices(7, k=1)
+
+LUT_PATH = os.path.join(os.path.dirname(__file__), 'data', 'nasbench101_lut.pkl')
+
+
+# ─── fast canonical pruner (no ModelSpec / no MD5) ───────────────────────────
+
+def _fast_canonical_bytes(vec_int: np.ndarray) -> 'bytes | None':
+    """Prune a raw vector to its canonical form using numpy BFS — no ModelSpec,
+    no MD5.  Returns the pruned adjacency matrix + ops concatenated as bytes,
+    which uniquely identifies the canonical architecture.  Returns None for
+    invalid (disconnected) graphs.
+
+    ~10–20x faster than _vec_to_arch_str on a cache miss.
+    """
+    ops   = vec_int[:N_OPS]
+    edges = vec_int[N_OPS:]
+
+    mat = np.zeros((7, 7), dtype=bool)
+    mat[_TRIU_I, _TRIU_J] = edges.astype(bool)
+
+    # Forward reachability from input (node 0)
+    fwd = np.zeros(7, dtype=bool); fwd[0] = True
+    for _ in range(6):
+        fwd |= (fwd[:, None] & mat).any(axis=0)
+    if not fwd[6]:
+        return None  # output not reachable → invalid
+
+    # Backward reachability to output (node 6)
+    bwd = np.zeros(7, dtype=bool); bwd[6] = True
+    for _ in range(6):
+        bwd |= (mat & bwd[None, :]).any(axis=1)
+
+    valid = fwd & bwd
+    pruned_mat = mat[np.ix_(valid, valid)]
+    pruned_ops = ops[valid[1:-1]]   # intermediate nodes only
+    return pruned_mat.tobytes() + pruned_ops.tobytes()
+
+
+# ─── lookup-table build / load ────────────────────────────────────────────────
+
+def build_nasbench101_lut(lut_path: str = LUT_PATH) -> dict:
+    """Precompute canonical_bytes → arch_str for every valid NASBench-101
+    architecture and save to disk.
+
+    Enumerates all raw vectors with ≤ 9 edges (~169 M) in vectorised numpy
+    batches.  The expensive hash_module (50 MD5 calls) is invoked only once
+    per unique canonical form (~423 k times).  Typical runtime: 3–5 minutes.
+    """
+    from itertools import combinations
+    from itertools import product as iproduct
+
+    # All edge vectors with ≤ 9 edges set (695 860 configs)
+    edge_vecs = []
+    for n in range(10):
+        for combo in combinations(range(N_EDGES), n):
+            ev = np.zeros(N_EDGES, dtype=np.int8)
+            ev[list(combo)] = 1
+            edge_vecs.append(ev)
+    edge_vecs = np.array(edge_vecs, dtype=np.int8)          # (695860, 21)
+
+    # All op vectors: 3^5 = 243 configs
+    op_vecs = np.array(list(iproduct(range(3), repeat=N_OPS)), dtype=np.int8)
+
+    lut   = {}
+    BATCH = 10_000
+    n_ev  = len(edge_vecs)
+
+    print(f'Building LUT: {len(op_vecs)} op × {n_ev:,} edge = {len(op_vecs)*n_ev:,} vectors')
+
+    for oi, op_vec in enumerate(op_vecs):
+        if oi % 50 == 0:
+            print(f'  op {oi:>3}/{len(op_vecs)}  LUT size: {len(lut):,}')
+
+        for start in range(0, n_ev, BATCH):
+            batch_edges = edge_vecs[start:start + BATCH]    # (B, 21)
+            B = len(batch_edges)
+
+            # Build B adjacency matrices in one shot
+            mats = np.zeros((B, 7, 7), dtype=bool)
+            mats[:, _TRIU_I, _TRIU_J] = batch_edges.astype(bool)
+
+            # Forward BFS from node 0
+            fwd = np.zeros((B, 7), dtype=bool); fwd[:, 0] = True
+            for _ in range(6):
+                fwd |= (fwd[:, :, None] & mats).any(axis=1)
+
+            vi = np.where(fwd[:, 6])[0]   # output reachable
+            if not vi.size:
+                continue
+
+            sub_mats = mats[vi]
+            sub_fwd  = fwd[vi]
+
+            # Backward BFS to node 6
+            bwd = np.zeros((len(vi), 7), dtype=bool); bwd[:, 6] = True
+            for _ in range(6):
+                bwd |= (sub_mats & bwd[:, None, :]).any(axis=2)
+
+            valid_nodes = sub_fwd & bwd   # (n_valid, 7)
+
+            for k, idx in enumerate(vi):
+                vn = valid_nodes[k]
+                if not (vn[0] and vn[6]):
+                    continue
+
+                pruned_mat = sub_mats[k][np.ix_(vn, vn)]
+                pruned_ops = op_vec[vn[1:-1]]
+                cb = pruned_mat.tobytes() + pruned_ops.tobytes()
+
+                if cb not in lut:
+                    full_vec = np.concatenate([op_vec, batch_edges[idx]]).astype(int)
+                    lut[cb] = _vec_to_arch_str(full_vec, {})
+
+    print(f'LUT complete: {len(lut):,} unique architectures')
+    os.makedirs(os.path.dirname(lut_path), exist_ok=True)
+    with open(lut_path, 'wb') as f:
+        pickle.dump(lut, f)
+    print(f'Saved → {lut_path}')
+    return lut
+
+
+def load_nasbench101_lut(lut_path: str = LUT_PATH) -> 'dict | None':
+    """Load the precomputed LUT from disk.  Returns None if not found."""
+    if not os.path.exists(lut_path):
+        return None
+    with open(lut_path, 'rb') as f:
+        return pickle.load(f)
 
 
 # ─── vector conversion helpers ────────────────────────────────────────────────
