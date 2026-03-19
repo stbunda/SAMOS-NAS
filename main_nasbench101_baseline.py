@@ -86,7 +86,7 @@ def _load_test_pareto_ref() -> np.ndarray:
 
 def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
                n_doe=None, n_infill=None, n_gen_inner=20, inner_pop_size=None,
-               predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
+               warm_start_ratio=0.75, predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)
@@ -163,6 +163,7 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
             n_infill=n_infill,
             n_gen_inner=n_gen_inner,
             ga_pop_size=inner_pop_size,
+            warm_start_ratio=warm_start_ratio,
             use_subset_selection=False,
             eliminate_duplicates=elim_dupes,
             dedup_key_fn=dedup_key_fn,
@@ -229,6 +230,7 @@ def main(args):
                 method, seed, args.pop_size, args.n_gen, bench_db, pareto_ref,
                 n_doe=args.n_doe, n_infill=args.n_infill, n_gen_inner=args.n_gen_inner,
                 inner_pop_size=args.inner_pop_size,
+                warm_start_ratio=args.warm_start_ratio,
                 predict_obj=args.predict_obj, real_obj=args.real_obj,
                 elim_dupes_mode=args.elim_dupes,
             )
@@ -299,6 +301,8 @@ if __name__ == '__main__':
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size', type=int, default=None,
                         help='SAMOS: inner NSGA-II population size (default: pop_size * 10)')
+    parser.add_argument('--warm_start_ratio', type=float, default=0.75,
+                        help='SAMOS: fraction of inner pop warm-started from best archive (default: 0.75)')
     parser.add_argument('--predict_obj', type=str, nargs='+', default=['val_err_12'],
                         help='SAMOS: objectives approximated by surrogates (default: val_err_12)')
     parser.add_argument('--real_obj', type=str, nargs='*', default=['n_params'],

@@ -73,6 +73,7 @@ class SAMOSMinimal(Algorithm):
                  n_infill=8,
                  n_gen_inner=20,
                  ga_pop_size=None,
+                 warm_start_ratio=0.75,
                  use_subset_selection=True,
                  eliminate_duplicates=True,
                  dedup_key_fn=None,
@@ -87,6 +88,7 @@ class SAMOSMinimal(Algorithm):
         self.n_infill                 = n_infill
         self.n_gen_inner              = n_gen_inner
         self.ga_pop_size              = ga_pop_size if ga_pop_size is not None else n_infill * 10
+        self.warm_start_ratio         = warm_start_ratio
         self.use_subset_selection     = use_subset_selection
         self.eliminate_duplicates     = eliminate_duplicates
         # dedup_key_fn(x: np.ndarray) -> hashable: maps a decision vector to a
@@ -139,7 +141,7 @@ class SAMOSMinimal(Algorithm):
 
         # 2. Warm-start: 75 % best archive (rank + crowding) + 25 % fresh random
         #    Strip F so the inner NSGA-II re-evaluates all on the surrogate problem.
-        topx     = max(1, int(self.ga_pop_size * 0.75))
+        topx     = max(1, int(self.ga_pop_size * self.warm_start_ratio))
         top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=topx)
         n_rand   = self.ga_pop_size - len(top_pop)
         rand_pop = self._init.do(self.problem, n_rand, algorithm=self)

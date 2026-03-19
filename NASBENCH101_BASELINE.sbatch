@@ -14,11 +14,12 @@
 #SBATCH --qos research-deadline
 
 # Variables
-EXPERIMENT_NAME=nasbench101_baseline_pop20_gen50_can500
+EXPERIMENT_NAME=nasbench101_baseline_pop20_gen50_can200_warmstart1.0
 POP_SIZE=20
-POP_SIZE_INNER=500
+POP_SIZE_INNER=200
 N_GEN=50
 N_GEN_INNER=20
+WARM_START_RATIO=1.0
 
 # Create a scratch directory for this job
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}"
@@ -151,6 +152,7 @@ while (( IDX < TOTAL )); do
         --inner_pop_size ${POP_SIZE_INNER} \
         --n_gen ${N_GEN} \
         --n_gen_inner ${N_GEN_INNER} \
+        --warm_start_ratio ${WARM_START_RATIO} \
         --seeds ${SEED} \
         ${METHOD_FLAG}
 
