@@ -14,7 +14,7 @@
 #SBATCH --qos research-deadline
 
 # Variables
-EXPERIMENT_NAME=nasbench101_baseline_pop20_gen50_can200_warmstart1_crossover
+EXPERIMENT_NAME=nasbench101_baseline_pop20_gen50_can200_warmstart1.0
 POP_SIZE=20
 POP_SIZE_INNER=200
 N_GEN=50
