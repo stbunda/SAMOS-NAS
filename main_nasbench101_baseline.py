@@ -15,7 +15,7 @@ import random
 from pathlib import Path
 
 import numpy as np
-import torch
+# import torch
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.indicators.hv import HV
 from pymoo.indicators.igd_plus import IGDPlus
@@ -38,7 +38,7 @@ from analysis.latex_table_generator import generate_latex_table_nasbench101
 
 # ─── file-level constants ─────────────────────────────────────────────────────
 
-DATA_FILE = 'problem/data/data_nasbench101.pkl'
+DATA_FILE = '../data_nasbench101.pkl'
 
 
 # ─── main run logic ───────────────────────────────────────────────────────────
@@ -84,14 +84,23 @@ def _load_test_pareto_ref() -> np.ndarray:
     return F_sorted[nd_mask]
 
 
+def mosmac_run(seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
+               n_doe=None, n_infill=None, n_gen_inner=20, inner_pop_size=None,
+               warm_start_ratio=0.75, predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
+    data = []
+    data['time'] = problem.time  # list of timestamps (PDNS-compatible)
+    data['log_archs'] = problem.log_archs
+
+    return data
+
 def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
                n_doe=None, n_infill=None, n_gen_inner=20, inner_pop_size=None,
                warm_start_ratio=0.75, predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
     np.random.seed(seed)
     random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark     = False
+    # torch.manual_seed(seed)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark     = False
 
     problem  = NASBench101Problem(bench_db)
     callback = PDNSStyleCallback(bench_db, pareto_ref)
@@ -106,7 +115,11 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
 
     n_gen_minimize = n_gen   # may be overridden for 'random'
 
-    if method == 'random':
+    if method == 'mosmac':
+        #Function
+        #Return data
+        return mosmac_run(seed, pop_size, n_gen, bench_db, pareto_ref, n_doe, n_infill, n_gen_inner, inner_pop_size, warm_start_ratio, predict_obj, real_obj, elim_dupes_mode)
+    elif method == 'random':
         # Sample all architectures in one shot — no generational structure.
         n_total = pop_size * n_gen
         algorithm = RandomGA(pop_size=n_total,
@@ -213,7 +226,7 @@ def main(args):
     if args.samos_xgb:
         methods.append('samos-xgb')
     if not methods:
-        methods = ['random', 'random_ga', 'nsga2', 'nsga2-single', 'samos-rfr', 'samos-xgb']
+        methods = ['random', 'random_ga', 'nsga2', 'nsga2-single', 'samos-rfr', 'samos-xgb','mosmac']
 
     for method in methods:
         save_dir = os.path.join(results_root, method)
