@@ -15,7 +15,7 @@ import numpy as np
 from pymoo.indicators.hv import HV
 
 from problem.nasbench101_utils import MIN_PARAMS, MAX_PARAMS
-from analysis.plotter import plot_results, plot_exploration_coverage
+from analysis.plotter import plot_results, plot_val_results, plot_exploration_coverage
 from analysis.latex_table_generator import generate_latex_table_nasbench101
 
 DATA_FILE = 'problem/data/data_nasbench101.pkl'
@@ -24,6 +24,30 @@ DATA_FILE = 'problem/data/data_nasbench101.pkl'
 def _load_bench_db() -> dict:
     with open(DATA_FILE, 'rb') as f:
         return pickle.load(f)
+
+
+def _pareto_layers(F: np.ndarray, n_layers: int = 3) -> list:
+    """Peel up to n_layers non-dominated fronts from F using an efficient sweep.
+
+    Works by sorting on obj0 and sweeping obj1; repeated n_layers times on
+    the remaining points.  O(n * n_layers) — avoids O(n^2) NDS.
+    """
+    remaining = F.copy()
+    layers = []
+    for _ in range(n_layers):
+        if len(remaining) == 0:
+            break
+        order = np.argsort(remaining[:, 0], kind='stable')
+        F_s = remaining[order]
+        nd_mask = np.zeros(len(F_s), dtype=bool)
+        best_obj1 = np.inf
+        for i in range(len(F_s)):
+            if F_s[i, 1] < best_obj1:
+                nd_mask[i] = True
+                best_obj1 = F_s[i, 1]
+        layers.append(F_s[nd_mask])
+        remaining = F_s[~nd_mask]
+    return layers
 
 
 def _load_test_pareto_ref() -> np.ndarray:
@@ -41,6 +65,33 @@ def _load_test_pareto_ref() -> np.ndarray:
         for v in db.values()
         if 'test_acc_108' in v
     ])
+    fronts = _pareto_layers(F_all, n_layers=3)
+    for layer_idx, front in enumerate(fronts):
+        print(f'  test_acc_108 layer {layer_idx + 1}: {len(front)} points')
+
+    order = np.argsort(F_all[:, 0], kind='stable')
+    F_sorted = F_all[order]
+    nd_mask = np.zeros(len(F_sorted), dtype=bool)
+    best_obj1 = np.inf
+    for i in range(len(F_sorted)):
+        if F_sorted[i, 1] < best_obj1:
+            nd_mask[i] = True
+            best_obj1 = F_sorted[i, 1]
+    return F_sorted[nd_mask]
+
+
+def _load_val_pareto_ref(bench_db: dict) -> np.ndarray:
+    """Build the val_acc_12 Pareto front from the benchmark database."""
+    F_all = np.array([
+        [1.0 - v['val_acc_12'],
+         (v['n_params'] - MIN_PARAMS) / (MAX_PARAMS - MIN_PARAMS)]
+        for v in bench_db.values()
+        if 'val_acc_12' in v
+    ])
+    fronts = _pareto_layers(F_all, n_layers=3)
+    for layer_idx, front in enumerate(fronts):
+        print(f'  val_acc_12 layer {layer_idx + 1}: {len(front)} points')
+
     order = np.argsort(F_all[:, 0], kind='stable')
     F_sorted = F_all[order]
     nd_mask = np.zeros(len(F_sorted), dtype=bool)
@@ -148,12 +199,25 @@ def main(args):
           f'hv_ceiling={hv_ceiling:.6f}')
 
     plot_out = os.path.join(results_root, 'baseline_hv_igd.png')
-    print(f'\nGenerating HV / IGD+ plot ...')
+    print(f'\nGenerating HV / IGD+ plot (test_acc@108) ...')
     plot_results(methods, args.n_gen, args.pop_size, hv_ceiling, plot_out,
                  results_root=results_root)
 
+    print('Building val_acc_12 Pareto reference front ...')
+    val_pareto_ref = _load_val_pareto_ref(bench_db)
+    hv_ceiling_val = float(HV(ref_point=np.array([1.05, 1.05]))(val_pareto_ref))
+    print(f'  val-12 reference front: {len(val_pareto_ref)} pts  '
+          f'val_err=[{val_pareto_ref[:,0].min():.4f}, {val_pareto_ref[:,0].max():.4f}]  '
+          f'hv_ceiling={hv_ceiling_val:.6f}')
+
+    val_plot_out = os.path.join(results_root, 'baseline_hv_igd_val12.png')
+    print(f'\nGenerating HV / IGD+ plot (val_acc@12) ...')
+    plot_val_results(methods, args.n_gen, args.pop_size, hv_ceiling_val, val_plot_out,
+                     results_root=results_root, bench_db=bench_db,
+                     val_pareto_ref=val_pareto_ref)
+
     coverage_out = os.path.join(results_root, 'baseline_coverage.png')
-    print(f'\nGenerating exploration coverage plot ...')
+    print(f'\nGenerating exploration coverage plot (test_acc@108) ...')
     plot_exploration_coverage(
         methods=methods,
         results_root=results_root,
@@ -163,6 +227,23 @@ def main(args):
         eval_checkpoints=(200, 500, 1000),
         pop_size=args.pop_size,
         out_path=coverage_out,
+        xlim=(75, 100),
+        ylim=(0, 0.25),
+    )
+
+    val_coverage_out = os.path.join(results_root, 'baseline_coverage_val12.png')
+    print(f'\nGenerating exploration coverage plot (val_acc@12) ...')
+    plot_exploration_coverage(
+        methods=methods,
+        results_root=results_root,
+        bench_db=bench_db,
+        pareto_ref=val_pareto_ref,
+        acc_key='val_acc_12',
+        eval_checkpoints=(200, 500, 1000),
+        pop_size=args.pop_size,
+        out_path=val_coverage_out,
+        xlim=(50, 100),
+        ylim=(0, 0.25),
     )
 
     generate_latex_table_nasbench101(
