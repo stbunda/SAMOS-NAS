@@ -16,7 +16,6 @@
 # Variables
 EXPERIMENT_NAME=nasbench101_baseline
 POP_SIZE=50
-POP_SIZE_INNER=200
 N_GEN=20
 N_GEN_INNER=20
 WARM_START_RATIO=1.0
@@ -187,7 +186,6 @@ while (( IDX < TOTAL )); do
     python main_nasbench101_baseline.py \
         --experiment_name ${EXPERIMENT_NAME} \
         --pop_size ${POP_SIZE} \
-        --inner_pop_size ${POP_SIZE_INNER} \
         --n_gen ${N_GEN} \
         --n_gen_inner ${N_GEN_INNER} \
         --warm_start_ratio ${WARM_START_RATIO} \
