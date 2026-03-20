@@ -63,7 +63,7 @@ def _load_test_pareto_ref() -> np.ndarray:
         return np.array(c['pareto_front'])
 
     # build from scratch
-    print('  Building test-acc Pareto front from scratch …')
+    print('  Building test-acc Pareto front from scratch ...')
     db = _load_bench_db()
     F_all = np.array([
         [1.0 - v['test_acc_108'],
@@ -191,11 +191,11 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
 def main(args):
     results_root = os.path.join('results', args.experiment_name)
 
-    print(f'Loading benchmark data from {DATA_FILE} …')
+    print(f'Loading benchmark data from {DATA_FILE} ...')
     bench_db = _load_bench_db()
     print(f'  {len(bench_db):,} architectures')
 
-    print('Loading test-acc Pareto reference front …')
+    print('Loading test-acc Pareto reference front ...')
     pareto_ref = _load_test_pareto_ref()
     print(f'  {len(pareto_ref)} non-dominated points')
 
@@ -246,12 +246,12 @@ def main(args):
           f'n_params_norm=[{pareto_ref[:,1].min():.4f}, {pareto_ref[:,1].max():.4f}]  '
           f'hv_ceiling={hv_ceiling:.6f}')
     plot_out = os.path.join(results_root, 'baseline_hv_igd.png')
-    print(f'\nGenerating HV / IGD+ plot …')
+    print(f'\nGenerating HV / IGD+ plot ...')
     plot_results(methods, args.n_gen, args.pop_size, hv_ceiling, plot_out,
                  results_root=results_root)
 
     coverage_out = os.path.join(results_root, 'baseline_coverage.png')
-    print(f'\nGenerating exploration coverage plot …')
+    print(f'\nGenerating exploration coverage plot ...')
     plot_exploration_coverage(
         methods=methods,
         results_root=results_root,
