@@ -9,12 +9,14 @@ plot_nasbench101_comparison.py can consume them directly.
 """
 
 import argparse
+import copy
 import os
 import pickle
 import random
 from pathlib import Path
 
 import numpy as np
+import pymoo.util.nds.non_dominated_sorting
 # import torch
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.indicators.hv import HV
@@ -85,6 +87,8 @@ def _load_test_pareto_ref() -> np.ndarray:
     return F_sorted[nd_mask]
 
 #TODO imports
+from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+
 from ConfigSpace import (
     Categorical,
     Configuration,
@@ -173,30 +177,28 @@ def make_target_fn(bench_db):
 
     return target_fn
 
-
 def mosmac_run(callback, seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
                n_doe=None, n_infill=None, n_gen_inner=20, inner_pop_size=None,
                warm_start_ratio=0.75, predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
 
 
-    #MOSMAC compatible configspace
+    # MOSMAC compatible configspace
     cs = build_config_space(seed)
-    #Target algorithm
+    # Target algorithm
     target_fn = make_target_fn(bench_db)
     # TODO callback to check isvalid
-    # TODO Scenario
+    # Scenario
     scenario = Scenario(
         configspace=cs,
         objectives=["val_err", "n_params"],  # multi-objective
-        n_trials=pop_size*n_gen,
+        n_trials=500, #pop_size*n_gen,
         seed=seed,
         # output_directory=, TODO Fix
         deterministic=True,  # NASBench lookups are deterministic
         n_workers=1,
     )
 
-    # ── Scenario ──────────────────────────────────────────────────────────────
-
+    #SMAC
     smac = MOFacade(
         scenario=scenario,
         target_function=target_fn,
@@ -205,11 +207,66 @@ def mosmac_run(callback, seed: int, pop_size: int, n_gen: int, bench_db: dict, p
 
     incumbents = smac.optimize()
 
-    # TODO Callback integration (perhaps do posthoc)
-    data = []
-    data['time'] = problem.time  # list of timestamps (PDNS-compatible)
-    data['log_archs'] = problem.log_archs
+    #Logging
+    traj = smac.intensifier.trajectory
+    rh = smac.runhistory
 
+    #Compute costs
+    val_costs = {}
+    test_costs = {}
+    for config_id, config in rh.ids_config.items():
+        spec = config_to_model_spec(config)
+        if not spec.valid_spec or spec.hash_spec(_CANONICAL_OPS_101) not in bench_db:
+            val_err = 1.0
+            test_err = 1.0
+            n_params_norm = 1.0
+        else:
+            entry = bench_db[spec.hash_spec(_CANONICAL_OPS_101)]
+            val_err = 1.0 - entry.get('val_acc_12', 0.0)
+            test_err = 1.0 - entry.get('test_acc_108', 0.0)
+            n_params      = entry['n_params']
+            n_params_norm = (n_params - MIN_PARAMS) / (MAX_PARAMS - MIN_PARAMS)
+
+        val_costs[config_id] = [val_err, n_params_norm]
+        test_costs[config_id] = [test_err, n_params_norm]
+
+    def compute_scores(points):
+
+        if len(points) == 0:
+            return {"hv": 0.0, "igd_plus": 0.0}
+
+        indicators = {
+            'hv': float(callback._hv_ind(points)),
+            'igd_plus': float(callback._igd_ind(points)),
+        }
+
+        return indicators
+
+    #Compute data
+    data = dict()
+    #Get populations
+    data["var_pop"] = [[rh.ids_config[i] for i in pop.config_ids] for pop in traj] #TODO align with other representation
+    data["obj_pop"] = [[val_costs[i] for i in pop.config_ids] for pop in traj]
+
+    #Get archive
+    arch = []
+    for config_id in rh.ids_config.keys():
+        next_arch = [config_id] if len(arch) == 0 else copy.copy(arch[-1]) + [config_id] #Add next config to archive
+        ndps = NonDominatedSorting().do(np.array([val_costs[i] for i in next_arch]), only_non_dominated_front=True) #Get non-dominated front
+        arch.append([config_id for i, config_id in enumerate(next_arch) if i in ndps]) #Get first front
+        #TODO check if arch is changed
+    data["var_archive"] = [[rh.ids_config[i] for i in pop] for pop in arch]
+    data["obj_archive"] = [[val_costs[i] for i in pop] for pop in arch]
+
+    data["test_var_archive"] = [[rh.ids_config[i] for i in pop] for pop in arch]
+    data["test_obj_archive"] = [[test_costs[i] for i in pop] for pop in arch]
+
+    data['indicators'] = [compute_scores(np.array(pop)) for pop in data["test_obj_archive"]]
+    data['time'] = list(range(len(data["test_var_archive"]))) #TODO fix
+
+    # data = []
+    # data['time'] = problem.time  # list of timestamps (PDNS-compatible)
+    # data['log_archs'] = problem.log_archs
     return data
 
 def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
