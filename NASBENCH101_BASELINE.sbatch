@@ -14,10 +14,10 @@
 #SBATCH --qos research-deadline
 
 # Variables
-EXPERIMENT_NAME=nasbench101_baseline_pop20_gen50_can200_warmstart1.0
-POP_SIZE=20
+EXPERIMENT_NAME=nasbench101_baseline
+POP_SIZE=50
 POP_SIZE_INNER=200
-N_GEN=50
+N_GEN=20
 N_GEN_INNER=20
 WARM_START_RATIO=1.0
 
