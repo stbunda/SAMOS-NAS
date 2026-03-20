@@ -11,6 +11,8 @@ import pickle
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+from pymoo.indicators.hv import HV
+from pymoo.indicators.igd_plus import IGDPlus
 
 from problem.nasbench101_utils import _vec_to_arch_str, MIN_PARAMS, MAX_PARAMS
 
@@ -171,6 +173,183 @@ def plot_results(
     plt.close(fig)
 
 
+# ─── val_acc_12 trajectory helpers ────────────────────────────────────────────
+
+_REF_POINT_VAL = np.array([1.05, 1.05])
+
+
+def load_val_indicator_trajectories(
+    method: str,
+    n_gen: int,
+    results_root: str,
+    bench_db: dict,
+    val_pareto_ref: np.ndarray,
+):
+    """Recompute HV / IGD+ trajectories using val_acc_12 instead of test_acc_108.
+
+    For each generation we re-evaluate the stored var_archive on val_acc_12,
+    build a non-dominated front, and compute HV / IGD+ against val_pareto_ref.
+    Returns (hv_mean, hv_std, igd_mean, igd_std) arrays of length n_gen,
+    or None if no result files are found.
+    """
+    hv_ind  = HV(ref_point=_REF_POINT_VAL)
+    igd_ind = IGDPlus(val_pareto_ref)
+
+    seed_dir = os.path.join(results_root, method)
+    if not os.path.isdir(seed_dir):
+        return None
+
+    hv_runs, igd_runs = [], []
+    for pkl_file in sorted(os.listdir(seed_dir)):
+        if not pkl_file.endswith('.pkl'):
+            continue
+        with open(os.path.join(seed_dir, pkl_file), 'rb') as f:
+            data = pickle.load(f)
+
+        var_archives = data.get('var_archive', [])
+        hv_series, igd_series = [], []
+
+        for var_arch in var_archives:
+            val_objs = []
+            for vec in var_arch:
+                arch_str = _vec_to_arch_str(np.array(vec), bench_db)
+                if arch_str is None or arch_str not in bench_db:
+                    continue
+                entry = bench_db[arch_str]
+                if 'val_acc_12' not in entry:
+                    continue
+                val_err = 1.0 - entry['val_acc_12']
+                n_params_norm = (entry['n_params'] - MIN_PARAMS) / (MAX_PARAMS - MIN_PARAMS)
+                val_objs.append((val_err, n_params_norm))
+
+            if not val_objs:
+                hv_series.append(0.0)
+                igd_series.append(np.nan)
+                continue
+
+            F = np.array(val_objs)
+            # keep only non-dominated points
+            nd_mask = np.ones(len(F), dtype=bool)
+            for i in range(len(F)):
+                for j in range(len(F)):
+                    if i != j and F[j, 0] <= F[i, 0] and F[j, 1] <= F[i, 1] and (F[j] != F[i]).any():
+                        nd_mask[i] = False
+                        break
+            F_nd = F[nd_mask]
+            hv_series.append(float(hv_ind(F_nd)))
+            igd_series.append(float(igd_ind(F_nd)))
+
+        # Downsample / pad to n_gen — same logic as load_indicator_trajectories
+        if len(hv_series) == n_gen:
+            hv_runs.append(hv_series)
+            igd_runs.append(igd_series)
+        elif len(hv_series) >= n_gen:
+            step = len(hv_series) // n_gen
+            hv_runs.append([hv_series[min((g + 1) * step - 1, len(hv_series) - 1)]
+                            for g in range(n_gen)])
+            igd_runs.append([igd_series[min((g + 1) * step - 1, len(igd_series) - 1)]
+                             for g in range(n_gen)])
+        else:
+            hv_runs.append(hv_series)
+            igd_runs.append(igd_series)
+
+    if not hv_runs:
+        return None
+
+    max_len = max(len(r) for r in hv_runs)
+    for r in hv_runs:
+        while len(r) < max_len:
+            r.append(r[-1])
+    for r in igd_runs:
+        while len(r) < max_len:
+            r.append(r[-1])
+
+    hv_arr  = np.array(hv_runs,  dtype=float)
+    igd_arr = np.array(igd_runs, dtype=float)
+    return (
+        hv_arr.mean(axis=0),  hv_arr.std(axis=0),
+        igd_arr.mean(axis=0), igd_arr.std(axis=0),
+    )
+
+
+def plot_val_results(
+    methods: list,
+    n_gen: int,
+    pop_size: int,
+    hv_ceiling: float,
+    out_path: str,
+    results_root: str,
+    bench_db: dict,
+    val_pareto_ref: np.ndarray,
+    colours: dict = None,
+    labels: dict = None,
+):
+    """Plot HV and IGD+ trajectories based on val_acc_12 (mean ± std over seeds).
+
+    Parameters mirror plot_results(); val_pareto_ref and bench_db are additionally
+    required to recompute objectives from the stored var_archive.
+    """
+    _colours = {**COLOURS, **(colours or {})}
+    _labels  = {**LABELS,  **(labels  or {})}
+
+    matplotlib.rcParams.update({
+        'font.size': 11,
+        'axes.titlesize': 12,
+        'axes.labelsize': 11,
+        'legend.fontsize': 10,
+        'figure.dpi': 150,
+    })
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+
+    for method in methods:
+        result = load_val_indicator_trajectories(
+            method, n_gen, results_root, bench_db, val_pareto_ref
+        )
+        if result is None:
+            print(f'  [plot_val] No data found for method={method}, skipping.')
+            continue
+        hv_mean, hv_std, igd_mean, igd_std = result
+        x      = np.arange(1, len(hv_mean) + 1) * pop_size
+        colour = _colours.get(method)
+        label  = _labels.get(method, method)
+
+        axes[0].plot(x, hv_mean, label=label, color=colour, linewidth=1.8)
+        axes[0].fill_between(x, hv_mean - hv_std, hv_mean + hv_std,
+                             alpha=0.15, color=colour)
+
+        axes[1].plot(x, igd_mean, label=label, color=colour, linewidth=1.8)
+        axes[1].fill_between(x, np.maximum(0.0, igd_mean - igd_std), igd_mean + igd_std,
+                             alpha=0.15, color=colour)
+
+    axes[0].axhline(hv_ceiling, color='black', linestyle='--', linewidth=1.0,
+                    label=f'Optimal HV ({hv_ceiling:.4f})')
+
+    axes[0].set_title('Hypervolume (Higher is better)')
+    axes[0].set_xlabel('Evaluations')
+    axes[0].set_ylabel('Hypervolume')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].set_title('IGD+ (Lower is better)')
+    axes[1].set_xlabel('Evaluations')
+    axes[1].set_ylabel('IGD+')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    fig.suptitle(
+        f'NASBench-101  --  val_acc@12  x  n_params\n'
+        f'(pop={pop_size}, {n_gen} generations = {pop_size * n_gen} evals, mean ± std over seeds)',
+        y=1.01,
+    )
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)
+
+
 # ─── exploration coverage helpers ─────────────────────────────────────────────
 
 def _value_at_budget(hv_x, hv_y, budget):
@@ -221,6 +400,8 @@ def plot_exploration_coverage(
     eval_checkpoints=None,
     pop_size=20,
     out_path,
+    xlim=(75, 100),
+    ylim=(0, 0.25),
     show=False,
 ):
     """Side-by-side density maps of the architectures explored by each method.
@@ -244,6 +425,8 @@ def plot_exploration_coverage(
     eval_checkpoints: Tuple of cumulative-evaluation budgets to show as rows.
     pop_size:         Population size used in the runs (for HV x-axis).
     out_path:         Path to save the output figure.
+    xlim:             (min, max) for the accuracy x-axis in percent (default: (75, 100)).
+    ylim:             (min, max) for the n_params y-axis (default: (0, 0.25)).
     show:             If True, call plt.show() after saving.
     """
     # ── load per-seed PKL data ─────────────────────────────────────────────────
@@ -414,8 +597,8 @@ def plot_exploration_coverage(
                 )
                 ax.legend(loc='upper left', fontsize=7, markerscale=3)
 
-            ax.set_xlim(75, 100)
-            ax.set_ylim(0, 0.25)
+            ax.set_xlim(*xlim)
+            ax.set_ylim(*ylim)
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)

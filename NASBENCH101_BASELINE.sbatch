@@ -3,7 +3,7 @@
 #SBATCH -J nasbench101_baseline        # job name
 #SBATCH -c 2                           # number of cores
 
-#SBATCH --array=0-15
+#SBATCH --array=0-25
 
 #SBATCH --mem=16gb                     # job memory request
 #SBATCH --gres=gpu:0                   # no GPUs needed
@@ -14,10 +14,9 @@
 #SBATCH --qos research-deadline
 
 # Variables
-EXPERIMENT_NAME=nasbench101_baseline_pop20_gen50_can200_warmstart1.0
-POP_SIZE=20
-POP_SIZE_INNER=200
-N_GEN=50
+EXPERIMENT_NAME=nasbench101_baseline
+POP_SIZE=50
+N_GEN=20
 N_GEN_INNER=20
 WARM_START_RATIO=1.0
 
@@ -68,15 +67,25 @@ echo "Threads/task      = $SLURM_CPUS_PER_TASK"
 SEEDS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29)
 
 # -----------------------------------------------------------------
-# Method index:
-#   0  → random      (one-shot random search)
-#   1  → random_ga   (generational random search)
-#   2  → nsga2       (NSGA-II + 2-point crossover + uniform mutation)
-#   3  → nsga2_single (NSGA-II + no crossover + single-point mutation)
-#   4  → samos_rfr   (SAMOS with Random Forest surrogate)
-#   5  → samos_xgb   (SAMOS with XGBoost surrogate)
+# Method index (13 total methods):
+#   0  → random_ga                      (generational random search)
+#   1  → nsga2-uniform                  (NSGA-II + xo + uniform mutation)
+#   2  → nsga2-xo-single                (NSGA-II + xo + single mutation)
+#   3  → nsga2-no-xo-single             (NSGA-II + no xo + single mutation)
+#   4  → samos-xgb-xo-uniform-200       (SAMOS-XGB + xo + uniform + inner_pop=200)
+#   5  → samos-xgb-xo-single-200        (SAMOS-XGB + xo + single + inner_pop=200)
+#   6  → samos-xgb-no-xo-single-200     (SAMOS-XGB + no xo + single + inner_pop=200)
+#   7  → samos-xgb-xo-uniform-50        (SAMOS-XGB + xo + uniform + inner_pop=50)
+#   8  → samos-xgb-xo-single-50         (SAMOS-XGB + xo + single + inner_pop=50)
+#   9  → samos-xgb-no-xo-single-50      (SAMOS-XGB + no xo + single + inner_pop=50)
+#  10  → samos-xgb-xo-uniform-1000      (SAMOS-XGB + xo + uniform + inner_pop=1000)
+#  11  → samos-xgb-xo-single-1000       (SAMOS-XGB + xo + single + inner_pop=1000)
+#  12  → samos-xgb-no-xo-single-1000    (SAMOS-XGB + no xo + single + inner_pop=1000)
 # -----------------------------------------------------------------
-METHODS=(random random_ga nsga2 nsga2_single samos_rfr samos_xgb)
+METHODS=(random_ga nsga2-uniform nsga2-xo-single nsga2-no-xo-single \
+          samos-xgb-xo-uniform-200 samos-xgb-xo-single-200 samos-xgb-no-xo-single-200 \
+          samos-xgb-xo-uniform-50 samos-xgb-xo-single-50 samos-xgb-no-xo-single-50 \
+          samos-xgb-xo-uniform-1000 samos-xgb-xo-single-1000 samos-xgb-no-xo-single-1000)
 
 N_METHODS=${#METHODS[@]}
 
@@ -89,7 +98,7 @@ pop() {
     echo $(( idx % size )) $(( idx / size ))
 }
 
-STREAMS=16
+STREAMS=26
 IDX=$SLURM_ARRAY_TASK_ID
 STREAM_ID=$SLURM_ARRAY_TASK_ID
 IDX_START=$SLURM_ARRAY_TASK_ID
@@ -113,29 +122,57 @@ while (( IDX < TOTAL )); do
     METHOD=${METHODS[$m]}
 
     case $METHOD in
-        random)
-            METHOD_FLAG="--random"
-            LABEL="Random"
-            ;;
         random_ga)
             METHOD_FLAG="--random_ga"
             LABEL="RandomGA"
             ;;
-        nsga2)
-            METHOD_FLAG="--nsga2"
-            LABEL="NSGA2"
+        nsga2-uniform)
+            METHOD_FLAG="--nsga2_uniform"
+            LABEL="NSGA2_uniform"
             ;;
-        nsga2_single)
-            METHOD_FLAG="--nsga2_single"
-            LABEL="NSGA2_single"
+        nsga2-xo-single)
+            METHOD_FLAG="--nsga2_xo_single"
+            LABEL="NSGA2_xo_single"
             ;;
-        samos_rfr)
-            METHOD_FLAG="--samos_rfr"
-            LABEL="SAMOS_RFR"
+        nsga2-no-xo-single)
+            METHOD_FLAG="--nsga2_no_xo_single"
+            LABEL="NSGA2_no_xo_single"
             ;;
-        samos_xgb)
-            METHOD_FLAG="--samos_xgb"
-            LABEL="SAMOS_XGB"
+        samos-xgb-xo-uniform-200)
+            METHOD_FLAG="--samos_xgb_uniform_200"
+            LABEL="SAMOS_XGB_xo_uniform_200"
+            ;;
+        samos-xgb-xo-single-200)
+            METHOD_FLAG="--samos_xgb_single_200"
+            LABEL="SAMOS_XGB_xo_single_200"
+            ;;
+        samos-xgb-no-xo-single-200)
+            METHOD_FLAG="--samos_xgb_no_xo_single_200"
+            LABEL="SAMOS_XGB_no_xo_single_200"
+            ;;
+        samos-xgb-xo-uniform-50)
+            METHOD_FLAG="--samos_xgb_uniform_50"
+            LABEL="SAMOS_XGB_xo_uniform_50"
+            ;;
+        samos-xgb-xo-single-50)
+            METHOD_FLAG="--samos_xgb_single_50"
+            LABEL="SAMOS_XGB_xo_single_50"
+            ;;
+        samos-xgb-no-xo-single-50)
+            METHOD_FLAG="--samos_xgb_no_xo_single_50"
+            LABEL="SAMOS_XGB_no_xo_single_50"
+            ;;
+        samos-xgb-xo-uniform-1000)
+            METHOD_FLAG="--samos_xgb_uniform_1000"
+            LABEL="SAMOS_XGB_xo_uniform_1000"
+            ;;
+        samos-xgb-xo-single-1000)
+            METHOD_FLAG="--samos_xgb_single_1000"
+            LABEL="SAMOS_XGB_xo_single_1000"
+            ;;
+        samos-xgb-no-xo-single-1000)
+            METHOD_FLAG="--samos_xgb_no_xo_single_1000"
+            LABEL="SAMOS_XGB_no_xo_single_1000"
             ;;
     esac
 
@@ -149,7 +186,6 @@ while (( IDX < TOTAL )); do
     python main_nasbench101_baseline.py \
         --experiment_name ${EXPERIMENT_NAME} \
         --pop_size ${POP_SIZE} \
-        --inner_pop_size ${POP_SIZE_INNER} \
         --n_gen ${N_GEN} \
         --n_gen_inner ${N_GEN_INNER} \
         --warm_start_ratio ${WARM_START_RATIO} \
@@ -159,6 +195,15 @@ while (( IDX < TOTAL )); do
     rsync -a --ignore-existing \
         "$SCRATCH_DIRECTORY/results/" \
         "$SLURM_SUBMIT_DIR/results/"
+
+    # Call analyzer to generate plots after each result is copied back
+    cd $SLURM_SUBMIT_DIR
+    python analyze_nasbench101_baseline.py \
+        --experiment_name ${EXPERIMENT_NAME} \
+        --pop_size ${POP_SIZE} \
+        --n_gen ${N_GEN} \
+        --n_gen_inner ${N_GEN_INNER}
+    cd $SCRATCH_DIRECTORY
 
     IDX=$(( IDX + STREAMS ))
 done
