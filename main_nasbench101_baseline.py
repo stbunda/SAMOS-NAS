@@ -25,9 +25,10 @@ from strategy.algorithm.algorithms import RandomGA
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
-from problem.nasbench101_utils import N_VAR, MIN_PARAMS, MAX_PARAMS
+from problem.nasbench101_utils import N_VAR, MIN_PARAMS, MAX_PARAMS, _CANONICAL_OPS_101
 from strategy.genetics.duplicate import NASBench101DuplicateElimination
 from problem.nasbench101_baseline_problem import NASBench101Problem
+from strategy.genetics.nasbench101_lib.model_spec import ModelSpec as _ModelSpec101
 from problem.nasbench101_surrogate_problem import SurrogateProblem101
 from strategy.nasbench101_callback import PDNSStyleCallback
 from strategy.sampler import ValidRandomSampling101
@@ -83,10 +84,128 @@ def _load_test_pareto_ref() -> np.ndarray:
             best_obj1 = F_sorted[i, 1]
     return F_sorted[nd_mask]
 
+#TODO imports
+from ConfigSpace import (
+    Categorical,
+    Configuration,
+    ConfigurationSpace,
+)
 
-def mosmac_run(seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
+from smac import HyperparameterOptimizationFacade, Scenario
+from smac.facade.multi_objective_facade import MultiObjectiveFacade as MOFacade
+
+def build_config_space(seed: int = 42) -> ConfigurationSpace:
+    """
+    Encode a NASBench-101 cell as a flat hyperparameter vector.
+
+    Edges (21 binary choices):  edge_i_j ∈ {0, 1}
+    Op nodes (5 interior nodes, nodes 1–5):  op_k ∈ {conv3x3, conv1x1, maxpool}
+
+    Node 0 = input  (fixed)
+    Node 6 = output (fixed)
+    """
+    VERTICES = 7
+    OPS = _CANONICAL_OPS_101
+    cs = ConfigurationSpace(seed=seed)
+
+    # --- Edge hyperparameters ---
+    edge_hps = []
+    for i in range(VERTICES):
+        for j in range(i + 1, VERTICES):
+            hp = Categorical(f"edge_{i}_{j}", [0, 1], default=0)
+            edge_hps.append(hp)
+    cs.add(edge_hps)
+
+    # --- Operation hyperparameters (interior nodes 1..5) ---
+    op_hps = []
+    for k in range(1, VERTICES - 1):   # nodes 1, 2, 3, 4, 5
+        hp = Categorical(f"op_{k}", OPS, default=OPS[0])
+        op_hps.append(hp)
+    cs.add(op_hps)
+
+    return cs
+
+def config_to_model_spec(config: Configuration):
+    """Convert a SMAC Configuration into a NASBench-101 ModelSpec."""
+    # Build adjacency matrix
+    VERTICES = 7
+    INPUT_NODE = "input"
+    OUTPUT_NODE = "output"
+
+    adj = np.zeros((VERTICES, VERTICES), dtype=int)
+    for i in range(VERTICES):
+        for j in range(i + 1, VERTICES):
+            adj[i][j] = int(config[f"edge_{i}_{j}"])
+
+    # Build label list: input, op_1..op_5, output
+    labels = [INPUT_NODE]
+    for k in range(1, VERTICES - 1):
+        labels.append(config[f"op_{k}"])
+    labels.append(OUTPUT_NODE)
+
+    return _ModelSpec101(matrix=adj, ops=labels)
+
+def lognorm(x, MIN=1, MAX=10, reverse=False):
+    if not reverse:
+        return (np.log(x) - np.log(MAX)) / (np.log(MIN) - np.log(MAX))
+    else:
+        return np.exp(x * np.log(MAX/MIN) + np.log(MIN))
+
+def make_target_fn(bench_db):
+    """
+    Returns a target function compatible with SMAC's multi-objective interface.
+
+    Returns a dict
+    """
+    def target_fn(config: Configuration, seed: int = 0) -> dict:
+        spec = config_to_model_spec(config)
+
+        # Query the benchmark
+        if not spec.valid_spec or spec.hash_spec(_CANONICAL_OPS_101) not in bench_db:
+            #invalid
+            return {"val_err": 1.5, "n_params": 1.5}
+
+        entry = bench_db[spec.hash_spec(_CANONICAL_OPS_101)]
+        val_err = 1.0 - entry.get('val_acc_12', 0.0)
+        n_params_norm = lognorm(entry['n_params'], MIN_PARAMS, MAX_PARAMS)
+
+        return {"val_err": val_err, "n_params": n_params_norm}
+
+    return target_fn
+
+
+def mosmac_run(callback, seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
                n_doe=None, n_infill=None, n_gen_inner=20, inner_pop_size=None,
                warm_start_ratio=0.75, predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
+
+
+    #MOSMAC compatible configspace
+    cs = build_config_space(seed)
+    #Target algorithm
+    target_fn = make_target_fn(bench_db)
+    # TODO callback to check isvalid
+    # TODO Scenario
+    scenario = Scenario(
+        configspace=cs,
+        objectives=["val_err", "n_params"],  # multi-objective
+        n_trials=pop_size*n_gen,
+        seed=seed,
+        # output_directory=, TODO Fix
+        deterministic=True,  # NASBench lookups are deterministic
+        n_workers=1,
+    )
+
+    # ── Scenario ──────────────────────────────────────────────────────────────
+
+    smac = MOFacade(
+        scenario=scenario,
+        target_function=target_fn,
+        overwrite=True,
+    )
+
+    incumbents = smac.optimize()
+
+    # TODO Callback integration (perhaps do posthoc)
     data = []
     data['time'] = problem.time  # list of timestamps (PDNS-compatible)
     data['log_archs'] = problem.log_archs
@@ -118,7 +237,7 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
     if method == 'mosmac':
         #Function
         #Return data
-        return mosmac_run(seed, pop_size, n_gen, bench_db, pareto_ref, n_doe, n_infill, n_gen_inner, inner_pop_size, warm_start_ratio, predict_obj, real_obj, elim_dupes_mode)
+        return mosmac_run(callback, seed, pop_size, n_gen, bench_db, pareto_ref, n_doe, n_infill, n_gen_inner, inner_pop_size, warm_start_ratio, predict_obj, real_obj, elim_dupes_mode)
     elif method == 'random':
         # Sample all architectures in one shot — no generational structure.
         n_total = pop_size * n_gen
@@ -225,6 +344,8 @@ def main(args):
         methods.append('samos-rfr')
     if args.samos_xgb:
         methods.append('samos-xgb')
+    if args.mosmac:
+        methods.append('mosmac')
     if not methods:
         methods = ['random', 'random_ga', 'nsga2', 'nsga2-single', 'samos-rfr', 'samos-xgb','mosmac']
 
@@ -300,6 +421,8 @@ if __name__ == '__main__':
                         help='Run simplified SAMOS with Random Forest surrogate')
     parser.add_argument('--samos_xgb', action='store_true',
                         help='Run simplified SAMOS with XGBoost surrogate')
+    parser.add_argument('--mosmac', action='store_true',
+                        help='Run MOSMAC')
     parser.add_argument('--seeds', type=int, nargs='+', default=list(range(10)),
                         help='Seeds to run (default: 0-9)')
     parser.add_argument('--pop_size', type=int, default=20,
