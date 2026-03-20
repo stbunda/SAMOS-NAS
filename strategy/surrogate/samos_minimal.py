@@ -144,8 +144,11 @@ class SAMOSMinimal(Algorithm):
         topx     = max(1, int(self.ga_pop_size * self.warm_start_ratio))
         top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=topx)
         n_rand   = self.ga_pop_size - len(top_pop)
-        rand_pop = self._init.do(self.problem, n_rand, algorithm=self)
-        inner_X  = np.vstack([top_pop.get('X'), rand_pop.get('X')])
+        if n_rand > 0:
+            rand_pop = self._init.do(self.problem, n_rand, algorithm=self)
+            inner_X  = np.vstack([top_pop.get('X'), rand_pop.get('X')])
+        else:
+            inner_X  = top_pop.get('X')
         inner_init = Population.new('X', inner_X)   # X-only → surrogate re-evaluates
 
         # 3. Inner NSGA-II on the surrogate problem
