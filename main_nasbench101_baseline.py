@@ -119,6 +119,36 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
                              sampling=sampling,
                              eliminate_duplicates=elim_dupes,)
 
+    # ─── NSGA-II variants ────────────────────────────────────────────────────
+    elif method == 'nsga2-uniform':
+        # NSGA2 with xo (TwoPoint), uniform mutation
+        algorithm = NSGA2(
+            pop_size=pop_size,
+            sampling=sampling,
+            crossover=TwoPointCrossover101(prob=0.9),
+            mutation=UniformMutation101(prob=1.0 / N_VAR, eta=1.0),
+            eliminate_duplicates=elim_dupes,
+        )
+    elif method == 'nsga2-xo-single':
+        # NSGA2 with xo (TwoPoint), single mutation
+        algorithm = NSGA2(
+            pop_size=pop_size,
+            sampling=sampling,
+            crossover=TwoPointCrossover101(prob=0.9),
+            mutation=SinglePointMutation101(),
+            eliminate_duplicates=elim_dupes,
+        )
+    elif method == 'nsga2-no-xo-single':
+        # NSGA2 with no crossover, single mutation
+        algorithm = NSGA2(
+            pop_size=pop_size,
+            sampling=sampling,
+            crossover=NoCrossover101(),
+            mutation=SinglePointMutation101(),
+            eliminate_duplicates=elim_dupes,
+        )
+
+    # Legacy names (for backward compatibility)
     elif method == 'nsga2':
         algorithm = NSGA2(
             pop_size=pop_size,
@@ -135,18 +165,58 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
             mutation=SinglePointMutation101(),
             eliminate_duplicates=elim_dupes,
         )
-    elif method in ('samos-rfr', 'samos-xgb'):
+
+    # ─── SAMOS variants ──────────────────────────────────────────────────────
+    elif method.startswith('samos-'):
+        # Parse method name to extract crossover, mutation, inner infill (surrogate evaluations), and type
+        # Format: samos-{type}-{xo_type}-{mut_type}-{inner_infill}
+        # e.g., samos-xgb-xo-uniform-200, samos-xgb-no-xo-single-50, samos-rfr-xo-single-200
+        # inner_infill (50, 200, 1000) controls the inner NSGA-II loop population size (surrogate evals)
+        # Real evaluation budget (n_infill) stays constant to match random/nsga2
+        parts = method.split('-')
+        
+        samos_type = parts[1]  # 'xgb' or 'rfr'
+        
+        # Default inner infill and crossover/mutation config
+        inner_infill = None
+        crossover_op = NoCrossover101()
+        mutation_op = SinglePointMutation101()
+        
+        # Parse crossover configuration
+        if 'xo' in parts:
+            if 'xo-uniform' in method:
+                crossover_op = TwoPointCrossover101(prob=0.9)
+                mutation_op = UniformMutation101(prob=1.0 / N_VAR, eta=1.0)
+            elif 'xo-single' in method:
+                crossover_op = TwoPointCrossover101(prob=0.9)
+                mutation_op = SinglePointMutation101()
+            # else: no-xo-single (default above)
+        
+        # Extract inner infill value if present (controls inner NSGA-II pop size on surrogate)
+        if len(parts) >= 2:
+            last_part = parts[-1]
+            try:
+                inner_infill = int(last_part)
+            except ValueError:
+                pass
+        
         n_doe    = n_doe    if n_doe    is not None else pop_size
-        n_infill = n_infill if n_infill is not None else pop_size
-        inner_pop_size = inner_pop_size if inner_pop_size is not None else pop_size * 10
+        n_infill = n_infill if n_infill is not None else pop_size  # Real eval budget stays constant
+        
+        # Set inner pop size based on inner_infill (surrogate evaluation budget per inner loop)
+        if inner_infill is not None:
+            inner_pop_size = inner_infill
+        else:
+            inner_pop_size = inner_pop_size if inner_pop_size is not None else pop_size * 10
+        
         predict_obj = predict_obj if predict_obj is not None else ['val_err_12']
         real_obj    = real_obj    if real_obj    is not None else ['n_params']
-        print(f'  [SAMOS] predict={predict_obj}  real={real_obj}')
+        print(f'  [SAMOS] type={samos_type}  predict={predict_obj}  real={real_obj}  n_infill={n_infill} (real evals)  inner_pop_size={inner_pop_size} (surrogate evals)')
 
         rng  = np.random.RandomState(seed)
         surrogates = [
             (RFR(20, seed=rng.randint(0, 2**31 - 1))
-             if method == 'samos-rfr' else
+             if samos_type == 'rfr' else
              XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
             for _ in range(len(predict_obj))
         ]
@@ -155,10 +225,8 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
             sampling=sampling,
             surrogates=surrogates,
             surrogate_problem_factory=factory,
-            # crossover=TwoPointCrossover101(prob=0.9),
-            # mutation=UniformMutation101(prob=1.0 / N_VAR, eta=1.0),
-            crossover=NoCrossover101(),
-            mutation=SinglePointMutation101(),
+            crossover=crossover_op,
+            mutation=mutation_op,
             n_doe=n_doe,
             n_infill=n_infill,
             n_gen_inner=n_gen_inner,
@@ -189,7 +257,12 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
 
 
 def main(args):
-    results_root = os.path.join('results', args.experiment_name)
+    # Build budget folder name: G<n_gen>_GI<n_gen_inner>_P<pop_size>_I<infill>_D<n_doe>_ELIM-<elim_dupes>
+    n_infill = args.n_infill if args.n_infill is not None else args.pop_size
+    n_doe = args.n_doe if args.n_doe is not None else args.pop_size
+    budget_folder = f"G{args.n_gen}_GI{args.n_gen_inner}_P{args.pop_size}_I{n_infill}_D{n_doe}_ELIM-{args.elim_dupes}"
+    
+    results_root = os.path.join('results', args.experiment_name, budget_folder)
 
     print(f'Loading benchmark data from {DATA_FILE} ...')
     bench_db = _load_bench_db()
@@ -199,11 +272,59 @@ def main(args):
     pareto_ref = _load_test_pareto_ref()
     print(f'  {len(pareto_ref)} non-dominated points')
 
+    # Define all available methods
+    all_methods = [
+        'random',
+        'random_ga',
+        'nsga2-uniform',
+        'nsga2-xo-single',
+        'nsga2-no-xo-single',
+        'samos-xgb-xo-uniform-200',
+        'samos-xgb-xo-single-200',
+        'samos-xgb-no-xo-single-200',
+        'samos-xgb-xo-uniform-50',
+        'samos-xgb-xo-single-50',
+        'samos-xgb-no-xo-single-50',
+        'samos-xgb-xo-uniform-1000',
+        'samos-xgb-xo-single-1000',
+        'samos-xgb-no-xo-single-1000',
+        # Legacy names (for backward compatibility)
+        'nsga2',
+        'nsga2-single',
+        'samos-rfr',
+        'samos-xgb',
+    ]
+
     methods = []
     if args.random:
         methods.append('random')
     if args.random_ga:
         methods.append('random_ga')
+    if args.nsga2_uniform:
+        methods.append('nsga2-uniform')
+    if args.nsga2_xo_single:
+        methods.append('nsga2-xo-single')
+    if args.nsga2_no_xo_single:
+        methods.append('nsga2-no-xo-single')
+    if args.samos_xgb_uniform_200:
+        methods.append('samos-xgb-xo-uniform-200')
+    if args.samos_xgb_single_200:
+        methods.append('samos-xgb-xo-single-200')
+    if args.samos_xgb_no_xo_single_200:
+        methods.append('samos-xgb-no-xo-single-200')
+    if args.samos_xgb_uniform_50:
+        methods.append('samos-xgb-xo-uniform-50')
+    if args.samos_xgb_single_50:
+        methods.append('samos-xgb-xo-single-50')
+    if args.samos_xgb_no_xo_single_50:
+        methods.append('samos-xgb-no-xo-single-50')
+    if args.samos_xgb_uniform_1000:
+        methods.append('samos-xgb-xo-uniform-1000')
+    if args.samos_xgb_single_1000:
+        methods.append('samos-xgb-xo-single-1000')
+    if args.samos_xgb_no_xo_single_1000:
+        methods.append('samos-xgb-no-xo-single-1000')
+    # Legacy support
     if args.nsga2:
         methods.append('nsga2')
     if args.nsga2_single:
@@ -212,8 +333,9 @@ def main(args):
         methods.append('samos-rfr')
     if args.samos_xgb:
         methods.append('samos-xgb')
+    
     if not methods:
-        methods = ['random', 'random_ga', 'nsga2', 'nsga2-single', 'samos-rfr', 'samos-xgb']
+        methods = all_methods
 
     for method in methods:
         save_dir = os.path.join(results_root, method)
@@ -273,20 +395,57 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='NASBench-101 baselines: Random + NSGA-II (PDNS-style)'
+        description='NASBench-101 baselines: Random + NSGA-II + SAMOS (PDNS-style)'
     )
+    # ─── Basic methods ────────────────────────────────────────────────────────
     parser.add_argument('--random', action='store_true',
                         help='Run one-shot random search (pop_size * n_gen samples at once)')
     parser.add_argument('--random_ga', action='store_true',
                         help='Run generational random search (pop_size samples per generation)')
-    parser.add_argument('--nsga2',  action='store_true',
+    
+    # ─── NSGA-II variants ────────────────────────────────────────────────────
+    parser.add_argument('--nsga2_uniform', action='store_true',
                         help='Run NSGA-II with 2-point crossover + uniform mutation')
-    parser.add_argument('--nsga2_single', action='store_true',
+    parser.add_argument('--nsga2_xo_single', action='store_true',
+                        help='Run NSGA-II with 2-point crossover + single-point mutation')
+    parser.add_argument('--nsga2_no_xo_single', action='store_true',
                         help='Run NSGA-II with no crossover + single-point mutation')
+    
+    # ─── SAMOS-XGB variants with infill=200 ────────────────────────────────
+    parser.add_argument('--samos_xgb_uniform_200', action='store_true',
+                        help='Run SAMOS-XGB with xo + uniform mutation, infill=200')
+    parser.add_argument('--samos_xgb_single_200', action='store_true',
+                        help='Run SAMOS-XGB with xo + single mutation, infill=200')
+    parser.add_argument('--samos_xgb_no_xo_single_200', action='store_true',
+                        help='Run SAMOS-XGB with no xo + single mutation, infill=200')
+    
+    # ─── SAMOS-XGB variants with infill=50 ─────────────────────────────────
+    parser.add_argument('--samos_xgb_uniform_50', action='store_true',
+                        help='Run SAMOS-XGB with xo + uniform mutation, infill=50')
+    parser.add_argument('--samos_xgb_single_50', action='store_true',
+                        help='Run SAMOS-XGB with xo + single mutation, infill=50')
+    parser.add_argument('--samos_xgb_no_xo_single_50', action='store_true',
+                        help='Run SAMOS-XGB with no xo + single mutation, infill=50')
+    
+    # ─── SAMOS-XGB variants with infill=1000 ───────────────────────────────
+    parser.add_argument('--samos_xgb_uniform_1000', action='store_true',
+                        help='Run SAMOS-XGB with xo + uniform mutation, infill=1000')
+    parser.add_argument('--samos_xgb_single_1000', action='store_true',
+                        help='Run SAMOS-XGB with xo + single mutation, infill=1000')
+    parser.add_argument('--samos_xgb_no_xo_single_1000', action='store_true',
+                        help='Run SAMOS-XGB with no xo + single mutation, infill=1000')
+    
+    # ─── Legacy method flags (for backward compatibility) ───────────────────
+    parser.add_argument('--nsga2',  action='store_true',
+                        help='(Legacy) Run NSGA-II with 2-point crossover + uniform mutation')
+    parser.add_argument('--nsga2_single', action='store_true',
+                        help='(Legacy) Run NSGA-II with no crossover + single-point mutation')
     parser.add_argument('--samos_rfr', action='store_true',
-                        help='Run simplified SAMOS with Random Forest surrogate')
+                        help='(Legacy) Run simplified SAMOS with Random Forest surrogate')
     parser.add_argument('--samos_xgb', action='store_true',
-                        help='Run simplified SAMOS with XGBoost surrogate')
+                        help='(Legacy) Run simplified SAMOS with XGBoost surrogate')
+    
+    # ─── Search budget parameters ─────────────────────────────────────────
     parser.add_argument('--seeds', type=int, nargs='+', default=list(range(10)),
                         help='Seeds to run (default: 0-9)')
     parser.add_argument('--pop_size', type=int, default=20,
