@@ -10,7 +10,7 @@ Objectives (in order): predicted ones first, real ones second.
 import numpy as np
 from pymoo.core.problem import Problem
 
-from problem.nasbench101_utils import (
+from problem.nasbench101.utils import (
     N_VAR, XL, XU, MIN_PARAMS, MAX_PARAMS,
     _vec_to_arch_str,
 )

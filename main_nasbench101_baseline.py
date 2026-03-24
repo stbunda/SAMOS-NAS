@@ -32,7 +32,8 @@ from strategy.genetics.duplicate import NASBench101DuplicateElimination
 from problem.nasbench101_baseline_problem import NASBench101Problem
 from strategy.genetics.nasbench101_lib.model_spec import ModelSpec as _ModelSpec101
 from problem.nasbench101_surrogate_problem import SurrogateProblem101
-from strategy.nasbench101_callback import PDNSStyleCallback
+from strategy.callbacks import NASArchiveCallback
+from problem.nasbench101.utils import _update_archive, _test_archive as _test_archive_101
 from strategy.sampler import ValidRandomSampling101
 from strategy.operations.crossover import NoCrossover101, TwoPointCrossover101
 from strategy.operations.mutation import UniformMutation101, SinglePointMutation101
@@ -279,7 +280,7 @@ def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict
     # torch.backends.cudnn.benchmark     = False
 
     problem  = NASBench101Problem(bench_db)
-    callback = PDNSStyleCallback(bench_db, pareto_ref)
+    callback = NASArchiveCallback(bench_db, pareto_ref, _update_archive, _test_archive_101)
     sampling = ValidRandomSampling101()
 
     if elim_dupes_mode == 'arch_str':

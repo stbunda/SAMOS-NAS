@@ -10,7 +10,7 @@ Objectives (in order): predicted ones first, real ones second.
 import numpy as np
 from pymoo.core.problem import Problem
 
-from problem.nasbench201_utils import (
+from problem.nasbench201.utils import (
     N_VAR, XL, XU, DATASET_INFO, _vec_to_arch_str,
 )
 
@@ -70,7 +70,6 @@ class SurrogateProblem201(Problem):
 
         # Real objectives via bench_db lookup (no training cost)
         for j, obj_name in enumerate(self.real_objectives):
-            # obj_name == 'flops' (validated in __init__)
             for k, x in enumerate(X):
                 arch_str = _vec_to_arch_str(np.round(x).astype(int))
                 if arch_str in self.bench_db and self.val_key in self.bench_db[arch_str]:

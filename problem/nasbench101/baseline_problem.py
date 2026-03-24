@@ -11,7 +11,7 @@ import time
 import numpy as np
 from pymoo.core.problem import Problem
 
-from problem.nasbench101_utils import (
+from problem.nasbench101.utils import (
     N_VAR, XL, XU, MIN_PARAMS, MAX_PARAMS,
     _vec_to_arch_str,
 )
@@ -49,7 +49,6 @@ class NASBench101Problem(Problem):
 
             arch_str = _vec_to_arch_str(vec_int, self.bench_db)
             if arch_str is None or arch_str not in self.bench_db:
-                # invalid architecture — penalise
                 F[i, 0] = 1.0
                 F[i, 1] = 1.0
                 continue

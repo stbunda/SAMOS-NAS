@@ -14,7 +14,7 @@ import time
 import numpy as np
 from pymoo.core.problem import Problem
 
-from problem.nasbench201_utils import (
+from problem.nasbench201.utils import (
     N_VAR, XL, XU, DATASET_INFO, _vec_to_arch_str,
 )
 

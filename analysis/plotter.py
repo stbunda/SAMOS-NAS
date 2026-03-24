@@ -14,8 +14,6 @@ import matplotlib.pyplot as plt
 from pymoo.indicators.hv import HV
 from pymoo.indicators.igd_plus import IGDPlus
 
-from problem.nasbench101_utils import _vec_to_arch_str, MIN_PARAMS, MAX_PARAMS
-
 
 # ─── method styling ───────────────────────────────────────────────────────────
 
@@ -25,6 +23,7 @@ COLOURS = {
     'nsga2-single': '#59a14f',
     'samos-rfr':    '#e15759',
     'samos-xgb':    '#b07aa1',
+    'mosmac':       '#76b7b2',
 }
 LABELS = {
     'random':       'Random',
@@ -32,6 +31,7 @@ LABELS = {
     'nsga2-single': 'NSGA-II (no XO, single-pt mut)',
     'samos-rfr':    'SAMOS (RFR surrogate)',
     'samos-xgb':    'SAMOS (XGBoost surrogate)',
+    'mosmac':       'MOSMAC (SMAC3 MO)',
 }
 
 
@@ -100,6 +100,7 @@ def plot_results(
     results_root: str,
     colours: dict = None,
     labels: dict = None,
+    title: str = None,
 ):
     """Plot HV and IGD+ trajectories (mean ± std over seeds) for each method.
 
@@ -113,6 +114,7 @@ def plot_results(
     results_root: root directory containing per-method result folders
     colours:      optional dict overriding COLOURS for specific methods
     labels:       optional dict overriding LABELS for specific methods
+    title:        optional suptitle; defaults to the NASBench-101 description
     """
     _colours = {**COLOURS, **(colours or {})}
     _labels  = {**LABELS,  **(labels  or {})}
@@ -160,11 +162,11 @@ def plot_results(
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
-    fig.suptitle(
+    _title = title if title is not None else (
         f'NASBench-101  --  test_acc@108  x  n_params\n'
-        f'(pop={pop_size}, {n_gen} generations = {pop_size * n_gen} evals, mean ± std over seeds)',
-        y=1.01,
+        f'(pop={pop_size}, {n_gen} generations = {pop_size * n_gen} evals, mean ± std over seeds)'
     )
+    fig.suptitle(_title, y=1.01)
     fig.tight_layout()
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
@@ -194,6 +196,8 @@ def load_val_indicator_trajectories(
     """
     hv_ind  = HV(ref_point=_REF_POINT_VAL)
     igd_ind = IGDPlus(val_pareto_ref)
+
+    from problem.nasbench101_utils import _vec_to_arch_str, MIN_PARAMS, MAX_PARAMS
 
     seed_dir = os.path.join(results_root, method)
     if not os.path.isdir(seed_dir):
@@ -373,6 +377,7 @@ def _arch_counts_across_seeds(entries, bench_db, checkpoint=None):
     checkpoint: If not None, only consider the first *checkpoint* unique
                 architectures per seed.
     """
+    from problem.nasbench101_utils import _vec_to_arch_str
     counts = {}
     for entry in entries:
         log_archs = entry['log_archs']
@@ -429,6 +434,8 @@ def plot_exploration_coverage(
     ylim:             (min, max) for the n_params y-axis (default: (0, 0.25)).
     show:             If True, call plt.show() after saving.
     """
+    from problem.nasbench101_utils import MIN_PARAMS, MAX_PARAMS
+
     # ── load per-seed PKL data ─────────────────────────────────────────────────
     method_entries = {}   # method -> list of {log_archs, hv_x, hv_y}
     for method in methods:

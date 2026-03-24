@@ -32,7 +32,8 @@ from problem.nasbench201_utils import (
 from strategy.genetics.duplicate import NASBench201DuplicateElimination
 from problem.nasbench201_baseline_problem import NASBench201Problem
 from problem.nasbench201_surrogate_problem import SurrogateProblem201
-from strategy.nasbench201_callback import PDNSStyleCallback201
+from strategy.callbacks import NASArchiveCallback
+from problem.nasbench201.utils import _update_archive, _test_archive as _test_archive_201
 from strategy.sampler import ValidRandomSampling201
 from strategy.operations.crossover import NoCrossover, UniformCrossover201
 from strategy.operations.mutation import UniformMutation201, SinglePointMutation201
@@ -85,11 +86,11 @@ def run_single(
         min_flops=val_min_flops,
         max_flops=val_max_flops,
     )
-    callback = PDNSStyleCallback201(
-        bench_db, pareto_ref,
+    callback = NASArchiveCallback(
+        bench_db, pareto_ref, _update_archive, _test_archive_201,
         test_key=test_key,
-        test_min_flops=test_min_flops,
-        test_max_flops=test_max_flops,
+        min_flops=test_min_flops,
+        max_flops=test_max_flops,
     )
     sampling   = ValidRandomSampling201()
     elim_dupes = NASBench201DuplicateElimination()

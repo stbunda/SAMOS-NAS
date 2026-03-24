@@ -113,11 +113,9 @@ def _update_archive(var_arch, obj_arch, var_new, obj_new):
     new_dominated  = False
 
     for idx, obj_existing in enumerate(obj_arch):
-        # existing weakly dominates new → new should not be added
         if obj_new[0] >= obj_existing[0] and obj_new[1] >= obj_existing[1]:
             new_dominated = True
             break
-        # new weakly dominates existing → existing should be removed
         if obj_existing[0] >= obj_new[0] and obj_existing[1] >= obj_new[1]:
             dominated_idx.append(idx)
 
@@ -151,7 +149,6 @@ def _test_archive(var_arch, bench_db: dict, test_key: str, min_flops: float, max
         flops_norm = (entry['flops'] - min_flops) / (max_flops - min_flops)
         test_objs.append((test_err, flops_norm))
 
-    # Keep only non-dominated points
     nd_var, nd_obj = [], []
     for i, (v, o) in enumerate(zip(var_arch, test_objs)):
         dominated = any(

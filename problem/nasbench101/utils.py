@@ -28,7 +28,7 @@ XU = np.array([2] * N_OPS + [1] * N_EDGES, dtype=int)
 # Precomputed upper-triangular indices for the 7×7 adjacency matrix (21 edges).
 _TRIU_I, _TRIU_J = np.triu_indices(7, k=1)
 
-LUT_PATH = os.path.join(os.path.dirname(__file__), 'data', 'nasbench101_lut.pkl')
+LUT_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'nasbench101_lut.pkl')
 
 
 # ─── fast canonical pruner (no ModelSpec / no MD5) ───────────────────────────

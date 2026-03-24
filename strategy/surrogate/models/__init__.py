@@ -46,7 +46,7 @@ except ImportError:
 try:
     from .rnn import RNN, MLP
     _RNN_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     _RNN_AVAILABLE = False
     RNN = None
     MLP = None
@@ -55,7 +55,7 @@ except ImportError:
 try:
     from .gpr_enhanced import GPR_Enhanced
     _GPR_ENHANCED_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     _GPR_ENHANCED_AVAILABLE = False
     GPR_Enhanced = None
 
