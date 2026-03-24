@@ -310,6 +310,7 @@ def generate_latex_table_nasbench101(
         'nsga2-single': 'NSGA-II (no XO, single-pt mut.)',
         'samos-rfr':    'SAMOS (RFR surrogate)',
         'samos-xgb':    'SAMOS (XGBoost surrogate)',
+        'mosmac': "MO-SMAC"
     }
     if labels:
         _labels.update(labels)
