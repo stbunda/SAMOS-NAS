@@ -195,3 +195,64 @@ class SinglePointMutation101(Mutation):
                     break
             # if all retries failed, Xp[i] remains == X[i] (parent)
         return Xp
+
+
+# ─── NASBench-201 mutation operators ─────────────────────────────────────────
+
+from problem.nasbench201_utils import (
+    N_VAR as _NB201_N_VAR,
+    N_OPS_PER_GENE as _NB201_N_OPS,
+    XL as _NB201_XL,
+    XU as _NB201_XU,
+)
+
+
+class UniformMutation201(Mutation):
+    """
+    Uniform mutation for NASBench-201: each gene is independently replaced
+    with probability ``prob`` (default 1/N_VAR = 1/6) by a *different*
+    uniformly-chosen operation.
+
+    All resulting architectures are valid (no validity check needed).
+    """
+
+    def __init__(self, prob: float = None, **kwargs):
+        super().__init__(prob=prob, **kwargs)
+
+    def _do(self, problem, X, **kwargs):
+        X        = X.astype(float)
+        Xp       = np.copy(X)
+        prob_var = self.get_prob_var(problem, size=len(X))
+
+        for i in range(len(X)):
+            for gene in range(_NB201_N_VAR):
+                if np.random.rand() < prob_var[i]:
+                    current = int(round(X[i, gene]))
+                    choices = [v for v in range(_NB201_N_OPS) if v != current]
+                    Xp[i, gene] = float(np.random.choice(choices))
+
+        return Xp
+
+
+class SinglePointMutation201(Mutation):
+    """
+    Single-gene mutation for NASBench-201: exactly one gene is changed per
+    individual to a uniformly-chosen *different* operation.
+
+    All resulting architectures are valid (no validity check needed).
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def _do(self, problem, X, **kwargs):
+        X  = X.astype(float)
+        Xp = np.copy(X)
+
+        for i in range(len(X)):
+            gene    = np.random.randint(0, _NB201_N_VAR)
+            current = int(round(X[i, gene]))
+            choices = [v for v in range(_NB201_N_OPS) if v != current]
+            Xp[i, gene] = float(np.random.choice(choices))
+
+        return Xp

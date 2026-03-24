@@ -123,3 +123,37 @@ class NASBench101DuplicateElimination(DuplicateElimination):
                 seen[arch] = True
 
         return is_duplicate
+
+
+# ─── NASBench-201 duplicate elimination ──────────────────────────────────────
+
+from problem.nasbench201_utils import _vec_to_arch_str as _vec_to_arch_str_201
+
+
+class NASBench201DuplicateElimination(DuplicateElimination):
+    """
+    Duplicate elimination for the categorical NASBench-201 baseline.
+
+    Compares individuals by their canonical arch_str which is trivially
+    computed from the 6-gene vector — no LUT or ModelSpec required.
+    """
+
+    def key(self, x: np.ndarray) -> str:
+        """Return the arch_str for vector x (float or int; rounding applied)."""
+        return _vec_to_arch_str_201(np.round(x).astype(int))
+
+    def _do(self, pop, other, is_duplicate):
+        seen = {}
+
+        if other is not None:
+            for row in np.round(self.func(other)).astype(int):
+                seen[_vec_to_arch_str_201(row)] = True
+
+        for i, row in enumerate(np.round(self.func(pop)).astype(int)):
+            arch = _vec_to_arch_str_201(row)
+            if arch in seen:
+                is_duplicate[i] = True
+            else:
+                seen[arch] = True
+
+        return is_duplicate

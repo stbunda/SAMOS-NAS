@@ -142,7 +142,7 @@ class CrossoverProgram(Crossover):
 from problem.nasbench101_utils import _is_valid_vec as _nb101_is_valid_vec
 
 
-class NoCrossover101(Crossover):
+class NoCrossover(Crossover):
     """
     No crossover: each parent is copied directly into its offspring slot.
     Mirrors NoCrossoverProgram but operates on integer-vector individuals.
@@ -201,5 +201,40 @@ class TwoPointCrossover101(Crossover):
                 # fallback: pass parents through unchanged
                 Xp[0, i] = X[0, i].copy()
                 Xp[1, i] = X[1, i].copy()
+
+        return Xp
+
+
+# ─── NASBench-201 crossover operators ────────────────────────────────────────
+# Note: NoCrossover101 is fully problem-agnostic and works for NASBench-201 too
+# — no separate NoCrossover201 is needed.
+
+
+class UniformCrossover201(Crossover):
+    """
+    Uniform crossover over the 6-gene NASBench-201 vector.
+
+    For each gene independently, offspring 0 takes from parent 0 with
+    probability 0.5 (and parent 1 otherwise); offspring 1 gets the opposite.
+    All resulting architectures are valid (no validity check needed).
+    prob=0.9 controls the per-mating crossover probability.
+    """
+
+    def __init__(self, prob: float = 0.9, **kwargs):
+        super().__init__(n_parents=2, n_offsprings=2, prob=prob, **kwargs)
+
+    def _do(self, problem, X, **kwargs):
+        _, n_matings, n_var = X.shape
+        Xp = np.empty_like(X)
+
+        for i in range(n_matings):
+            # mask[j] == True  → offspring0 inherits gene j from parent0
+            mask = np.random.rand(n_var) < 0.5
+            c0 = X[0, i].copy()
+            c1 = X[1, i].copy()
+            c0[~mask] = X[1, i, ~mask].copy()
+            c1[~mask] = X[0, i, ~mask].copy()
+            Xp[0, i] = c0
+            Xp[1, i] = c1
 
         return Xp
