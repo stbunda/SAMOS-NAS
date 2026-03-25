@@ -781,7 +781,9 @@ def plot_pareto_snapshots(
         squeeze=False,
     )
 
-    # Sort reference PF by F1 for clean line plot
+    # Sort reference PF by F1.
+    # Use scatter (not a connected line) so disconnected fronts (e.g. WFG2)
+    # are rendered correctly without spurious cross-segment lines.
     pf_sorted = pf[np.argsort(pf[:, 0])]
 
     for idx, method in enumerate(methods):
@@ -791,8 +793,8 @@ def plot_pareto_snapshots(
         colour, label = _resolve_style(method, _colours, _labels)
         is_samos = method.startswith('samos-')
 
-        ax.plot(pf_sorted[:, 0], pf_sorted[:, 1],
-                color='black', lw=1.2, ls='--', label='Reference PF', zorder=5)
+        ax.scatter(pf_sorted[:, 0], pf_sorted[:, 1],
+                   c='black', s=4, marker='.', label='Reference PF', zorder=5)
 
         for ci, cd in enumerate(checkpoints_d):
             budget  = cd * n_var

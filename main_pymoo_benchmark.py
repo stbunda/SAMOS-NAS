@@ -50,7 +50,10 @@ def _get_pareto_front(problem, n_obj: int) -> np.ndarray:
         pass
 
     from pymoo.util.ref_dirs import get_reference_directions
-    ref_dirs = get_reference_directions('das-dennis', n_obj, n_partitions=12)
+    # das-dennis gives C(n_obj-1+p, p) points; choose p so we get ~500 pts.
+    _p_for_500 = {2: 499, 3: 30, 4: 14}
+    n_partitions = _p_for_500.get(n_obj, 10)
+    ref_dirs = get_reference_directions('das-dennis', n_obj, n_partitions=n_partitions)
     try:
         pf = problem.pareto_front(ref_dirs)
         if pf is not None:

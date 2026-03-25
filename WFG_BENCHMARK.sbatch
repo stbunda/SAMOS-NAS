@@ -104,7 +104,7 @@ python main_pymoo_benchmark.py \
     --n_gen         "$N_GEN" \
     --experiment_name "$EXPERIMENT_NAME" \
     --no_plot \
-    --overwrite
+#    --overwrite
 
 # ─── copy results back ────────────────────────────────────────────────────────
 DEST="${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}"
