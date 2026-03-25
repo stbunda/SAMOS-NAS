@@ -1,20 +1,23 @@
 """main_pymoo_benchmark.py — Test Random, NSGA-II, SAMOS, and MOSMAC on pymoo MOO benchmarks.
 
-Supported benchmarks: ZDT1-6, DTLZ1-7 (and any other pymoo get_problem() target).
+Supported benchmarks: WFG1-9, ZDT1-6, DTLZ1-7 (and any other pymoo get_problem() target).
 
 Results are saved to:
   results/moo_benchmark/<problem>/<budget_folder>/<method>/seed_<seed>.pkl
 
 Run examples:
-  python main_pymoo_benchmark.py --problem zdt1
-  python main_pymoo_benchmark.py --problem zdt1 --methods random nsga2 samos-xgb mosmac
-  python main_pymoo_benchmark.py --problem dtlz2 --n_obj 3 --methods nsga2 samos-xgb mosmac
+  python main_pymoo_benchmark.py --problem wfg1
+  python main_pymoo_benchmark.py --problem wfg1 --methods random nsga2 samos-xgb mosmac
+  python main_pymoo_benchmark.py --problem wfg2 --n_obj 3 --methods nsga2 samos-xgb mosmac
 """
 
 import argparse
 import os
 import pickle
 import random
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
 
 import numpy as np
 from pymoo.algorithms.moo.nsga2 import NSGA2
@@ -30,7 +33,7 @@ from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from analysis.plotter import plot_results
 from problem.pymoo.surrogate_problem import SurrogateProblemMOO
 from strategy.algorithm.algorithms import RandomGA
-from strategy.callbacks import MOOBenchmarkCallback
+from strategy.callbacks import PymooBenchmarkCallback
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
@@ -63,16 +66,24 @@ def _get_pareto_front(problem, n_obj: int) -> np.ndarray:
 
 def _default_ref_point(problem_name: str, n_obj: int) -> np.ndarray:
     """Heuristic reference point for HV (slightly dominates the full Pareto front)."""
-    if problem_name.lower().startswith('dtlz1'):
+    name = problem_name.lower()
+    if name.startswith('dtlz1'):
         return np.full(n_obj, 0.6)
+    if name.startswith('wfg'):
+        # WFG objective i (1-indexed) is bounded by 2·i; use a 10 % margin.
+        return np.array([2.0 * (i + 1) * 1.1 for i in range(n_obj)])
     return np.full(n_obj, 1.1)
 
 
 def _build_problem(problem_name: str, n_obj: int, n_var: int):
+    name = problem_name.lower()
     kwargs = {}
     if n_var is not None:
         kwargs['n_var'] = n_var
-    if not problem_name.lower().startswith('zdt'):
+    elif name.startswith('wfg'):
+        # WFG requires n_var; standard setup: k=2*(n_obj-1) position params + l=10 distance params.
+        kwargs['n_var'] = 2 * (n_obj - 1) + 10
+    if not name.startswith('zdt'):
         kwargs['n_obj'] = n_obj
     return get_problem(problem_name, **kwargs)
 
@@ -107,22 +118,16 @@ def _mosmac_run(
 
     # ConfigSpace: one Float hyperparameter per decision variable
     cs = ConfigurationSpace(seed=seed)
-    cs.add_hyperparameters([
+    cs.add([
         CSFloat(f'x{i}', (float(_prob.xl[i]), float(_prob.xu[i])))
         for i in range(_prob.n_var)
     ])
-
-    # Target function — records every evaluation in order
-    all_X: list = []
-    all_F: list = []
 
     def target_fn(config, seed=0):
         x = np.array([config[f'x{i}'] for i in range(_prob.n_var)])
         out = {}
         _prob._evaluate(x.reshape(1, -1), out)
         F = out['F'][0]
-        all_X.append(x.copy())
-        all_F.append(F.copy())
         return {name: float(F[j]) for j, name in enumerate(obj_names)}
 
     scenario = Scenario(
@@ -136,8 +141,17 @@ def _mosmac_run(
     smac = MOFacade(scenario=scenario, target_function=target_fn, overwrite=True)
     smac.optimize()
 
-    all_X_arr = np.array(all_X)   # (n_trials, n_var)
-    all_F_arr = np.array(all_F)   # (n_trials, n_obj)
+    # Reconstruct evaluation order from runhistory (safe with n_workers > 1)
+    rh = smac.runhistory
+    sorted_trials = sorted(rh.data.items(), key=lambda kv: kv[1].starttime)
+    all_X_arr = np.array([
+        [rh.ids_config[k.config_id][f'x{i}'] for i in range(_prob.n_var)]
+        for k, _ in sorted_trials
+    ])
+    all_F_arr = np.array([
+        list(v.cost) if hasattr(v.cost, '__iter__') else [v.cost]
+        for _, v in sorted_trials
+    ])
 
     # Build per-"generation" data: one entry per pop_size evaluations
     indicators, obj_pop, var_pop = [], [], []
@@ -171,7 +185,8 @@ def run_single(
     n_infill: int = None,
     n_gen_inner: int = 20,
     inner_pop_size: int = None,
-    warm_start_ratio: float = 0.75,
+    warm_start_ratio: float = 1.0,
+    proxy_obj_indices: list = None,
 ) -> dict:
     np.random.seed(seed)
     random.seed(seed)
@@ -185,7 +200,7 @@ def run_single(
     pf        = _get_pareto_front(problem, problem.n_obj)
     ref_point = _default_ref_point(problem_name, problem.n_obj)
 
-    callback  = MOOBenchmarkCallback(pf, ref_point)
+    callback  = PymooBenchmarkCallback(pf, ref_point)
     sampling  = FloatRandomSampling()
     crossover = SBX(prob=0.9, eta=15)
     mutation  = PM(eta=20)
@@ -207,17 +222,22 @@ def run_single(
         inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
 
         rng = np.random.RandomState(seed)
+        proxy_set = (
+            set(proxy_obj_indices) if proxy_obj_indices is not None
+            else set(range(problem.n_obj))
+        )
         surrogates = [
             (RFR(20, seed=rng.randint(0, 2**31 - 1))
              if samos_type == 'rfr' else
              XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
-            for _ in range(problem.n_obj)
+            if i in proxy_set else None
+            for i in range(problem.n_obj)
         ]
         _nv = problem.n_var
         _xl = problem.xl.copy()
         _xu = problem.xu.copy()
-        factory = lambda surrs, _n=_nv, _l=_xl, _u=_xu: (
-            SurrogateProblemMOO(surrs, _n, _l, _u)
+        factory = lambda surrs, _n=_nv, _l=_xl, _u=_xu, _rp=problem: (
+            SurrogateProblemMOO(surrs, _n, _l, _u, real_problem=_rp)
         )
         algorithm = SAMOS(
             sampling=sampling,
@@ -289,6 +309,7 @@ def main(args):
                 n_gen_inner=args.n_gen_inner,
                 inner_pop_size=args.inner_pop_size,
                 warm_start_ratio=args.warm_start_ratio,
+                proxy_obj_indices=args.proxy_obj_indices,
             )
             with open(out_path, 'wb') as f:
                 pickle.dump(data, f)
@@ -323,16 +344,16 @@ if __name__ == '__main__':
         description='MOO benchmark: Random + NSGA-II + SAMOS + MOSMAC on pymoo problems'
     )
 
-    parser.add_argument('--problem', type=str, default='zdt1',
-                        help='pymoo problem name, e.g. zdt1, zdt2, dtlz2 (default: zdt1)')
+    parser.add_argument('--problem', type=str, default='wfg1',
+                        help='pymoo problem name, e.g. wfg1, wfg2, zdt1, dtlz2 (default: wfg1)')
     parser.add_argument('--n_obj',   type=int, default=2,
-                        help='Number of objectives for DTLZ (ignored for ZDT, default: 2)')
+                        help='Number of objectives for WFG/DTLZ (ignored for ZDT, default: 2)')
     parser.add_argument('--n_var',   type=int, default=None,
                         help='Override the default number of decision variables')
     parser.add_argument('--methods', type=str, nargs='+',
-                        default=['random', 'nsga2', 'samos-xgb', 'mosmac'],
+                        default=['random', 'nsga2', 'samos-xgb',],
                         help='Methods: random, nsga2, samos-rfr, samos-xgb, mosmac')
-    parser.add_argument('--seeds',   type=int, nargs='+', default=list(range(5)))
+    parser.add_argument('--seeds',   type=int, nargs='+', default=list(range(2)))
     parser.add_argument('--pop_size',        type=int,   default=20)
     parser.add_argument('--n_gen',           type=int,   default=50)
     parser.add_argument('--n_doe',           type=int,   default=None,
@@ -343,7 +364,11 @@ if __name__ == '__main__':
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size',  type=int,   default=None,
                         help='SAMOS: inner NSGA-II population size (default: pop_size × 10)')
-    parser.add_argument('--warm_start_ratio', type=float, default=0.75)
+    parser.add_argument('--warm_start_ratio', type=float, default=1.0,
+                        help='SAMOS: warm start ratio (default: 1.0)')
+    parser.add_argument('--proxy_obj_indices', type=int, nargs='+', default=None,
+                        help='SAMOS: indices of objectives to approximate with a surrogate '
+                             '(default: all objectives). E.g. --proxy_obj_indices 0 1')
     parser.add_argument('--experiment_name', type=str,   default='moo_benchmark')
     parser.add_argument('--overwrite',       action='store_true')
 
