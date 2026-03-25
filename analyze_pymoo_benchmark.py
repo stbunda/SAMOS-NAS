@@ -23,10 +23,12 @@ from pymoo.indicators.hv import HV
 
 from analysis.plotter import (
     plot_results,
+    plot_results_grid,
     plot_pareto_snapshots,
     _resolve_style,
     COLOURS,
     LABELS,
+    METHOD_GROUPS,
 )
 from main_pymoo_benchmark import (
     _build_problem,
@@ -216,6 +218,23 @@ def main(args):
             ),
         )
 
+        # ── extended grid plot (written alongside the standard plot) ──────────
+        if args.extended_plot:
+            grid_out = os.path.join(root, 'moo_hv_igd_extended.png')
+            plot_results_grid(
+                methods=args.methods,
+                n_gen=args.n_gen,
+                pop_size=args.pop_size,
+                hv_ceiling=hv_ceiling,
+                out_path=grid_out,
+                results_root=root,
+                title=(
+                    f'{problem.upper()}  —  Extended comparison: HV / IGD+\n'
+                    f'(pop={args.pop_size}, {args.n_gen} gens'
+                    f' = {args.pop_size * args.n_gen} evals, mean \u00b1 std)'
+                ),
+            )
+
         # ── Pareto snapshot plot ──────────────────────────────────────────────
         snap_out = os.path.join(root, 'pareto_snapshots.png')
         plot_pareto_snapshots(
@@ -268,6 +287,8 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoints_d', type=int, nargs='+',
                         default=[10, 25, 50, 100],
                         help='Budget checkpoints as multiples of n_var for Pareto snapshots')
+    parser.add_argument('--extended_plot', action='store_true',
+                        help='Also produce moo_hv_igd_extended.png with group-column layout')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')

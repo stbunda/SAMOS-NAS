@@ -18,21 +18,48 @@ from pymoo.indicators.igd_plus import IGDPlus
 # ─── method styling ───────────────────────────────────────────────────────────
 
 COLOURS = {
-    'random':       '#4e79a7',
-    'nsga2':        '#f28e2b',
-    'nsga2-single': '#59a14f',
-    'samos-rfr':    '#e15759',
-    'samos-xgb':    '#b07aa1',
-    'mosmac':       '#76b7b2',
+    'random':           '#4e79a7',
+    'nsga2':            '#f28e2b',
+    'nsga2-single':     '#59a14f',
+    'samos-rfr':        '#e15759',
+    'samos-xgb':        '#b07aa1',
+    'mosmac':           '#76b7b2',
+    # ── comparison methods ───────────────────────────────────────────────────
+    'ssa-nsga2-default': '#ff9da7',
+    'ssa-nsga2-rfr':     '#c0392b',
+    'ssa-nsga2-xgb':     '#922b21',
+    'gpsaf-default':    '#a0cbe8',
+    'gpsaf-rfr':        '#2980b9',
+    'gpsaf-xgb':        '#1a5276',
+    'cobra':            '#59a14f',
+    'parego':           '#9c755f',
 }
 LABELS = {
-    'random':       'Random',
-    'nsga2':        'NSGA-II (2-pt XO, unif. mut)',
-    'nsga2-single': 'NSGA-II (no XO, single-pt mut)',
-    'samos-rfr':    'SAMOS (RFR surrogate)',
-    'samos-xgb':    'SAMOS (XGBoost surrogate)',
-    'mosmac':       'MOSMAC (SMAC3 MO)',
+    'random':           'Random',
+    'nsga2':            'NSGA-II (2-pt XO, unif. mut)',
+    'nsga2-single':     'NSGA-II (no XO, single-pt mut)',
+    'samos-rfr':        'SAMOS (RFR surrogate)',
+    'samos-xgb':        'SAMOS (XGBoost surrogate)',
+    'mosmac':           'MO-SMAC',
+    # ── comparison methods ───────────────────────────────────────────────────
+    'ssa-nsga2-default': 'SSA-NSGA-II (default)',
+    'ssa-nsga2-rfr':     'SSA-NSGA-II (RFR)',
+    'ssa-nsga2-xgb':     'SSA-NSGA-II (XGBoost)',
+    'gpsaf-default':    'GPSAF-NSGA-II (default)',
+    'gpsaf-rfr':        'GPSAF-NSGA-II (RFR)',
+    'gpsaf-xgb':        'GPSAF-NSGA-II (XGBoost)',
+    'cobra':            'IOC-SAMO-COBRA',
+    'parego':           'ParEGO',
 }
+
+# Groups used by the grid plot.  Each entry is (group_title, [method_keys]).
+METHOD_GROUPS = [
+    ('Baselines',          ['random', 'nsga2']),
+    ('SAMOS',              ['samos-rfr', 'samos-xgb']),
+    ('MO-Bayesian',        ['mosmac', 'parego', 'cobra']),
+    ('SSA-NSGA-II',        ['ssa-nsga2-default', 'ssa-nsga2-rfr', 'ssa-nsga2-xgb']),
+    ('GPSAF-NSGA-II',      ['gpsaf-default', 'gpsaf-rfr', 'gpsaf-xgb']),
+]
 
 
 def _resolve_style(method: str, colours: dict, labels: dict):
@@ -190,6 +217,121 @@ def plot_results(
         f'(pop={pop_size}, {n_gen} generations = {pop_size * n_gen} evals, mean ± std over seeds)'
     )
     fig.suptitle(_title, y=1.01)
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)
+
+
+def plot_results_grid(
+    methods: list,
+    n_gen: int,
+    pop_size: int,
+    hv_ceiling: float,
+    out_path: str,
+    results_root: str,
+    groups: list = None,
+    colours: dict = None,
+    labels: dict = None,
+    title: str = None,
+):
+    """Extended comparison plot: one column per method group, two rows (HV / IGD+).
+
+    Keeps each algorithm family in its own subplot column so lines don't
+    overlap each other, while still sharing the same x-axis scale across
+    columns for easy visual comparison.
+
+    Parameters
+    ----------
+    methods:  all method keys to include (subset determined by groups)
+    groups:   list of ``(group_title, [method_keys])`` tuples.
+              Defaults to ``METHOD_GROUPS`` defined in this module, filtered
+              to only include methods that appear in *methods*.
+    All other parameters: same as ``plot_results``.
+    """
+    _colours = {**COLOURS, **(colours or {})}
+    _labels  = {**LABELS,  **(labels  or {})}
+
+    # Build active groups: keep only groups whose methods intersect with
+    # the requested method list, and filter each group's method list.
+    method_set = set(methods)
+    _groups = groups if groups is not None else METHOD_GROUPS
+    active_groups = [
+        (title_g, [m for m in ms if m in method_set])
+        for title_g, ms in _groups
+        if any(m in method_set for m in ms)
+    ]
+    # Methods not covered by any group go into a catch-all column
+    covered = {m for _, ms in active_groups for m in ms}
+    leftover = [m for m in methods if m not in covered]
+    if leftover:
+        active_groups.append(('Other', leftover))
+
+    n_cols = len(active_groups)
+
+    matplotlib.rcParams.update({
+        'font.size': 9,
+        'axes.titlesize': 9,
+        'axes.labelsize': 9,
+        'legend.fontsize': 8,
+        'figure.dpi': 150,
+    })
+
+    col_width  = 3.5
+    row_height = 3.2
+    fig, axes = plt.subplots(
+        2, n_cols,
+        figsize=(col_width * n_cols, row_height * 2),
+        sharey='row',
+        sharex='col',
+    )
+    # Ensure axes is always 2-D
+    if n_cols == 1:
+        axes = axes.reshape(2, 1)
+
+    for col_idx, (group_title, group_methods) in enumerate(active_groups):
+        ax_hv  = axes[0, col_idx]
+        ax_igd = axes[1, col_idx]
+
+        for method in group_methods:
+            result = load_indicator_trajectories(method, n_gen, results_root)
+            if result is None:
+                print(f'  [plot_grid] No data for method={method}, skipping.')
+                continue
+            hv_mean, hv_std, igd_mean, igd_std = result
+            x      = np.arange(1, len(hv_mean) + 1) * pop_size
+            colour, label = _resolve_style(method, _colours, _labels)
+
+            ax_hv.plot(x, hv_mean, label=label, color=colour, linewidth=1.6)
+            ax_hv.fill_between(x, hv_mean - hv_std, hv_mean + hv_std,
+                               alpha=0.15, color=colour)
+
+            ax_igd.plot(x, igd_mean, label=label, color=colour, linewidth=1.6)
+            ax_igd.fill_between(x, np.maximum(0.0, igd_mean - igd_std), igd_mean + igd_std,
+                                alpha=0.15, color=colour)
+
+        ax_hv.axhline(hv_ceiling, color='black', linestyle='--', linewidth=0.8,
+                      label=f'Opt. HV ({hv_ceiling:.3f})')
+
+        ax_hv.set_title(group_title)
+        ax_hv.legend(fontsize=7, loc='lower right')
+        ax_hv.grid(True, alpha=0.3)
+
+        ax_igd.set_xlabel('Evaluations')
+        ax_igd.legend(fontsize=7, loc='upper right')
+        ax_igd.grid(True, alpha=0.3)
+
+        if col_idx == 0:
+            ax_hv.set_ylabel('Hypervolume ↑')
+            ax_igd.set_ylabel('IGD+ ↓')
+
+    _title = title if title is not None else (
+        f'Extended comparison  —  HV / IGD+ convergence\n'
+        f'(pop={pop_size}, {n_gen} gens = {pop_size * n_gen} evals, mean ± std)'
+    )
+    fig.suptitle(_title, y=1.01, fontsize=10)
     fig.tight_layout()
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)

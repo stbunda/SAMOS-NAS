@@ -27,75 +27,36 @@ from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.optimize import minimize
-from pymoo.problems import get_problem
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from analysis.plotter import plot_results
+from problem.pymoo.benchmark_utils import build_problem, get_pareto_front, default_ref_point
 from problem.pymoo.surrogate_problem import SurrogateProblemMOO
 from strategy.algorithm.algorithms import RandomGA
+from strategy.algorithm.gpsaf import GPSAF, SklearnGPSAF
+from strategy.algorithm.ssansga2 import SSANSGA2, SklearnSSANSGA2
+from strategy.algorithm.cobra import run_cobra
+from strategy.algorithm.parego import run_parego
 from strategy.callbacks import PymooBenchmarkCallback
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
 
-# ─── helpers ──────────────────────────────────────────────────────────────────
+# ─── helpers (thin wrappers kept for backward-compat within this module) ─────
 
 def _get_pareto_front(problem, n_obj: int, min_pts: int = 300) -> np.ndarray:
-    """Retrieve the reference Pareto front from a pymoo problem.
-
-    Some problems (e.g. WFG2) accept n_points but silently cap the count at
-    100 regardless of the requested value.  If fewer than *min_pts* points are
-    returned we fall through to the ref-dirs approach which samples the weight
-    simplex uniformly and typically yields ~500 points.
-    """
-    try:
-        pf = problem.pareto_front(n_points=1000)
-        if pf is not None and len(pf) >= min_pts:
-            return pf
-    except TypeError:
-        pass
-
-    from pymoo.util.ref_dirs import get_reference_directions
-    # das-dennis gives C(n_obj-1+p, p) points; choose p so we get ~500 pts.
-    _p_for_500 = {2: 499, 3: 30, 4: 14}
-    n_partitions = _p_for_500.get(n_obj, 10)
-    ref_dirs = get_reference_directions('das-dennis', n_obj, n_partitions=n_partitions)
-    try:
-        pf = problem.pareto_front(ref_dirs)
-        if pf is not None and len(pf) > 0:
-            return pf
-    except Exception:
-        pass
-
-    # Last resort: no-arg call (may return None or very few points)
-    pf = problem.pareto_front()
-    if pf is None:
-        raise RuntimeError(f'Cannot obtain Pareto front for {problem}.')
-    return pf
+    return get_pareto_front(problem, n_obj, min_pts)
 
 
 def _default_ref_point(problem_name: str, n_obj: int) -> np.ndarray:
-    """Heuristic reference point for HV (slightly dominates the full Pareto front)."""
-    name = problem_name.lower()
-    if name.startswith('dtlz1'):
-        return np.full(n_obj, 0.6)
-    if name.startswith('wfg'):
-        # WFG objective i (1-indexed) is bounded by 2·i; use a 10 % margin.
-        return np.array([2.0 * (i + 1) * 1.1 for i in range(n_obj)])
-    return np.full(n_obj, 1.1)
+    return default_ref_point(problem_name, n_obj)
 
 
-def _build_problem(problem_name: str, n_obj: int, n_var: int):
-    name = problem_name.lower()
-    kwargs = {}
-    if n_var is not None:
-        kwargs['n_var'] = n_var
-    elif name.startswith('wfg'):
-        # WFG requires n_var; standard setup: k=2*(n_obj-1) position params + l=10 distance params.
-        kwargs['n_var'] = 2 * (n_obj - 1) + 10
-    if not name.startswith('zdt'):
-        kwargs['n_obj'] = n_obj
-    return get_problem(problem_name, **kwargs)
+def _build_problem(problem_name: str, n_obj: int, n_var: int = None):
+    return build_problem(problem_name, n_obj, n_var)
+
+
+
 
 
 # ─── MOSMAC on continuous benchmarks ─────────────────────────────────────────
@@ -184,6 +145,9 @@ def _mosmac_run(
     return {'indicators': indicators, 'obj_pop': obj_pop, 'var_pop': var_pop}
 
 
+
+
+
 # ─── single run ───────────────────────────────────────────────────────────────
 
 def run_single(
@@ -204,9 +168,13 @@ def run_single(
     np.random.seed(seed)
     random.seed(seed)
 
-    # MOSMAC manages its own problem construction internally
+    # Standalone runners manage their own problem construction internally
     if method == 'mosmac':
         return _mosmac_run(problem_name, seed, pop_size, n_gen, n_obj, n_var)
+    if method == 'parego':
+        return run_parego(problem_name, seed, pop_size, n_gen, n_obj, n_var)
+    if method == 'cobra':
+        return run_cobra(problem_name, seed, pop_size, n_gen, n_obj, n_var, n_doe, n_infill)
 
     # ── build problem ─────────────────────────────────────────────────────────
     problem   = _build_problem(problem_name, n_obj, n_var)
@@ -277,6 +245,64 @@ def run_single(
             eliminate_duplicates=False,
             dedup_key_fn=lambda x: tuple(np.round(x, 4).tolist()),
         )
+
+    elif method.startswith('gpsaf-') or method.startswith('ssa-nsga2-'):
+        if method.startswith('gpsaf-'):
+            algo_family    = 'gpsaf'
+            surrogate_type = method[len('gpsaf-'):]
+        else:
+            algo_family    = 'ssa-nsga2'
+            surrogate_type = method[len('ssa-nsga2-'):]
+
+        if surrogate_type not in ('default', 'rfr', 'xgb'):
+            raise ValueError(f'Unknown surrogate type {surrogate_type!r} in {method!r}')
+
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+
+        if surrogate_type in ('rfr', 'xgb'):
+            rng = np.random.RandomState(seed)
+            sklearn_models = [
+                (RFR(20, seed=rng.randint(0, 2**31 - 1))
+                 if surrogate_type == 'rfr' else
+                 XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
+                for _ in range(problem.n_obj)
+            ]
+
+        if algo_family == 'ssa-nsga2':
+            if surrogate_type == 'default':
+                algorithm = SSANSGA2(
+                    n_infills=n_infill_,
+                    surr_pop_size=inner_ps,
+                    surr_n_gen=n_gen_inner,
+                    n_initial_doe=n_doe_,
+                )
+            else:
+                algorithm = SklearnSSANSGA2(
+                    sklearn_models=sklearn_models,
+                    n_infills=n_infill_,
+                    surr_pop_size=inner_ps,
+                    surr_n_gen=n_gen_inner,
+                    n_initial_doe=n_doe_,
+                )
+        else:  # gpsaf
+            base_algo = NSGA2(pop_size=pop_size, crossover=crossover, mutation=mutation)
+            if surrogate_type == 'default':
+                algorithm = GPSAF(
+                    base_algo,
+                    n_initial_doe=n_doe_,
+                    n_max_infills=n_infill_,
+                    beta=n_gen_inner,
+                )
+            else:
+                algorithm = SklearnGPSAF(
+                    base_algo,
+                    sklearn_models=sklearn_models,
+                    n_initial_doe=n_doe_,
+                    n_max_infills=n_infill_,
+                    beta=n_gen_inner,
+                )
 
     else:
         raise ValueError(f'Unknown method: {method!r}')
@@ -372,7 +398,9 @@ if __name__ == '__main__':
                         help='Override the default number of decision variables')
     parser.add_argument('--methods', type=str, nargs='+',
                         default=['random', 'nsga2', 'samos-xgb',],
-                        help='Methods: random, nsga2, samos-rfr, samos-xgb, mosmac')
+                        help='Methods: random, nsga2, samos-rfr, samos-xgb, mosmac, parego, '
+                             'cobra, gpsaf-default, gpsaf-rfr, gpsaf-xgb, '
+                             'ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb')
     parser.add_argument('--seeds',   type=int, nargs='+', default=list(range(2)))
     parser.add_argument('--pop_size',        type=int,   default=20)
     parser.add_argument('--n_gen',           type=int,   default=50)
@@ -389,7 +417,7 @@ if __name__ == '__main__':
     parser.add_argument('--proxy_obj_indices', type=int, nargs='+', default=None,
                         help='SAMOS: indices of objectives to approximate with a surrogate '
                              '(default: all objectives). E.g. --proxy_obj_indices 0 1')
-    parser.add_argument('--experiment_name', type=str,   default='moo_benchmark')
+    parser.add_argument('--experiment_name', type=str,   default='pymoo_benchmark')
     parser.add_argument('--overwrite',       action='store_true')
     parser.add_argument('--no_plot',         action='store_true',
                         help='Skip plot generation (useful for cluster runs)')
