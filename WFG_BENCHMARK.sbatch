@@ -23,6 +23,8 @@
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline
 
+mkdir -p slurm_logs_wfg_benchmark
+
 # ─── tunable parameters ───────────────────────────────────────────────────────
 N_OBJ=${N_OBJ:-2}
 POP_SIZE=${POP_SIZE:-20}
