@@ -203,14 +203,16 @@ def plot_results(
     axes[0].set_title('Hypervolume (Higher is better)')
     axes[0].set_xlabel('Evaluations')
     axes[0].set_ylabel('Hypervolume')
-    axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
     axes[1].set_title('IGD+ (Lower is better)')
     axes[1].set_xlabel('Evaluations')
     axes[1].set_ylabel('IGD+')
-    axes[1].legend()
     axes[1].grid(True, alpha=0.3)
+
+    # Create shared legend below both plots
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
 
     _title = title if title is not None else (
         f'NASBench-101  --  test_acc@108  x  n_params\n'
@@ -267,7 +269,7 @@ def plot_results_grid(
     covered = {m for _, ms in active_groups for m in ms}
     leftover = [m for m in methods if m not in covered]
     if leftover:
-        active_groups.append(('Other', leftover))
+        active_groups.append(('SAMOS', leftover))
 
     n_cols = len(active_groups)
 
@@ -316,11 +318,11 @@ def plot_results_grid(
                       label=f'Opt. HV ({hv_ceiling:.3f})')
 
         ax_hv.set_title(group_title)
-        ax_hv.legend(fontsize=7, loc='lower right')
+        ax_hv.legend(fontsize=7, loc='upper center', bbox_to_anchor=(0.5, -0.25), ncol=2, frameon=True)
         ax_hv.grid(True, alpha=0.3)
 
         ax_igd.set_xlabel('Evaluations')
-        ax_igd.legend(fontsize=7, loc='upper right')
+        ax_igd.legend(fontsize=7, loc='upper center', bbox_to_anchor=(0.5, -0.25), ncol=2, frameon=True)
         ax_igd.grid(True, alpha=0.3)
 
         if col_idx == 0:
@@ -497,14 +499,16 @@ def plot_val_results(
     axes[0].set_title('Hypervolume (Higher is better)')
     axes[0].set_xlabel('Evaluations')
     axes[0].set_ylabel('Hypervolume')
-    axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
     axes[1].set_title('IGD+ (Lower is better)')
     axes[1].set_xlabel('Evaluations')
     axes[1].set_ylabel('IGD+')
-    axes[1].legend()
     axes[1].grid(True, alpha=0.3)
+
+    # Create shared legend below both plots
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
 
     fig.suptitle(
         f'NASBench-101  --  val_acc@12  x  n_params\n'
