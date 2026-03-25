@@ -48,7 +48,7 @@ SEED=${SLURM_ARRAY_TASK_ID}
 
 SAMOS_XGB="samos-xgb-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
 SAMOS_RFR="samos-rfr-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
-EXPERIMENT_NAME="pymoo_benchmark_extended/${N_OBJ}_obj"
+EXPERIMENT_NAME="pymoo_benchmark/${N_OBJ}_obj"
 
 # ─── scratch setup ─────────────────────────────────────────────────────────────
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
