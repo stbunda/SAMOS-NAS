@@ -151,11 +151,14 @@ def _mosmac_run(
     smac = MOFacade(scenario=scenario, target_function=target_fn, overwrite=True)
     smac.optimize()
 
-    # Reconstruct evaluation order from runhistory (safe with n_workers > 1)
+    # Reconstruct evaluation order from runhistory.
     rh = smac.runhistory
-    sorted_trials = sorted(rh.data.items(), key=lambda kv: kv[1].starttime)
+    _internal = getattr(rh, 'data', None) or getattr(rh, '_data', {})
+    sorted_trials = sorted(_internal.items(), key=lambda kv: kv[1].starttime)
+    # config_id → Configuration mapping: try public then private attribute
+    _id2cfg = getattr(rh, 'ids_config', None) or getattr(rh, '_ids_config', {})
     all_X_arr = np.array([
-        [rh.ids_config[k.config_id][f'x{i}'] for i in range(_prob.n_var)]
+        [_id2cfg[k.config_id][f'x{i}'] for i in range(_prob.n_var)]
         for k, _ in sorted_trials
     ])
     all_F_arr = np.array([
