@@ -216,10 +216,20 @@ def run_single(
         )
 
     elif method.startswith('samos-'):
-        samos_type = method.split('-', 1)[1]
-        n_doe_    = n_doe          if n_doe          is not None else pop_size
-        n_infill_ = n_infill       if n_infill       is not None else pop_size
-        inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+        parts = method.split('-')
+        samos_type   = parts[1]   # 'xgb' or 'rfr'
+        # parse optional i{INT} / g{INT} tokens embedded in the method name
+        # e.g. 'samos-xgb-i200-g20' → inner_pop_size=200, n_gen_inner=20
+        _n_gen_inner = n_gen_inner
+        _inner_ps    = inner_pop_size
+        for tok in parts[2:]:
+            if tok.startswith('i') and tok[1:].isdigit():
+                _inner_ps = int(tok[1:])
+            elif tok.startswith('g') and tok[1:].isdigit():
+                _n_gen_inner = int(tok[1:])
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = _inner_ps if _inner_ps is not None else pop_size * 10
 
         rng = np.random.RandomState(seed)
         proxy_set = (
@@ -247,7 +257,7 @@ def run_single(
             mutation=mutation,
             n_doe=n_doe_,
             n_infill=n_infill_,
-            n_gen_inner=n_gen_inner,
+            n_gen_inner=_n_gen_inner,
             ga_pop_size=inner_ps,
             warm_start_ratio=warm_start_ratio,
             use_subset_selection=True,
@@ -273,11 +283,7 @@ def run_single(
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main(args):
-    n_infill = args.n_infill if args.n_infill is not None else args.pop_size
-    n_doe    = args.n_doe    if args.n_doe    is not None else args.pop_size
-    budget_folder = (
-        f"G{args.n_gen}_GI{args.n_gen_inner}_P{args.pop_size}_I{n_infill}_D{n_doe}"
-    )
+    budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
     results_root = os.path.join(
         'results', args.experiment_name, args.problem, budget_folder
     )
@@ -316,27 +322,28 @@ def main(args):
             print(f'  Saved -> {out_path}')
 
     # ── plot ──────────────────────────────────────────────────────────────────
-    _prob      = _build_problem(args.problem, args.n_obj, args.n_var)
-    _pf        = _get_pareto_front(_prob, _prob.n_obj)
-    _rp        = _default_ref_point(args.problem, _prob.n_obj)
-    hv_ceiling = float(HV(ref_point=_rp)(_pf))
-    print(f'\n  Reference front: {len(_pf)} pts  hv_ceiling={hv_ceiling:.6f}')
+    if not args.no_plot:
+        _prob      = _build_problem(args.problem, args.n_obj, args.n_var)
+        _pf        = _get_pareto_front(_prob, _prob.n_obj)
+        _rp        = _default_ref_point(args.problem, _prob.n_obj)
+        hv_ceiling = float(HV(ref_point=_rp)(_pf))
+        print(f'\n  Reference front: {len(_pf)} pts  hv_ceiling={hv_ceiling:.6f}')
 
-    plot_out = os.path.join(results_root, 'moo_hv_igd.png')
-    print('Generating HV / IGD+ plot ...')
-    plot_results(
-        methods=args.methods,
-        n_gen=args.n_gen,
-        pop_size=args.pop_size,
-        hv_ceiling=hv_ceiling,
-        out_path=plot_out,
-        results_root=results_root,
-        title=(
-            f'{args.problem.upper()}  —  HV / IGD+ trajectories\n'
-            f'(pop={args.pop_size}, {args.n_gen} gens'
-            f' = {args.pop_size * args.n_gen} evals, mean ± std)'
-        ),
-    )
+        plot_out = os.path.join(results_root, 'moo_hv_igd.png')
+        print('Generating HV / IGD+ plot ...')
+        plot_results(
+            methods=args.methods,
+            n_gen=args.n_gen,
+            pop_size=args.pop_size,
+            hv_ceiling=hv_ceiling,
+            out_path=plot_out,
+            results_root=results_root,
+            title=(
+                f'{args.problem.upper()}  —  HV / IGD+ trajectories\n'
+                f'(pop={args.pop_size}, {args.n_gen} gens'
+                f' = {args.pop_size * args.n_gen} evals, mean ± std)'
+            ),
+        )
 
 
 if __name__ == '__main__':
@@ -371,6 +378,8 @@ if __name__ == '__main__':
                              '(default: all objectives). E.g. --proxy_obj_indices 0 1')
     parser.add_argument('--experiment_name', type=str,   default='moo_benchmark')
     parser.add_argument('--overwrite',       action='store_true')
+    parser.add_argument('--no_plot',         action='store_true',
+                        help='Skip plot generation (useful for cluster runs)')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')

@@ -35,6 +35,30 @@ LABELS = {
 }
 
 
+def _resolve_style(method: str, colours: dict, labels: dict):
+    """Return (colour, label) for *method*, with prefix-matching fallback.
+
+    Exact match is tried first.  If not found, the longest COLOURS key that
+    is a strict prefix of *method* (followed by '-') is used, allowing e.g.
+    'samos-xgb-i200-g20' to inherit 'samos-xgb' colour/label.
+    """
+    colour = colours.get(method)
+    label  = labels.get(method)
+    if colour is None or label is None:
+        best_key, best_len = None, 0
+        for key in colours:
+            prefix = key + '-'
+            if method.startswith(prefix) and len(prefix) > best_len:
+                best_key, best_len = key, len(prefix)
+        if best_key is not None:
+            if colour is None:
+                colour = colours[best_key]
+            if label is None:
+                suffix = method[len(best_key):].lstrip('-')
+                label  = labels.get(best_key, best_key) + f' [{suffix}]'
+    return colour, (label if label is not None else method)
+
+
 # ─── data loading ─────────────────────────────────────────────────────────────
 
 def load_indicator_trajectories(method: str, n_gen: int, results_root: str):
@@ -136,8 +160,7 @@ def plot_results(
             continue
         hv_mean, hv_std, igd_mean, igd_std = result
         x      = np.arange(1, len(hv_mean) + 1) * pop_size
-        colour = _colours.get(method)
-        label  = _labels.get(method, method)
+        colour, label = _resolve_style(method, _colours, _labels)
 
         axes[0].plot(x, hv_mean, label=label, color=colour, linewidth=1.8)
         axes[0].fill_between(x, hv_mean - hv_std, hv_mean + hv_std,
@@ -613,4 +636,194 @@ def plot_exploration_coverage(
     print(f'  [OK] Saved: {out_path}')
     if show:
         plt.show()
+    plt.close(fig)
+
+
+# ─── 50 % attainment surface ──────────────────────────────────────────────────
+
+def compute_attainment_surface(fronts_2d: list, q: float = 0.5, n_grid: int = 500):
+    """Compute the q-attainment surface for a collection of 2-D Pareto fronts.
+
+    Parameters
+    ----------
+    fronts_2d : list of (n_i, 2) arrays
+        One ND-front per seed (minimisation space, F1 on axis 0, F2 on axis 1).
+    q         : float
+        Quantile level (0.5 == 50 % attainment surface).
+    n_grid    : int
+        Number of evenly spaced points along the F1 axis.
+
+    Returns
+    -------
+    f1_grid : (n_grid,) array
+    f2_att  : (n_grid,) array  — q-th quantile of achievable F2 across seeds.
+    """
+    if not fronts_2d:
+        return np.array([]), np.array([])
+
+    all_f1 = np.concatenate([f[:, 0] for f in fronts_2d])
+    f1_min, f1_max = all_f1.min(), all_f1.max()
+    f1_grid = np.linspace(f1_min, f1_max, n_grid)
+
+    f2_matrix = np.full((len(fronts_2d), n_grid), np.inf)
+    for s, front in enumerate(fronts_2d):
+        if len(front) == 0:
+            continue
+        f1s, f2s = front[:, 0], front[:, 1]
+        order = np.argsort(f1s)
+        f1s, f2s = f1s[order], f2s[order]
+        for gi, q1 in enumerate(f1_grid):
+            mask = f1s <= q1
+            if mask.any():
+                f2_matrix[s, gi] = f2s[mask].min()
+
+    # replace inf with nan before computing quantile so seeds that do not
+    # reach a given F1 value do not distort the surface (they are ignored)
+    f2_matrix[np.isinf(f2_matrix)] = np.nan
+    with np.errstate(all='ignore'):
+        f2_att = np.nanquantile(f2_matrix, q, axis=0)
+    return f1_grid, f2_att
+
+
+# ─── Pareto snapshot plot ─────────────────────────────────────────────────────
+
+def _load_nd_fronts_at_gen(method: str, gen_idx: int, results_root: str,
+                            is_samos: bool) -> list:
+    """Return a list of (n_nd, 2) ND-front arrays, one per seed pkl file.
+
+    For SAMOS methods the archive at gen_idx already holds all evaluated
+    points; for others (random, nsga2, mosmac) we stack obj_pop[0..gen_idx]
+    and then filter to the non-dominated front.
+    """
+    from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+    seed_dir = os.path.join(results_root, method)
+    if not os.path.isdir(seed_dir):
+        return []
+
+    fronts = []
+    for pkl_file in sorted(os.listdir(seed_dir)):
+        if not pkl_file.endswith('.pkl'):
+            continue
+        with open(os.path.join(seed_dir, pkl_file), 'rb') as fh:
+            data = pickle.load(fh)
+        obj_pop = data.get('obj_pop', [])
+        if not obj_pop:
+            continue
+        idx = min(gen_idx, len(obj_pop) - 1)
+        if is_samos:
+            F = np.asarray(obj_pop[idx])
+        else:
+            F = np.vstack([np.asarray(obj_pop[g]) for g in range(idx + 1)
+                           if len(obj_pop[g]) > 0])
+        if len(F) == 0 or F.ndim != 2 or F.shape[1] < 2:
+            continue
+        nd_idx = NonDominatedSorting().do(F, only_non_dominated_front=True)
+        fronts.append(F[nd_idx][:, :2])
+    return fronts
+
+
+def plot_pareto_snapshots(
+    methods: list,
+    n_gen: int,
+    pop_size: int,
+    n_var: int,
+    pf: np.ndarray,
+    out_path: str,
+    results_root: str,
+    checkpoints_d: list = None,
+    colours: dict = None,
+    labels: dict = None,
+    title: str = None,
+):
+    """Plot 50 % attainment surfaces at several evaluation budget checkpoints.
+
+    One subplot per method, arranged in a grid.  Each subplot shows the
+    reference Pareto front (dashed black) and four attainment surface curves
+    coloured light-to-dark according to the evaluation budget.
+
+    Parameters
+    ----------
+    methods        : list of method keys (sub-directories in results_root)
+    n_gen          : total number of outer generations
+    pop_size       : evaluations per generation
+    n_var          : number of decision variables (used to compute checkpoints)
+    pf             : reference Pareto front (N, 2), minimisation space
+    out_path       : output PNG path
+    results_root   : root directory containing per-method result folders
+    checkpoints_d  : list of multipliers d such that budget = d * n_var
+                     (default: [10, 25, 50, 100])
+    """
+    if checkpoints_d is None:
+        checkpoints_d = [10, 25, 50, 100]
+
+    _colours = {**COLOURS, **(colours or {})}
+    _labels  = {**LABELS,  **(labels  or {})}
+
+    checkpoint_palette = ['#c6dbef', '#6baed6', '#2171b5', '#08306b']
+    while len(checkpoint_palette) < len(checkpoints_d):
+        checkpoint_palette.append('#08306b')
+
+    n_methods = len(methods)
+    n_cols    = min(3, n_methods)
+    n_rows    = int(np.ceil(n_methods / n_cols))
+
+    matplotlib.rcParams.update({
+        'font.size': 10,
+        'axes.titlesize': 10,
+        'axes.labelsize': 9,
+        'legend.fontsize': 8,
+        'figure.dpi': 150,
+    })
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(5.5 * n_cols, 4.5 * n_rows),
+        squeeze=False,
+    )
+
+    # Sort reference PF by F1 for clean line plot
+    pf_sorted = pf[np.argsort(pf[:, 0])]
+
+    for idx, method in enumerate(methods):
+        row, col = divmod(idx, n_cols)
+        ax = axes[row][col]
+
+        colour, label = _resolve_style(method, _colours, _labels)
+        is_samos = method.startswith('samos-')
+
+        ax.plot(pf_sorted[:, 0], pf_sorted[:, 1],
+                color='black', lw=1.2, ls='--', label='Reference PF', zorder=5)
+
+        for ci, cd in enumerate(checkpoints_d):
+            budget  = cd * n_var
+            gen_idx = max(0, min(budget // pop_size - 1, n_gen - 1))
+            fronts  = _load_nd_fronts_at_gen(method, gen_idx, results_root, is_samos)
+            if not fronts:
+                continue
+            f1_grid, f2_att = compute_attainment_surface(fronts)
+            if len(f1_grid) == 0:
+                continue
+            # step-plot: attainment surfaces are staircase-shaped
+            ax.step(f1_grid, f2_att, where='post',
+                    color=checkpoint_palette[ci], lw=1.6,
+                    label=f'{budget} evals ({cd}d)', zorder=4 - ci)
+
+        ax.set_title(label)
+        ax.set_xlabel('$f_1$')
+        ax.set_ylabel('$f_2$')
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.25)
+
+    # Hide unused subplots
+    for idx in range(n_methods, n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row][col].set_visible(False)
+
+    _title = title or 'Pareto snapshot — 50 % attainment surfaces'
+    fig.suptitle(_title, y=1.01)
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
     plt.close(fig)
