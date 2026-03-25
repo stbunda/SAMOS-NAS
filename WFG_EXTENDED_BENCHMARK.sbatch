@@ -108,9 +108,7 @@ python main_pymoo_benchmark.py \
     --n_obj         "$N_OBJ" \
     --n_var         "$N_VAR" \
     --methods       \
-        random nsga2 \
-        "$SAMOS_XGB" "$SAMOS_RFR" \
-        mosmac parego cobra \
+        parego cobra \
         ssa-nsga2-default ssa-nsga2-rfr ssa-nsga2-xgb \
         gpsaf-default gpsaf-rfr gpsaf-xgb \
     --seeds         "$SEED" \
