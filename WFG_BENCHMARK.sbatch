@@ -60,7 +60,15 @@ rsync -aR \
     strategy \
     utils \
     main_pymoo_benchmark.py \
+    analyze_pymoo_benchmark.py \
     "$SCRATCH_DIRECTORY/"
+
+# Pre-populate scratch with any already-computed results for this problem so
+# that seeds that are already done are skipped (when --overwrite is not set).
+RESULTS_SRC="results/${EXPERIMENT_NAME}/${PROBLEM}"
+if [ -d "$RESULTS_SRC" ]; then
+    rsync -a "$RESULTS_SRC/" "${SCRATCH_DIRECTORY}/${RESULTS_SRC}/"
+fi
 
 cd "$SCRATCH_DIRECTORY"
 
