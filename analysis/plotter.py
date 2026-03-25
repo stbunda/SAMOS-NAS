@@ -805,10 +805,12 @@ def plot_pareto_snapshots(
             f1_grid, f2_att = compute_attainment_surface(fronts)
             if len(f1_grid) == 0:
                 continue
-            # step-plot: attainment surfaces are staircase-shaped
-            ax.step(f1_grid, f2_att, where='post',
-                    color=checkpoint_palette[ci], lw=1.6,
-                    label=f'{budget} evals ({cd}d)', zorder=4 - ci)
+            # Use scatter (not a connected step-line) so disconnected fronts
+            # (e.g. WFG2) don't have spurious lines drawn across the gaps.
+            valid = ~np.isnan(f2_att)
+            ax.scatter(f1_grid[valid], f2_att[valid],
+                       c=checkpoint_palette[ci], s=3, marker='.',
+                       label=f'{budget} evals ({cd}d)', zorder=4 - ci)
 
         ax.set_title(label)
         ax.set_xlabel('$f_1$')

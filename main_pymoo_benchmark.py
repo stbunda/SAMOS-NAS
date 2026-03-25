@@ -40,11 +40,17 @@ from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
-def _get_pareto_front(problem, n_obj: int) -> np.ndarray:
-    """Retrieve the reference Pareto front from a pymoo problem."""
+def _get_pareto_front(problem, n_obj: int, min_pts: int = 300) -> np.ndarray:
+    """Retrieve the reference Pareto front from a pymoo problem.
+
+    Some problems (e.g. WFG2) accept n_points but silently cap the count at
+    100 regardless of the requested value.  If fewer than *min_pts* points are
+    returned we fall through to the ref-dirs approach which samples the weight
+    simplex uniformly and typically yields ~500 points.
+    """
     try:
         pf = problem.pareto_front(n_points=1000)
-        if pf is not None:
+        if pf is not None and len(pf) >= min_pts:
             return pf
     except TypeError:
         pass
@@ -56,11 +62,12 @@ def _get_pareto_front(problem, n_obj: int) -> np.ndarray:
     ref_dirs = get_reference_directions('das-dennis', n_obj, n_partitions=n_partitions)
     try:
         pf = problem.pareto_front(ref_dirs)
-        if pf is not None:
+        if pf is not None and len(pf) > 0:
             return pf
     except Exception:
         pass
 
+    # Last resort: no-arg call (may return None or very few points)
     pf = problem.pareto_front()
     if pf is None:
         raise RuntimeError(f'Cannot obtain Pareto front for {problem}.')
