@@ -88,11 +88,15 @@ def run_cobra(
         F_so_far = all_F[:hi]
         nd_idx   = NonDominatedSorting().do(F_so_far, only_non_dominated_front=True)
         nd_F     = F_so_far[nd_idx]
-        indicators.append({
-            'hv':       float(hv_ind(nd_F)),
-            'igd_plus': float(igd_ind(nd_F)),
-        })
+        hv_val  = float(hv_ind(nd_F))
+        igd_val = float(igd_ind(nd_F))
+        indicators.append({'hv': hv_val, 'igd_plus': igd_val})
         obj_pop.append(all_F[lo:hi].copy())
         var_pop.append(all_X[lo:hi].copy())
+        print(
+            f'[COBRA] gen {step:4d}/{n_gen - 1}'
+            f'  hv={hv_val:.4f}'
+            f'  igd+={igd_val:.4f}'
+        )
 
     return {'indicators': indicators, 'obj_pop': obj_pop, 'var_pop': var_pop}

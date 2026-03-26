@@ -31,9 +31,9 @@ from analysis.plotter import (
     METHOD_GROUPS,
 )
 from main_pymoo_benchmark import (
-    _build_problem,
-    _get_pareto_front,
-    _default_ref_point,
+    build_problem,
+    get_pareto_front,
+    default_ref_point,
 )
 
 
@@ -196,9 +196,9 @@ def main(args):
             if args.n_var is not None
             else (2 * (args.n_obj - 1) + 10 if problem.startswith('wfg') else None)
         )
-        prob_obj  = _build_problem(problem, args.n_obj, n_var)
-        pf        = _get_pareto_front(prob_obj, prob_obj.n_obj)
-        ref_point = _default_ref_point(problem, prob_obj.n_obj)
+        prob_obj  = build_problem(problem, args.n_obj, n_var)
+        pf        = get_pareto_front(prob_obj, prob_obj.n_obj)
+        ref_point = default_ref_point(problem, prob_obj.n_obj)
         hv_ceiling = float(HV(ref_point=ref_point)(pf))
         print(f'  PF pts={len(pf)}  hv_ceiling={hv_ceiling:.6f}')
 

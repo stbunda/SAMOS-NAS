@@ -60,9 +60,9 @@ def _mosmac_run(
     from smac import Scenario
     from smac.facade.multi_objective_facade import MultiObjectiveFacade as MOFacade
 
-    _prob     = _build_problem(problem_name, n_obj, n_var)
-    pf        = _get_pareto_front(_prob, _prob.n_obj)
-    ref_point = _default_ref_point(problem_name, _prob.n_obj)
+    _prob     = build_problem(problem_name, n_obj, n_var)
+    pf        = get_pareto_front(_prob, _prob.n_obj)
+    ref_point = default_ref_point(problem_name, _prob.n_obj)
     hv_ind    = HV(ref_point=ref_point)
     igd_ind   = IGDPlus(pf)
 
@@ -159,9 +159,9 @@ def run_single(
         return run_cobra(problem_name, seed, pop_size, n_gen, n_obj, n_var, n_doe, n_infill)
 
     # ── build problem ─────────────────────────────────────────────────────────
-    problem   = _build_problem(problem_name, n_obj, n_var)
-    pf        = _get_pareto_front(problem, problem.n_obj)
-    ref_point = _default_ref_point(problem_name, problem.n_obj)
+    problem   = build_problem(problem_name, n_obj, n_var)
+    pf        = get_pareto_front(problem, problem.n_obj)
+    ref_point = default_ref_point(problem_name, problem.n_obj)
 
     callback  = PymooBenchmarkCallback(pf, ref_point)
     sampling  = FloatRandomSampling()
@@ -344,9 +344,9 @@ def main(args):
 
     # ── plot ──────────────────────────────────────────────────────────────────
     if not args.no_plot:
-        _prob      = _build_problem(args.problem, args.n_obj, args.n_var)
-        _pf        = _get_pareto_front(_prob, _prob.n_obj)
-        _rp        = _default_ref_point(args.problem, _prob.n_obj)
+        _prob      = build_problem(args.problem, args.n_obj, args.n_var)
+        _pf        = get_pareto_front(_prob, _prob.n_obj)
+        _rp        = default_ref_point(args.problem, _prob.n_obj)
         hv_ceiling = float(HV(ref_point=_rp)(_pf))
         print(f'\n  Reference front: {len(_pf)} pts  hv_ceiling={hv_ceiling:.6f}')
 
