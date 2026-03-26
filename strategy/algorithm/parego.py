@@ -1,17 +1,155 @@
-"""ParEGO runner for the pymoo benchmark (SMAC3 HPOFacade + ParEGO scalarisation).
+"""ParEGO — Pareto Efficient Global Optimisation.
 
-Exposes a single ``run_parego`` function with the same return contract as the
-other standalone runners (mosmac, cobra): a dict with keys
-``indicators``, ``obj_pop``, ``var_pop``.
+Single module exposing ``run_parego`` as the benchmark runner entry-point.
+
+Algorithm
+---------
+ParEGO [1] decomposes a multi-objective problem into a sequence of scalarised
+single-objective problems via augmented Tchebycheff:
+
+    s(w, f) = max_j(w_j * f_j) + ρ · Σ_j(w_j * f_j)
+
+A fresh weight vector w is sampled each iteration from the unit simplex [1,
+Section III-A].  The scalarised *objective* is replaced here by the
+scalarised *Expected Improvement* [2], so the surrogate is never evaluated
+on the true objective directly.
+
+Implementation details
+----------------------
+- Backbone  : ``strategy.algorithm.bo.BayesianOptimizer``
+- Surrogate : ``GaussianProcessSurrogate`` (Matern-5/2, one GP per objective)
+- Acquisition: per-objective Expected Improvement (``expected_improvement``) [2]
+- Scalarisation: augmented Tchebycheff on EI values, ρ = 0.05 [1]
+- Inner solver: ``LBFGSBSolver`` (multi-start L-BFGS-B)
+- Selection  : random (all batch candidates accepted) [3]
+- Weight sampling: uniform Dirichlet (negative-log-uniform) [1]
+
+References
+----------
+[1] J. Knowles, "ParEGO: a hybrid algorithm with on-line landscape
+    approximation for expensive multiobjective optimization problems,"
+    IEEE Trans. Evol. Comput., vol. 10, no. 1, pp. 50–66, Feb. 2006.
+    https://doi.org/10.1109/TEVC.2005.851274
+
+[2] D. R. Jones, M. Schonlau, and W. J. Welch, "Efficient global
+    optimization of expensive black-box functions," J. Glob. Optim.,
+    vol. 13, no. 4, pp. 455–492, 1998.
+    https://doi.org/10.1023/A:1008306431147
+
+[3] M. Lukovic, Y. Tian, and W. Ma, "Diversity-guided multi-objective
+    Bayesian optimization with batch evaluations," in Proc. NeurIPS,
+    2020.  Source code: https://github.com/yunshengtian/DGEMO
+    (``mobo/algorithms.py``, ``mobo/solver/parego/``,
+    ``mobo/selection.py::Random``)
+
+Acknowledgments
+---------------
+This implementation was developed with the assistance of GitHub Copilot.
 """
 
+from __future__ import annotations
+
+from typing import Optional
+
 import numpy as np
-from pymoo.indicators.hv import HV
-from pymoo.indicators.igd_plus import IGDPlus
-from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
-from problem.pymoo.benchmark_utils import build_problem, get_pareto_front, default_ref_point
+from .bo.base import BayesianOptimizer, SurrogateModel, InnerSolver
+from .bo.surrogate import GaussianProcessSurrogate
+from .bo.acquisition import expected_improvement
+from .bo.solver import LBFGSBSolver
 
+# Augmented Tchebycheff regularisation weight (standard ParEGO literature)
+_RHO: float = 0.05
+
+
+# ---------------------------------------------------------------------------
+# Acquisition function: scalarised EI
+# ---------------------------------------------------------------------------
+
+def _neg_scalarised_ei(
+    x_norm: np.ndarray,
+    surrogate: SurrogateModel,
+    y_min_norm: np.ndarray,
+    weights: np.ndarray,
+) -> float:
+    """Negative augmented-Tchebycheff scalarisation of EI (for minimisation).
+
+    The per-objective EI values are combined as:
+        s = max_j(w_j · ei_j)  +  ρ · Σ_j(w_j · ei_j)
+
+    Returns the *negative* so that ``scipy.optimize.minimize`` maximises EI.
+    """
+    x_2d = x_norm.reshape(1, -1)
+    mu, std = surrogate.predict(x_2d, return_std=True)      # (1, m)
+    ei      = expected_improvement(mu, std, y_min_norm)     # (1, m)
+    wei     = weights * ei[0]                               # (m,)
+    return float(-(np.max(wei) + _RHO * np.sum(wei)))
+
+
+# ---------------------------------------------------------------------------
+# Weight sampling
+# ---------------------------------------------------------------------------
+
+def _sample_weight(n_obj: int, rng: np.random.RandomState) -> np.ndarray:
+    """Sample uniformly from the (n_obj-1)-simplex via negative-log transform."""
+    w = -np.log(rng.uniform(1e-12, 1.0, size=n_obj))
+    return w / w.sum()
+
+
+# ---------------------------------------------------------------------------
+# ParEGO algorithm
+# ---------------------------------------------------------------------------
+
+class ParEGO(BayesianOptimizer):
+    """ParEGO multi-objective Bayesian Optimisation.
+
+    Inherits all infrastructure from ``BayesianOptimizer``; only three hooks
+    need to be implemented here.
+
+    Parameters
+    ----------
+    n_restarts_inner : int
+        Number of random restarts for the inner L-BFGS-B per candidate.
+    All other parameters are forwarded to ``BayesianOptimizer``.
+    """
+
+    def __init__(self, *args, n_restarts_inner: int = 3, **kwargs) -> None:
+        self.n_restarts_inner = n_restarts_inner
+        super().__init__(*args, **kwargs)
+
+    def _build_surrogate(self) -> GaussianProcessSurrogate:
+        return GaussianProcessSurrogate(n_var=self.n_var)
+
+    def _build_solver(self) -> LBFGSBSolver:
+        return LBFGSBSolver(n_restarts=self.n_restarts_inner)
+
+    def _ask(
+        self,
+        surrogate: SurrogateModel,
+        y_min_norm: np.ndarray,
+        X_norm: np.ndarray,
+        Y_norm: np.ndarray,
+    ) -> np.ndarray:
+        """Generate one candidate per slot, each with a fresh weight vector."""
+        # Build one weight vector per candidate (shape: pop_size × n_obj)
+        weights = np.vstack([
+            _sample_weight(self.n_obj, self.rng) for _ in range(self.pop_size)
+        ])
+
+        return self.solver.solve(
+            surrogate=surrogate,
+            y_min_norm=y_min_norm,
+            n_candidates=self.pop_size,
+            n_var=self.n_var,
+            rng=self.rng,
+            acq_fn=_neg_scalarised_ei,
+            weights=weights,            # per-candidate weights forwarded via kw_c
+        )
+
+
+# ---------------------------------------------------------------------------
+# Public benchmark entry-point
+# ---------------------------------------------------------------------------
 
 def run_parego(
     problem_name: str,
@@ -19,84 +157,33 @@ def run_parego(
     pop_size: int,
     n_gen: int,
     n_obj: int = 2,
-    n_var: int = None,
+    n_var: Optional[int] = None,
+    max_train_n: int = 500,
+    n_restarts_inner: int = 3,
 ) -> dict:
-    """Run SMAC3 HPOFacade + ParEGO on a continuous pymoo benchmark.
+    """Run ParEGO on a continuous pymoo benchmark.
 
-    Drop-in replacement for ``run_mosmac``: identical Scenario/ConfigSpace and
-    run-history extraction; differs only in the scalarisation strategy.
+    Drop-in replacement for other benchmark runners; returns a dict with keys
+    ``indicators``, ``obj_pop``, ``var_pop``.
 
-    Returns
-    -------
-    dict with keys ``indicators``, ``obj_pop``, ``var_pop``.
+    Parameters
+    ----------
+    problem_name, seed, pop_size, n_gen, n_obj, n_var :
+        Standard benchmark runner arguments.
+    max_train_n : int
+        Cap on GP training set size (random subsample when exceeded).
+    n_restarts_inner : int
+        L-BFGS-B restarts per candidate (inner solver).
     """
-    from ConfigSpace import ConfigurationSpace, Float as CSFloat
-    from smac import HyperparameterOptimizationFacade as HPOFacade, Scenario
-    from smac.multi_objective.parego import ParEGO
-
-    prob      = build_problem(problem_name, n_obj, n_var)
-    pf        = get_pareto_front(prob, prob.n_obj)
-    ref_point = default_ref_point(problem_name, prob.n_obj)
-    hv_ind    = HV(ref_point=ref_point)
-    igd_ind   = IGDPlus(pf)
-
-    n_trials  = pop_size * n_gen
-    obj_names = [f'obj{i}' for i in range(prob.n_obj)]
-
-    cs = ConfigurationSpace(seed=seed)
-    cs.add([
-        CSFloat(f'x{i}', (float(prob.xl[i]), float(prob.xu[i])))
-        for i in range(prob.n_var)
-    ])
-
-    def target_fn(config, seed=0):
-        x = np.array([config[f'x{i}'] for i in range(prob.n_var)])
-        out = {}
-        prob._evaluate(x.reshape(1, -1), out)
-        F = out['F'][0]
-        return {name: float(F[j]) for j, name in enumerate(obj_names)}
-
-    scenario = Scenario(
-        configspace=cs,
-        objectives=obj_names,
-        n_trials=n_trials,
+    algo = ParEGO(
+        problem_name=problem_name,
+        n_obj=n_obj,
+        n_var=n_var,
         seed=seed,
-        deterministic=True,
-        n_workers=1,
+        pop_size=pop_size,
+        n_gen=n_gen,
+        max_train_n=max_train_n,
+        n_restarts_inner=n_restarts_inner,
     )
-    smac = HPOFacade(
-        scenario=scenario,
-        target_function=target_fn,
-        multi_objective_algorithm=ParEGO(scenario),
-        overwrite=True,
-    )
-    smac.optimize()
+    return algo.run()
 
-    rh = smac.runhistory
-    _internal = getattr(rh, 'data', None) or getattr(rh, '_data', {})
-    sorted_trials = sorted(_internal.items(), key=lambda kv: kv[1].starttime)
-    _id2cfg = getattr(rh, 'ids_config', None) or getattr(rh, '_ids_config', {})
-    all_X_arr = np.array([
-        [_id2cfg[k.config_id][f'x{i}'] for i in range(prob.n_var)]
-        for k, _ in sorted_trials
-    ])
-    all_F_arr = np.array([
-        list(v.cost) if hasattr(v.cost, '__iter__') else [v.cost]
-        for _, v in sorted_trials
-    ])
-
-    indicators, obj_pop, var_pop = [], [], []
-    for step in range(n_gen):
-        lo        = step * pop_size
-        hi        = (step + 1) * pop_size
-        F_so_far  = all_F_arr[:hi]
-        nd_idx    = NonDominatedSorting().do(F_so_far, only_non_dominated_front=True)
-        nd_F      = F_so_far[nd_idx]
-        indicators.append({
-            'hv':       float(hv_ind(nd_F)),
-            'igd_plus': float(igd_ind(nd_F)),
-        })
-        obj_pop.append(all_F_arr[lo:hi].copy())
-        var_pop.append(all_X_arr[lo:hi].copy())
-
-    return {'indicators': indicators, 'obj_pop': obj_pop, 'var_pop': var_pop}

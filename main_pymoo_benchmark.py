@@ -41,24 +41,6 @@ from strategy.callbacks import PymooBenchmarkCallback
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
-
-# ─── helpers (thin wrappers kept for backward-compat within this module) ─────
-
-def _get_pareto_front(problem, n_obj: int, min_pts: int = 300) -> np.ndarray:
-    return get_pareto_front(problem, n_obj, min_pts)
-
-
-def _default_ref_point(problem_name: str, n_obj: int) -> np.ndarray:
-    return default_ref_point(problem_name, n_obj)
-
-
-def _build_problem(problem_name: str, n_obj: int, n_var: int = None):
-    return build_problem(problem_name, n_obj, n_var)
-
-
-
-
-
 # ─── MOSMAC on continuous benchmarks ─────────────────────────────────────────
 
 def _mosmac_run(
