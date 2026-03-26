@@ -237,11 +237,16 @@ def batch_infill_criteria_score(x, batch, lower, upper, surrogateModels, bestPre
     pf_indicator[ndf[0]] = True
     tempPF_pf = tempPF[pf_indicator]
     tempPF_dominated = tempPF[~pf_indicator]
+
+    if len(tempPF_pf) == 0:
+        # fast_non_dominated_sorting returned an empty first front for non-empty input.
+        # This should not happen; return large value to signal invalid configuration.
+        return np.finfo(np.float64).max
     
     for potentialSolution in tempPF_dominated:
         if not any(np.sum(np.equal(potentialSolution, paretoFrontier), axis=1)==paretoFrontier.shape[1]):
             logicBool = np.all(tempPF_pf<= potentialSolution, axis=1)
-            penalty = np.max(-1 + np.prod(1 + (potentialSolution - tempPF_pf[logicBool]), axis=1))
+            penalty = np.max(-1 + np.prod(1 + (potentialSolution - tempPF_pf[logicBool]), axis=1), initial=0)
             penalties += penalty
     
     myhv = hypervolume(tempPF_pf, ref)
