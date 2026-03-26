@@ -25,6 +25,9 @@ def rescale_constr(x):
     maxG = np.max(x)
     minG = np.min(x)
     divider = maxG - minG
+    if divider == 0:
+        # Constant constraint: no range to rescale, identity scaling
+        divider = 1.0
     x = x/divider
     return x, divider
 

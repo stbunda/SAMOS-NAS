@@ -63,7 +63,7 @@ def run_cobra(
             return [out['F'][0].astype(float), np.array([-1.0])]
 
         def cheap_evaluate(self, x):
-            return [np.full(prob.n_obj, np.nan), np.array([-1.0])]
+            return [np.full(prob.n_obj, np.nan), np.array([np.nan])]
 
     cobra = cheap_SAMO_COBRA_Init(
         _CobraAdapter(),
