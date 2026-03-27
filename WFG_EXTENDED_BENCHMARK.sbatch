@@ -2,10 +2,10 @@
 # ─── WFG_EXTENDED_BENCHMARK.sbatch ───────────────────────────────────────────
 # Run ALL comparison methods on a single WFG problem for 30 independent seeds:
 #   Baselines  : random, nsga2
-#   SAMOS      : samos-xgb-i{IPS}-g{NGI}, samos-rfr-i{IPS}-g{NGI}
+#   SAMOS      : samos-xgb-i{IPS}-g{NGI}
 #   MO-Bayesian: mosmac, parego, cobra
-#   SSA-NSGA-II: ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb
-#   GPSAF-NSGA-II: gpsaf-default, gpsaf-rfr, gpsaf-xgb
+#   SSA-NSGA-II: ssa-nsga2-default, ssa-nsga2-xgb
+#   GPSAF-NSGA-II: gpsaf-default, gpsaf-xgb
 #
 # All methods share the same evaluation budget: pop_size × n_gen evaluations.
 # After each seed, results are rsync'd back and analyze_pymoo_benchmark.py is
@@ -22,9 +22,9 @@
 #SBATCH -J wfg_extended
 #SBATCH -c 2
 # Uncomment ONE of the following:
-#SBATCH --array=0-79              # Seeds 0-9   (8 methods × 10 seeds)
-## --array=80-159            # Seeds 10-19 (8 methods × 10 seeds)
-## --array=160-239           # Seeds 20-29 (8 methods × 10 seeds)
+#SBATCH --array=0-59              # Seeds 0-9   (6 methods × 10 seeds)
+## --array=60-119            # Seeds 10-19 (6 methods × 10 seeds)
+## --array=120-179           # Seeds 20-29 (6 methods × 10 seeds)
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -48,12 +48,11 @@ TOTAL_BUDGET=$(( 100 * N_VAR ))
 N_GEN=$(( TOTAL_BUDGET / POP_SIZE ))
 
 SAMOS_XGB="samos-xgb-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
-SAMOS_RFR="samos-rfr-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
 EXPERIMENT_NAME="pymoo_benchmark/${N_OBJ}_obj"
 
 # ─── method/seed from array task ID ──────────────────────────────────────────
-METHODS=(parego cobra ssa-nsga2-default ssa-nsga2-rfr ssa-nsga2-xgb gpsaf-default gpsaf-rfr gpsaf-xgb)
-N_METHODS=${#METHODS[@]}   # 8
+METHODS=(parego cobra ssa-nsga2-default ssa-nsga2-xgb gpsaf-default gpsaf-xgb)
+N_METHODS=${#METHODS[@]}   # 6
 SEED=$(( SLURM_ARRAY_TASK_ID / N_METHODS ))
 METHOD_IDX=$(( SLURM_ARRAY_TASK_ID % N_METHODS ))
 METHOD=${METHODS[$METHOD_IDX]}
@@ -112,7 +111,6 @@ echo "N_GEN             = $N_GEN"
 echo "POP_SIZE          = $POP_SIZE"
 echo "BUDGET            = $TOTAL_BUDGET"
 echo "SAMOS_XGB         = $SAMOS_XGB"
-echo "SAMOS_RFR         = $SAMOS_RFR"
 
 # ─── run: loop over all 9 problems ────────────────────────────────────────────
 for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
@@ -138,9 +136,11 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
         "${SCRATCH_DIRECTORY}/results/${EXPERIMENT_NAME}/${PROBLEM}/" \
         "$DEST/"
     echo "Results copied to $DEST"
+done
 
-    # ── inline analysis ────────────────────────────────────────────────────────
-    cd "${SLURM_SUBMIT_DIR}"
+# ─── analysis: run from submit dir after all results are rsync'd back ─────────
+cd "${SLURM_SUBMIT_DIR}"
+for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
     flock --wait 60 \
         "${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}/.analyze.lock" \
         python analyze_pymoo_benchmark.py \
@@ -150,18 +150,16 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
             --n_var           "$N_VAR" \
             --methods         \
                 random nsga2 \
-                "$SAMOS_XGB" "$SAMOS_RFR" \
+                "$SAMOS_XGB" \
                 mosmac parego cobra \
-                ssa-nsga2-default ssa-nsga2-rfr ssa-nsga2-xgb \
-                gpsaf-default gpsaf-rfr gpsaf-xgb \
+                ssa-nsga2-default ssa-nsga2-xgb \
+                gpsaf-default gpsaf-xgb \
             --pop_size        "$POP_SIZE" \
             --n_gen           "$N_GEN" \
             --checkpoints_d   10 25 50 100 \
             --extended_plot \
         && echo "Analysis updated for $PROBLEM seed ${SEED}" \
         || echo "[WARN] Analysis failed or timed out for $PROBLEM seed ${SEED} (non-fatal)"
-
-    cd "$SCRATCH_DIRECTORY"
 done
 
 echo ""
