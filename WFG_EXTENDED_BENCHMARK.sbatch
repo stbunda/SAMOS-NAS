@@ -164,3 +164,7 @@ done
 
 echo ""
 echo "Date (done)       = $(date)"
+
+# ─── scratch cleanup ──────────────────────────────────────────────────────────
+echo "Removing scratch directory: $SCRATCH_DIRECTORY"
+rm -rf "$SCRATCH_DIRECTORY"
