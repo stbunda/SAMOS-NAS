@@ -27,7 +27,7 @@ This implementation was developed with the assistance of GitHub Copilot.
 from .base import BayesianOptimizer, SurrogateModel, InnerSolver
 from .surrogate import GaussianProcessSurrogate
 from .acquisition import expected_improvement
-from .solver import LBFGSBSolver
+from .solver import LBFGSBSolver, EASolver
 
 __all__ = [
     "BayesianOptimizer",
@@ -36,4 +36,5 @@ __all__ = [
     "GaussianProcessSurrogate",
     "expected_improvement",
     "LBFGSBSolver",
+    "EASolver",
 ]

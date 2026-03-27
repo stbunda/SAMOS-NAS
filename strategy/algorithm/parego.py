@@ -20,7 +20,11 @@ Implementation details
 - Surrogate : ``GaussianProcessSurrogate`` (Matern-5/2, one GP per objective)
 - Acquisition: per-objective Expected Improvement (``expected_improvement``) [2]
 - Scalarisation: augmented Tchebycheff on EI values, ρ = 0.05 [1]
-- Inner solver: ``LBFGSBSolver`` (multi-start L-BFGS-B)
+- Inner solver: ``LBFGSBSolver`` (multi-start L-BFGS-B, default) or
+                ``EASolver`` (Differential Evolution)
+- DoE        : Latin Hypercube Sampling (default) or uniform random
+- GP subset  : fitness-based — best ``max_train_n`` points by scalarised
+               augmented Tchebycheff using a fresh weight vector [1, line 24]
 - Selection  : random (all batch candidates accepted) [3]
 - Weight sampling: uniform Dirichlet (negative-log-uniform) [1]
 
@@ -56,7 +60,7 @@ import numpy as np
 from .bo.base import BayesianOptimizer, SurrogateModel, InnerSolver
 from .bo.surrogate import GaussianProcessSurrogate
 from .bo.acquisition import expected_improvement
-from .bo.solver import LBFGSBSolver
+from .bo.solver import LBFGSBSolver, EASolver
 
 # Augmented Tchebycheff regularisation weight (standard ParEGO literature)
 _RHO: float = 0.05
@@ -103,25 +107,72 @@ def _sample_weight(n_obj: int, rng: np.random.RandomState) -> np.ndarray:
 class ParEGO(BayesianOptimizer):
     """ParEGO multi-objective Bayesian Optimisation.
 
-    Inherits all infrastructure from ``BayesianOptimizer``; only three hooks
-    need to be implemented here.
+    Inherits all infrastructure from ``BayesianOptimizer``; only the hooks
+    below need to be implemented here.
 
     Parameters
     ----------
     n_restarts_inner : int
-        Number of random restarts for the inner L-BFGS-B per candidate.
+        Number of random restarts per candidate (L-BFGS-B solver only).
+    inner_solver : {'lbfgsb', 'ea'}
+        Inner solver for acquisition maximisation.
+        ``'lbfgsb'`` — multi-start L-BFGS-B (default).
+        ``'ea'``     — Differential Evolution; matches EVOLALG in the
+                       ParEGO pseudocode (initialises from archive + random).
+    ea_pop_size : int
+        DE population size (EA solver only, default 20).
+    ea_max_iter : int
+        Maximum DE generations per candidate (EA solver only, default 100).
+    doe : {'lhs', 'random'}
+        Initial design of experiments strategy (forwarded to base).
+        ``'lhs'`` — Latin Hypercube Sampling (default).
+        ``'random'`` — uniform random.
     All other parameters are forwarded to ``BayesianOptimizer``.
     """
 
-    def __init__(self, *args, n_restarts_inner: int = 3, **kwargs) -> None:
-        self.n_restarts_inner = n_restarts_inner
+    def __init__(
+        self,
+        *args,
+        n_restarts_inner: int = 3,
+        inner_solver: str = 'lbfgsb',
+        ea_pop_size: int = 20,
+        ea_max_iter: int = 100,
+        **kwargs,
+    ) -> None:
+        self.n_restarts_inner  = n_restarts_inner
+        self.inner_solver_type = inner_solver
+        self.ea_pop_size       = ea_pop_size
+        self.ea_max_iter       = ea_max_iter
         super().__init__(*args, **kwargs)
 
     def _build_surrogate(self) -> GaussianProcessSurrogate:
         return GaussianProcessSurrogate(n_var=self.n_var)
 
-    def _build_solver(self) -> LBFGSBSolver:
+    def _build_solver(self) -> InnerSolver:
+        if self.inner_solver_type == 'ea':
+            return EASolver(pop_size=self.ea_pop_size, max_iter=self.ea_max_iter)
         return LBFGSBSolver(n_restarts=self.n_restarts_inner)
+
+    def _get_training_set(self) -> tuple[np.ndarray, np.ndarray]:
+        """Fitness-based subset selection (pseudocode DACE, line 24).
+
+        When the archive exceeds ``max_train_n``, a fresh weight vector is
+        sampled and the best ``max_train_n`` points by augmented Tchebycheff
+        scalar fitness are kept for GP training.
+        """
+        N      = len(self.all_X)
+        X_norm = self._norm_X(self.all_X)
+        F_min  = self.all_F.min(axis=0)
+        F_rng  = np.maximum(self.all_F.max(axis=0) - F_min, 1e-10)
+        Y_norm = (self.all_F - F_min) / F_rng
+
+        if N > self.max_train_n:
+            w      = _sample_weight(self.n_obj, self.rng)         # (m,)
+            wei    = w * Y_norm                                    # (N, m)
+            scalar = np.max(wei, axis=1) + _RHO * np.sum(wei, axis=1)  # (N,)
+            idx    = np.argsort(scalar)[:self.max_train_n]
+            return X_norm[idx], Y_norm[idx]
+        return X_norm, Y_norm
 
     def _ask(
         self,
@@ -131,7 +182,6 @@ class ParEGO(BayesianOptimizer):
         Y_norm: np.ndarray,
     ) -> np.ndarray:
         """Generate one candidate per slot, each with a fresh weight vector."""
-        # Build one weight vector per candidate (shape: pop_size × n_obj)
         weights = np.vstack([
             _sample_weight(self.n_obj, self.rng) for _ in range(self.pop_size)
         ])
@@ -143,6 +193,7 @@ class ParEGO(BayesianOptimizer):
             n_var=self.n_var,
             rng=self.rng,
             acq_fn=_neg_scalarised_ei,
+            X_existing=X_norm,          # used by EASolver for archive-seeded init
             weights=weights,            # per-candidate weights forwarded via kw_c
         )
 
@@ -159,7 +210,11 @@ def run_parego(
     n_obj: int = 2,
     n_var: Optional[int] = None,
     max_train_n: int = 500,
+    doe: str = 'lhs',
+    inner_solver: str = 'lbfgsb',
     n_restarts_inner: int = 3,
+    ea_pop_size: int = 20,
+    ea_max_iter: int = 100,
 ) -> dict:
     """Run ParEGO on a continuous pymoo benchmark.
 
@@ -171,9 +226,20 @@ def run_parego(
     problem_name, seed, pop_size, n_gen, n_obj, n_var :
         Standard benchmark runner arguments.
     max_train_n : int
-        Cap on GP training set size (random subsample when exceeded).
+        Cap on GP training set size; excess points are pruned by
+        fitness-based selection rather than random subsampling.
+    doe : {'lhs', 'random'}
+        Initial design strategy.  ``'lhs'`` (default) uses Latin Hypercube
+        Sampling for better space coverage; ``'random'`` uses uniform random.
+    inner_solver : {'lbfgsb', 'ea'}
+        Acquisition maximiser.  ``'lbfgsb'`` (default) uses multi-start
+        L-BFGS-B; ``'ea'`` uses Differential Evolution (EVOLALG-style).
     n_restarts_inner : int
-        L-BFGS-B restarts per candidate (inner solver).
+        L-BFGS-B restarts per candidate (only when ``inner_solver='lbfgsb'``).
+    ea_pop_size : int
+        DE population size (only when ``inner_solver='ea'``).
+    ea_max_iter : int
+        Maximum DE generations per candidate (only when ``inner_solver='ea'``).
     """
     algo = ParEGO(
         problem_name=problem_name,
@@ -183,7 +249,11 @@ def run_parego(
         pop_size=pop_size,
         n_gen=n_gen,
         max_train_n=max_train_n,
+        doe=doe,
+        inner_solver=inner_solver,
         n_restarts_inner=n_restarts_inner,
+        ea_pop_size=ea_pop_size,
+        ea_max_iter=ea_max_iter,
     )
     return algo.run()
 

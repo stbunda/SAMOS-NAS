@@ -38,6 +38,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Sequence
 
 import numpy as np
+from scipy.stats.qmc import LatinHypercube as _LHS
 from pymoo.indicators.hv import HV
 from pymoo.indicators.igd_plus import IGDPlus
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
@@ -75,9 +76,16 @@ class InnerSolver(ABC):
         n_candidates: int,
         n_var: int,
         rng: np.random.RandomState,
+        X_existing: Optional[np.ndarray] = None,
         **kwargs,
     ) -> np.ndarray:
-        """Return candidate matrix of shape (n_candidates, n_var) in [0,1]^d."""
+        """Return candidate matrix of shape (n_candidates, n_var) in [0,1]^d.
+
+        Parameters
+        ----------
+        X_existing : (N, n_var) array of current archive in normalised space.
+            Solvers may use this to initialise their inner population (e.g. EA).
+        """
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +122,14 @@ class BayesianOptimizer:
         pop_size: int = 20,
         n_gen: int = 50,
         max_train_n: int = 500,
+        doe: str = 'lhs',
     ) -> None:
         self.problem_name = problem_name
         self.seed         = seed
         self.pop_size     = pop_size
         self.n_gen        = n_gen
         self.max_train_n  = max_train_n
+        self.doe          = doe
 
         self.rng = np.random.RandomState(seed)
         np.random.seed(seed)
@@ -229,7 +239,12 @@ class BayesianOptimizer:
         var_pop:    list = []
 
         # ── generation 0: initial DoE ────────────────────────────────────────
-        X_init = self.xl + self.rng.uniform(size=(self.pop_size, self.n_var)) * (self.xu - self.xl)
+        if self.doe == 'lhs':
+            lhs_seed = int(self.rng.randint(0, 2 ** 31))
+            X_unit = _LHS(d=self.n_var, seed=lhs_seed).random(n=self.pop_size)
+        else:
+            X_unit = self.rng.uniform(size=(self.pop_size, self.n_var))
+        X_init = self.xl + X_unit * (self.xu - self.xl)
         F_init = self._evaluate(X_init)
         self.all_X = X_init.copy()
         self.all_F = F_init.copy()
