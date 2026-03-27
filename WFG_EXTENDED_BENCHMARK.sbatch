@@ -21,7 +21,10 @@
 
 #SBATCH -J wfg_extended
 #SBATCH -c 2
-#SBATCH --array=0-239          # 8 methods × 30 seeds = 240 tasks
+# Uncomment ONE of the following:
+#SBATCH --array=0-79              # Seeds 0-9   (8 methods × 10 seeds)
+## --array=80-159            # Seeds 10-19 (8 methods × 10 seeds)
+## --array=160-239           # Seeds 20-29 (8 methods × 10 seeds)
 #SBATCH --dependency=afterok:$SLURM_ARRAY_JOB_ID%8  # Wait for prev seed (all 8 methods)
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
