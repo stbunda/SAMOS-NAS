@@ -40,7 +40,7 @@ N_OBJ=${N_OBJ:-2}
 POP_SIZE=${POP_SIZE:-20}
 N_GEN_INNER=${N_GEN_INNER:-20}
 INNER_POP_SIZE=${INNER_POP_SIZE:-200}
-PROBLEM=${PROBLEM:-wfg1}
+
 
 # ─── derived parameters ───────────────────────────────────────────────────────
 N_VAR=$(( 2 * (N_OBJ - 1) + 10 ))
@@ -67,7 +67,6 @@ else
     mkdir -p "$SCRATCH_DIRECTORY"
 fi
 
-RESULTS_SRC="results/${EXPERIMENT_NAME}/${PROBLEM}"
 RSYNC_SOURCES=(
     analysis
     problem/pymoo
@@ -76,7 +75,12 @@ RSYNC_SOURCES=(
     main_pymoo_benchmark.py
     analyze_pymoo_benchmark.py
 )
-[ -d "$RESULTS_SRC" ] && RSYNC_SOURCES+=("$RESULTS_SRC")
+# Pre-copy any already-computed results for all 9 problems (skip-logic in main.py
+# will avoid re-running existing seeds on scratch)
+for _P in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
+    _SRC="results/${EXPERIMENT_NAME}/${_P}"
+    [ -d "$_SRC" ] && RSYNC_SOURCES+=("$_SRC")
+done
 rsync -aR "${RSYNC_SOURCES[@]}" "$SCRATCH_DIRECTORY/"
 
 cd "$SCRATCH_DIRECTORY"
@@ -100,7 +104,6 @@ echo "Date              = $(date)"
 echo "Hostname          = $(hostname -s)"
 echo "Working Directory = $(pwd)"
 echo "Scratch Directory = $SCRATCH_DIRECTORY"
-echo "PROBLEM           = $PROBLEM"
 echo "SEED              = $SEED"
 echo "METHOD            = $METHOD"
 echo "N_OBJ             = $N_OBJ"
@@ -111,47 +114,55 @@ echo "BUDGET            = $TOTAL_BUDGET"
 echo "SAMOS_XGB         = $SAMOS_XGB"
 echo "SAMOS_RFR         = $SAMOS_RFR"
 
-# ─── run ──────────────────────────────────────────────────────────────────────
-python main_pymoo_benchmark.py \
-    --problem       "$PROBLEM" \
-    --n_obj         "$N_OBJ" \
-    --n_var         "$N_VAR" \
-    --methods       "$METHOD" \
-    --seeds         "$SEED" \
-    --pop_size      "$POP_SIZE" \
-    --n_gen         "$N_GEN" \
-    --experiment_name "$EXPERIMENT_NAME" \
-    --no_plot \
-#    --overwrite
+# ─── run: loop over all 9 problems ────────────────────────────────────────────
+for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
+    echo ""
+    echo "─── Problem: $PROBLEM  method: $METHOD  seed: $SEED"
 
-# ─── copy results back ────────────────────────────────────────────────────────
-DEST="${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}"
-mkdir -p "$DEST"
-rsync -a \
-    "${SCRATCH_DIRECTORY}/results/${EXPERIMENT_NAME}/${PROBLEM}/" \
-    "$DEST/"
-
-echo "Results copied to $DEST"
-
-# ─── inline analysis (runs in submit dir so plots update incrementally) ───────
-cd "${SLURM_SUBMIT_DIR}"
-
-flock --wait 60 \
-    "${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}/.analyze.lock" \
-    python analyze_pymoo_benchmark.py \
+    python main_pymoo_benchmark.py \
+        --problem       "$PROBLEM" \
+        --n_obj         "$N_OBJ" \
+        --n_var         "$N_VAR" \
+        --methods       "$METHOD" \
+        --seeds         "$SEED" \
+        --pop_size      "$POP_SIZE" \
+        --n_gen         "$N_GEN" \
         --experiment_name "$EXPERIMENT_NAME" \
-        --problems        "$PROBLEM" \
-        --n_obj           "$N_OBJ" \
-        --n_var           "$N_VAR" \
-        --methods         \
-            random nsga2 \
-            "$SAMOS_XGB" "$SAMOS_RFR" \
-            mosmac parego cobra \
-            ssa-nsga2-default ssa-nsga2-rfr ssa-nsga2-xgb \
-            gpsaf-default gpsaf-rfr gpsaf-xgb \
-        --pop_size        "$POP_SIZE" \
-        --n_gen           "$N_GEN" \
-        --checkpoints_d   10 25 50 100 \
-        --extended_plot \
-    && echo "Analysis updated for seed ${SEED}" \
-    || echo "[WARN] Analysis failed or timed out for seed ${SEED} (non-fatal)"
+        --no_plot
+    #    --overwrite
+
+    # ── copy results back ──────────────────────────────────────────────────────
+    DEST="${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}"
+    mkdir -p "$DEST"
+    rsync -a \
+        "${SCRATCH_DIRECTORY}/results/${EXPERIMENT_NAME}/${PROBLEM}/" \
+        "$DEST/"
+    echo "Results copied to $DEST"
+
+    # ── inline analysis ────────────────────────────────────────────────────────
+    cd "${SLURM_SUBMIT_DIR}"
+    flock --wait 60 \
+        "${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}/.analyze.lock" \
+        python analyze_pymoo_benchmark.py \
+            --experiment_name "$EXPERIMENT_NAME" \
+            --problems        "$PROBLEM" \
+            --n_obj           "$N_OBJ" \
+            --n_var           "$N_VAR" \
+            --methods         \
+                random nsga2 \
+                "$SAMOS_XGB" "$SAMOS_RFR" \
+                mosmac parego cobra \
+                ssa-nsga2-default ssa-nsga2-rfr ssa-nsga2-xgb \
+                gpsaf-default gpsaf-rfr gpsaf-xgb \
+            --pop_size        "$POP_SIZE" \
+            --n_gen           "$N_GEN" \
+            --checkpoints_d   10 25 50 100 \
+            --extended_plot \
+        && echo "Analysis updated for $PROBLEM seed ${SEED}" \
+        || echo "[WARN] Analysis failed or timed out for $PROBLEM seed ${SEED} (non-fatal)"
+
+    cd "$SCRATCH_DIRECTORY"
+done
+
+echo ""
+echo "Date (done)       = $(date)"
