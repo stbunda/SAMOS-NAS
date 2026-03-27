@@ -27,11 +27,11 @@ from strategy.algorithm.algorithms import RandomGA
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
-from problem.nasbench101_utils import N_VAR, MIN_PARAMS, MAX_PARAMS, _CANONICAL_OPS_101
+from problem.nasbench101.utils import N_VAR, MIN_PARAMS, MAX_PARAMS, _CANONICAL_OPS_101
 from strategy.genetics.duplicate import NASBench101DuplicateElimination
-from problem.nasbench101_baseline_problem import NASBench101Problem
+from problem.nasbench101.baseline_problem import NASBench101Problem
 from strategy.genetics.nasbench101_lib.model_spec import ModelSpec as _ModelSpec101
-from problem.nasbench101_surrogate_problem import SurrogateProblem101
+from problem.nasbench101.surrogate_problem import SurrogateProblem101
 from strategy.callbacks import NASArchiveCallback
 from problem.nasbench101.utils import _update_archive, _test_archive as _test_archive_101
 from strategy.sampler import ValidRandomSampling101

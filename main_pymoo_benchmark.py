@@ -304,67 +304,69 @@ def run_single(
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main(args):
-    budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
-    results_root = os.path.join(
-        'results', args.experiment_name, args.problem, budget_folder
-    )
-
-    for method in args.methods:
-        save_dir = os.path.join(results_root, method)
-        os.makedirs(save_dir, exist_ok=True)
-
-        for seed in args.seeds:
-            out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
-            if os.path.exists(out_path) and not args.overwrite:
-                print(f'[SKIP] {method}/seed_{seed} already exists')
-                continue
-
-            print(
-                f'\n[RUN] method={method}  seed={seed}  pop={args.pop_size}'
-                f'  n_gen={args.n_gen}  problem={args.problem}'
-            )
-            data = run_single(
-                method=method,
-                seed=seed,
-                problem_name=args.problem,
-                pop_size=args.pop_size,
-                n_gen=args.n_gen,
-                n_obj=args.n_obj,
-                n_var=args.n_var,
-                n_doe=args.n_doe,
-                n_infill=args.n_infill,
-                n_gen_inner=args.n_gen_inner,
-                inner_pop_size=args.inner_pop_size,
-                warm_start_ratio=args.warm_start_ratio,
-                proxy_obj_indices=args.proxy_obj_indices,
-            )
-            with open(out_path, 'wb') as f:
-                pickle.dump(data, f)
-            print(f'  Saved -> {out_path}')
-
-    # ── plot ──────────────────────────────────────────────────────────────────
-    if not args.no_plot:
-        _prob      = build_problem(args.problem, args.n_obj, args.n_var)
-        _pf        = get_pareto_front(_prob, _prob.n_obj)
-        _rp        = default_ref_point(args.problem, _prob.n_obj)
-        hv_ceiling = float(HV(ref_point=_rp)(_pf))
-        print(f'\n  Reference front: {len(_pf)} pts  hv_ceiling={hv_ceiling:.6f}')
-
-        plot_out = os.path.join(results_root, 'moo_hv_igd.png')
-        print('Generating HV / IGD+ plot ...')
-        plot_results(
-            methods=args.methods,
-            n_gen=args.n_gen,
-            pop_size=args.pop_size,
-            hv_ceiling=hv_ceiling,
-            out_path=plot_out,
-            results_root=results_root,
-            title=(
-                f'{args.problem.upper()}  —  HV / IGD+ trajectories\n'
-                f'(pop={args.pop_size}, {args.n_gen} gens'
-                f' = {args.pop_size * args.n_gen} evals, mean ± std)'
-            ),
+    for prob in args.problem:
+        print(f'\n{"="*80}\nRunning benchmark on problem: {prob}\n{"="*80}')
+        budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
+        results_root = os.path.join(
+            'results', args.experiment_name, prob, budget_folder
         )
+
+        for method in args.methods:
+            save_dir = os.path.join(results_root, method)
+            os.makedirs(save_dir, exist_ok=True)
+
+            for seed in args.seeds:
+                out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
+                if os.path.exists(out_path) and not args.overwrite:
+                    print(f'[SKIP] {method}/seed_{seed} already exists')
+                    continue
+
+                print(
+                    f'\n[RUN] method={method}  seed={seed}  pop={args.pop_size}'
+                    f'  n_gen={args.n_gen}  problem={prob}'
+                )
+                data = run_single(
+                    method=method,
+                    seed=seed,
+                    problem_name=prob,
+                    pop_size=args.pop_size,
+                    n_gen=args.n_gen,
+                    n_obj=args.n_obj,
+                    n_var=args.n_var,
+                    n_doe=args.n_doe,
+                    n_infill=args.n_infill,
+                    n_gen_inner=args.n_gen_inner,
+                    inner_pop_size=args.inner_pop_size,
+                    warm_start_ratio=args.warm_start_ratio,
+                    proxy_obj_indices=args.proxy_obj_indices,
+                )
+                with open(out_path, 'wb') as f:
+                    pickle.dump(data, f)
+                print(f'  Saved -> {out_path}')
+
+        # ── plot ──────────────────────────────────────────────────────────────────
+        if not args.no_plot:
+            _prob      = build_problem(prob, args.n_obj, args.n_var)
+            _pf        = get_pareto_front(_prob, _prob.n_obj)
+            _rp        = default_ref_point(prob, _prob.n_obj)
+            hv_ceiling = float(HV(ref_point=_rp)(_pf))
+            print(f'\n  Reference front: {len(_pf)} pts  hv_ceiling={hv_ceiling:.6f}')
+
+            plot_out = os.path.join(results_root, 'moo_hv_igd.png')
+            print('Generating HV / IGD+ plot ...')
+            plot_results(
+                methods=args.methods,
+                n_gen=args.n_gen,
+                pop_size=args.pop_size,
+                hv_ceiling=hv_ceiling,
+                out_path=plot_out,
+                results_root=results_root,
+                title=(
+                    f'{prob.upper()}  —  HV / IGD+ trajectories\n'
+                    f'(pop={args.pop_size}, {args.n_gen} gens'
+                    f' = {args.pop_size * args.n_gen} evals, mean ± std)'
+                ),
+            )
 
 
 if __name__ == '__main__':
@@ -372,7 +374,7 @@ if __name__ == '__main__':
         description='MOO benchmark: Random + NSGA-II + SAMOS + MOSMAC on pymoo problems'
     )
 
-    parser.add_argument('--problem', type=str, default='wfg1',
+    parser.add_argument('--problem', type=str, nargs='+', default=['wfg1'],
                         help='pymoo problem name, e.g. wfg1, wfg2, zdt1, dtlz2 (default: wfg1)')
     parser.add_argument('--n_obj',   type=int, default=2,
                         help='Number of objectives for WFG/DTLZ (ignored for ZDT, default: 2)')

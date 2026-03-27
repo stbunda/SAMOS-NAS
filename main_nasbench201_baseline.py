@@ -25,13 +25,13 @@ from strategy.algorithm.algorithms import RandomGA
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
-from problem.nasbench201_utils import (
+from problem.nasbench201.utils import (
     N_VAR, DATASET_INFO, VALID_DATASETS,
     compute_flops_range, build_test_pareto_ref, _vec_to_arch_str,
 )
 from strategy.genetics.duplicate import NASBench201DuplicateElimination
-from problem.nasbench201_baseline_problem import NASBench201Problem
-from problem.nasbench201_surrogate_problem import SurrogateProblem201
+from problem.nasbench201.baseline_problem import NASBench201Problem
+from problem.nasbench201.surrogate_problem import SurrogateProblem201
 from strategy.callbacks import NASArchiveCallback
 from problem.nasbench201.utils import _update_archive, _test_archive as _test_archive_201
 from strategy.sampler import ValidRandomSampling201

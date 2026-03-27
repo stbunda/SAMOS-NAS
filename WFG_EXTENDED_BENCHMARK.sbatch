@@ -21,7 +21,8 @@
 
 #SBATCH -J wfg_extended
 #SBATCH -c 2
-#SBATCH --array=0-29           # 30 seeds; SLURM cap ≤ 100 tasks
+#SBATCH --array=0-239          # 8 methods × 30 seeds = 240 tasks
+#SBATCH --dependency=afterok:$SLURM_ARRAY_JOB_ID%8  # Wait for prev seed (all 8 methods)
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -44,11 +45,16 @@ N_VAR=$(( 2 * (N_OBJ - 1) + 10 ))
 TOTAL_BUDGET=$(( 100 * N_VAR ))
 N_GEN=$(( TOTAL_BUDGET / POP_SIZE ))
 
-SEED=${SLURM_ARRAY_TASK_ID}
-
 SAMOS_XGB="samos-xgb-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
 SAMOS_RFR="samos-rfr-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
 EXPERIMENT_NAME="pymoo_benchmark/${N_OBJ}_obj"
+
+# ─── method/seed from array task ID ──────────────────────────────────────────
+METHODS=(parego cobra ssa-nsga2-default ssa-nsga2-rfr ssa-nsga2-xgb gpsaf-default gpsaf-rfr gpsaf-xgb)
+N_METHODS=${#METHODS[@]}   # 8
+SEED=$(( SLURM_ARRAY_TASK_ID / N_METHODS ))
+METHOD_IDX=$(( SLURM_ARRAY_TASK_ID % N_METHODS ))
+METHOD=${METHODS[$METHOD_IDX]}
 
 # ─── scratch setup ─────────────────────────────────────────────────────────────
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
@@ -94,6 +100,7 @@ echo "Working Directory = $(pwd)"
 echo "Scratch Directory = $SCRATCH_DIRECTORY"
 echo "PROBLEM           = $PROBLEM"
 echo "SEED              = $SEED"
+echo "METHOD            = $METHOD"
 echo "N_OBJ             = $N_OBJ"
 echo "N_VAR             = $N_VAR"
 echo "N_GEN             = $N_GEN"
@@ -107,10 +114,7 @@ python main_pymoo_benchmark.py \
     --problem       "$PROBLEM" \
     --n_obj         "$N_OBJ" \
     --n_var         "$N_VAR" \
-    --methods       \
-        parego cobra \
-        ssa-nsga2-default ssa-nsga2-rfr ssa-nsga2-xgb \
-        gpsaf-default gpsaf-rfr gpsaf-xgb \
+    --methods       "$METHOD" \
     --seeds         "$SEED" \
     --pop_size      "$POP_SIZE" \
     --n_gen         "$N_GEN" \
