@@ -3,6 +3,7 @@
 Exports
 -------
 GPSAF               — original pysamoo class (re-exported for convenience)
+FixedGPSAF          — GPSAF with display compatibility fix for newer pymoo versions
 _SklearnTarget      — minimal pysamoo Target wrapper around any sklearn estimator
 _sklearn_surrogate  — build a pysamoo Surrogate from a list of sklearn models
 SklearnGPSAF        — GPSAF variant that replaces the default surrogate with sklearn models
@@ -11,9 +12,47 @@ SklearnGPSAF        — GPSAF variant that replaces the default surrogate with s
 from copy import deepcopy
 
 import numpy as np
-from pysamoo.algorithms.gpsaf import GPSAF  # noqa: F401  (re-export)
+from pysamoo.algorithms.gpsaf import GPSAF as _BaseGPSAF  # noqa: F401
 
-__all__ = ["GPSAF", "_SklearnTarget", "_sklearn_surrogate", "SklearnGPSAF"]
+__all__ = ["GPSAF", "FixedGPSAF", "_SklearnTarget", "_sklearn_surrogate", "SklearnGPSAF"]
+
+
+class _NoopDisplay:
+    """Compatibility shim: newer pymoo calls display.finalize() but pysamoo may set display
+    to a bare function, causing AttributeError. Replace with this object."""
+    def finalize(self): pass
+    def __call__(self, *args, **kwargs): pass
+    def update(self, *args, **kwargs): pass
+
+
+def _patch_display(algo):
+    """If algo.display is a bare function (no finalize method), replace it."""
+    if algo is None:
+        return
+    d = getattr(algo, 'display', None)
+    if d is not None and not hasattr(d, 'finalize'):
+        algo.display = _NoopDisplay()
+
+
+class FixedGPSAF(_BaseGPSAF):
+    """GPSAF with a display compatibility fix for newer pymoo versions.
+
+    pysamoo's GPSAF._advance calls self.algorithm.advance(), which on termination
+    calls self.display.finalize(). Newer pymoo may set display to a bare function,
+    causing AttributeError. This subclass patches that before each advance.
+    """
+
+    def _setup(self, problem, **kwargs):
+        super()._setup(problem, **kwargs)
+        _patch_display(getattr(self, 'algorithm', None))
+
+    def _advance(self, infills=None, **kwargs):
+        _patch_display(getattr(self, 'algorithm', None))
+        super()._advance(infills=infills, **kwargs)
+
+
+# Keep GPSAF as a convenience alias pointing to the fixed version
+GPSAF = FixedGPSAF
 
 
 class _SklearnTarget:
@@ -55,7 +94,7 @@ def _sklearn_surrogate(problem, sklearn_models):
     return Surrogate(problem, targets)
 
 
-class SklearnGPSAF(GPSAF):
+class SklearnGPSAF(FixedGPSAF):
     """GPSAF variant that injects sklearn surrogates after _setup resolves the problem."""
 
     def __init__(self, base_algorithm, sklearn_models, **kw):
