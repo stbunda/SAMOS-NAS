@@ -35,11 +35,12 @@ def _patch_display(algo):
 
 
 class FixedGPSAF(_BaseGPSAF):
-    """GPSAF with a display compatibility fix for newer pymoo versions.
+    """GPSAF with compatibility fixes for newer pymoo versions.
 
-    pysamoo's GPSAF._advance calls self.algorithm.advance(), which on termination
-    calls self.display.finalize(). Newer pymoo may set display to a bare function,
-    causing AttributeError. This subclass patches that before each advance.
+    Fixes two issues when pysamoo calls self.algorithm.advance() directly:
+    1. display.finalize() AttributeError — replaced with _NoopDisplay shim.
+    2. exec_time TypeError — start_time is None because algorithm.run() was
+       never called; we set it to time.time() if still unset.
     """
 
     def _setup(self, problem, **kwargs):
@@ -47,7 +48,12 @@ class FixedGPSAF(_BaseGPSAF):
         _patch_display(getattr(self, 'algorithm', None))
 
     def _advance(self, infills=None, **kwargs):
-        _patch_display(getattr(self, 'algorithm', None))
+        import time
+        inner = getattr(self, 'algorithm', None)
+        _patch_display(inner)
+        # Ensure start_time is set so result() can compute exec_time
+        if inner is not None and getattr(inner, 'start_time', None) is None:
+            inner.start_time = time.time()
         super()._advance(infills=infills, **kwargs)
 
 
