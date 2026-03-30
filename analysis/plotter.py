@@ -97,12 +97,16 @@ def load_indicator_trajectories(method: str, n_gen: int, results_root: str):
 
     hv_runs, igd_runs = [], []
     for pkl_file in sorted(os.listdir(seed_dir)):
-        if not pkl_file.endswith('.pkl'):
-            continue
-        with open(os.path.join(seed_dir, pkl_file), 'rb') as f:
-            data = pickle.load(f)
+        try:
+            if not pkl_file.endswith('.pkl'):
+                continue
+            with open(os.path.join(seed_dir, pkl_file), 'rb') as f:
+                data = pickle.load(f)
 
-        indicators = data.get('indicators', [])
+                indicators = data.get('indicators', [])
+        except Exception as e:
+            print(f"Error loading {method} {results_root}/{pkl_file}: {e}")
+            continue
         hv_series  = [ind.get('hv',       0.0)  for ind in indicators]
         igd_series = [ind.get('igd_plus', np.nan) for ind in indicators]
 

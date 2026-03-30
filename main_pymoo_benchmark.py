@@ -40,6 +40,7 @@ from strategy.algorithm.parego import run_parego
 from strategy.callbacks import PymooBenchmarkCallback
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
+from strategy.surrogate.samos_ssa import SAMOSSA
 
 # ─── MOSMAC on continuous benchmarks ─────────────────────────────────────────
 
@@ -176,6 +177,35 @@ def run_single(
         algorithm = NSGA2(
             pop_size=pop_size, sampling=sampling,
             crossover=crossover, mutation=mutation,
+        )
+
+    elif method.startswith('samos-ssa'):
+        # SAMOS-SSA: SAMOS loop with pysamoo cross-validated surrogates
+        # Supports optional i{INT}/g{INT} tokens: samos-ssa-i200-g20
+        parts = method.split('-')
+        _n_gen_inner = n_gen_inner
+        _inner_ps    = inner_pop_size
+        for tok in parts[2:]:
+            if tok.startswith('i') and tok[1:].isdigit():
+                _inner_ps = int(tok[1:])
+            elif tok.startswith('g') and tok[1:].isdigit():
+                _n_gen_inner = int(tok[1:])
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = _inner_ps if _inner_ps is not None else pop_size * 10
+
+        algorithm = SAMOSSA(
+            sampling=sampling,
+            crossover=crossover,
+            mutation=mutation,
+            n_doe=n_doe_,
+            n_infill=n_infill_,
+            n_gen_inner=_n_gen_inner,
+            ga_pop_size=inner_ps,
+            warm_start_ratio=warm_start_ratio,
+            use_subset_selection=True,
+            eliminate_duplicates=False,
+            dedup_key_fn=lambda x: tuple(np.round(x, 4).tolist()),
         )
 
     elif method.startswith('samos-'):
@@ -382,8 +412,8 @@ if __name__ == '__main__':
                         help='Override the default number of decision variables')
     parser.add_argument('--methods', type=str, nargs='+',
                         default=['random', 'nsga2', 'samos-xgb',],
-                        help='Methods: random, nsga2, samos-rfr, samos-xgb, mosmac, parego, '
-                             'cobra, gpsaf-default, gpsaf-rfr, gpsaf-xgb, '
+                        help='Methods: random, nsga2, samos-rfr, samos-xgb, samos-ssa, '
+                             'mosmac, parego, cobra, gpsaf-default, gpsaf-rfr, gpsaf-xgb, '
                              'ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb')
     parser.add_argument('--seeds',   type=int, nargs='+', default=list(range(2)))
     parser.add_argument('--pop_size',        type=int,   default=20)
