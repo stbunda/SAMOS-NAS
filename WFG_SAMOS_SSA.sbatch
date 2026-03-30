@@ -111,7 +111,7 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
         --n_gen         "$N_GEN" \
         --experiment_name "$EXPERIMENT_NAME" \
         --no_plot
-    #    --overwrite
+       --overwrite
 
     # ── copy results back ─────────────────────────────────────────────────────
     DEST="${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}"
