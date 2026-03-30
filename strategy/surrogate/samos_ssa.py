@@ -36,7 +36,6 @@ from pymoo.optimize import minimize
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 from pysamoo.core.surrogate import Surrogate
-from pysamoo.core.target import Target
 
 from strategy.surrogate.subset_selection import subset_selection
 
@@ -117,7 +116,14 @@ class SAMOSSA(Algorithm):
         elif self._sklearn_models is not None:
             self.surrogate = _sklearn_surrogate(problem, self._sklearn_models)
         else:
-            self.surrogate = _default_surrogate(problem)
+            # Default to sklearn GPR with RBF kernel — pysamoo's ezmodel RBF
+            # is numerically fragile (SVD non-convergence) once the archive
+            # grows past ~400 pts.  sklearn's GPR uses Cholesky with jitter
+            # and is stable at any archive size.
+            from strategy.surrogate.models.kriging import GPR
+            self.surrogate = _sklearn_surrogate(problem, [
+                GPR(seed=i) for i in range(problem.n_obj)
+            ])
 
     # ── DOE ────────────────────────────────────────────────────────────────────
 
@@ -289,16 +295,6 @@ class SAMOSSA(Algorithm):
 
 
 # ── surrogate construction helpers ─────────────────────────────────────────────
-
-def _default_surrogate(problem):
-    """Build a pysamoo Surrogate with default model zoo (one Target per objective)."""
-    from pysamoo.core.defaults import DEFAULT_OBJ_MODELS
-    targets = [
-        Target(("F", i), models=DEFAULT_OBJ_MODELS())
-        for i in range(problem.n_obj)
-    ]
-    return Surrogate(problem, targets)
-
 
 def _sklearn_surrogate(problem, sklearn_models):
     """Build a pysamoo Surrogate from sklearn estimators (bypasses cross-validation)."""
