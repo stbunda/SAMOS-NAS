@@ -13,19 +13,14 @@
 
 #SBATCH -J wfg_samos_ssa
 #SBATCH -c 2
-# Uncomment ONE of the following:
-#SBATCH --array=0-9                # Seeds 0-9
-## --array=10-19              # Seeds 10-19
-## --array=20-29              # Seeds 20-29
+#SBATCH --array=0-29                # Seeds 0-9
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
 #SBATCH --time=24:00:00
-#SBATCH --output=slurm_logs_wfg_samos_ssa/%x_%A_%a.log
+#SBATCH --output=slurm_logs_wfg_benchmark/%x_%A_%a.log
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline
-
-mkdir -p slurm_logs_wfg_samos_ssa
 
 # ─── tunable parameters ───────────────────────────────────────────────────────
 N_OBJ=${N_OBJ:-2}
@@ -147,3 +142,7 @@ done
 
 echo ""
 echo "Date (done)       = $(date)"
+
+# ─── scratch cleanup ──────────────────────────────────────────────────────────
+echo "Removing scratch directory: $SCRATCH_DIRECTORY"
+rm -rf "$SCRATCH_DIRECTORY"
