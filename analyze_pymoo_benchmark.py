@@ -83,6 +83,7 @@ _METHOD_LATEX_LABELS = {
     'samos-xgb':          'SAMOS-XGB',
     'samos-rfr-i200-g20': 'SAMOS-RFR',
     'samos-xgb-i200-g20': 'SAMOS-XGB',
+    'samos-ssa-i200-g20': 'SAMOS-SSA',
     'mosmac':             'MOSMAC',
     'parego':             'ParEGO',
     'cobra':              'COBRA',

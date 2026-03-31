@@ -1,11 +1,24 @@
 """main_samos_ablation.py — Ablation study: why does SAMOS underperform SSA-NSGA-II / GPSAF?
 
-Isolates five factors that differ between SAMOS and SSA-NSGA-II / GPSAF:
-  A. Surrogate model type       (gpr, xgb, rfr)
-  B. Warm-start ratio           (0.0, 0.25, 0.5, 0.75, 1.0)
-  C. Candidate selection method (subset, kmeans, crowding)
-  D. Inner population size      (50, 100, 200, 500)
-  E. Subset selection on/off    (True, False)
+Isolates factors that differ between SAMOS and SSA-NSGA-II / GPSAF:
+
+  Original ablations:
+    A. Surrogate model type       (gpr, xgb, rfr)
+    B. Warm-start ratio           (0.0, 0.25, 0.5, 0.75, 1.0)
+    C. Candidate selection method (subset, kmeans, crowding)
+    D. Inner population size      (50, 100, 200, 500)
+    E. Subset selection on/off    (True, False)
+
+  New ablations:
+    F. Surrogate model extended   (gpr, gpr_mle, gpr_matern15, gpr_matern25,
+                                   gpr_white, xgb, rfr, etr, knn)
+    G. Inner NSGA-II generations  (5, 10, 20, 40, 80) — refs use same value
+    H. Population schedule        (constant, linear_inc, linear_dec,
+                                   exp_inc, exp_dec)
+    I. Alpha/beta phases          [(0,0), (3,0), (0,10), (3,10), (5,20)]
+    J. Noise-aware tournament     (False, True)
+    K. Trace assignment           (False, True)
+    L. Uncertainty predictor      (none, extra_obj, ei_filter, exploration_bonus)
 
 Each experiment fixes all other factors to defaults and sweeps one.
 SSA-NSGA-II (default + xgb) and GPSAF (default + xgb) are included as
@@ -13,9 +26,8 @@ reference baselines in every ablation plot.
 
 Run examples:
   python main_samos_ablation.py --problem wfg3 --ablation surrogate
-  python main_samos_ablation.py --problem wfg3 --ablation warm_start
-  python main_samos_ablation.py --problem wfg3 --ablation selection
-  python main_samos_ablation.py --problem wfg3 --ablation inner_pop
+  python main_samos_ablation.py --problem wfg3 --ablation inner_gens
+  python main_samos_ablation.py --problem wfg1 wfg3 wfg7 --ablation alpha_beta
   python main_samos_ablation.py --problem wfg3 --ablation all
 """
 
@@ -32,6 +44,7 @@ from pymoo.algorithms.moo.nsga2 import NSGA2, RankAndCrowding
 from pymoo.core.algorithm import Algorithm
 from pymoo.core.initialization import Initialization
 from pymoo.core.population import Population
+from pymoo.core.problem import Problem
 from pymoo.indicators.hv import HV
 from pymoo.indicators.igd_plus import IGDPlus
 from pymoo.operators.crossover.sbx import SBX
@@ -47,8 +60,8 @@ from scipy.stats import spearmanr, kendalltau
 
 from problem.pymoo.benchmark_utils import build_problem, get_pareto_front, default_ref_point
 from strategy.callbacks import PymooBenchmarkCallback
-from strategy.surrogate.models import RFR, XGBoost
-from strategy.surrogate.models.kriging import GPR
+from strategy.surrogate.models import RFR, XGBoost, ETR
+from strategy.surrogate.models.kriging import GPR, GPR_MLE, GPR_Matern15, GPR_Matern25, GPR_White
 
 # Reference baselines
 from strategy.algorithm.gpsaf import GPSAF, SklearnGPSAF
@@ -70,12 +83,42 @@ REFERENCE_BASELINES = [
 class SAMOSAblation(Algorithm):
     """SAMOS variant that logs per-generation diagnostics for ablation studies.
 
-    Logs to self.diagnostics (list of dicts) per generation:
-      - surrogate_rmse:     per-objective RMSE on training set
-      - surrogate_spearman: per-objective Spearman rho on training set
-      - n_candidates:       candidates surviving dedup
-      - n_random_fill:      random padding added
-      - inner_hv:           HV of inner NSGA-II result on surrogate
+    New parameters vs. original SAMOSAblation
+    ------------------------------------------
+    pop_schedule : str
+        How the inner NSGA-II population size changes each outer generation.
+        'constant'    — fixed ga_pop_size (original behaviour)
+        'linear_inc'  — linearly ramp from pop_start → pop_end over n_gen gens
+        'linear_dec'  — linearly ramp from pop_end → pop_start
+        'exp_inc'     — exponentially ramp from pop_start → pop_end
+        'exp_dec'     — exponentially ramp from pop_end → pop_start
+    pop_start, pop_end : int
+        Range for scheduled population sizes (used when pop_schedule != 'constant').
+    alpha : int
+        Number of surrogate-based tournament rounds applied to candidates after
+        dedup and before final subset selection (GPSAF alpha phase analogue).
+    beta : int
+        Additional inner NSGA-II generations run on the surrogate to extend the
+        candidate pool (GPSAF beta phase analogue).
+    rho : float
+        Replacement probability for the beta phase (fraction of beta candidates
+        merged into the candidate pool; default 0.5).
+    noise_tournament : bool
+        If True and the surrogate exposes predict_std(), replace the inner
+        NSGA-II binary tournament with a noise-aware variant that uses the
+        optimistic lower bound  F_hat - noise_k * std  for dominance comparison.
+    noise_k : float
+        Scale factor for the noise-aware tournament (default 1.0).
+    use_trace : bool
+        If True, each infill candidate is linked to its closest archive member
+        (parent) in X-space.  In _advance(), the traced parent is removed before
+        merging so each infill effectively replaces its origin.
+    uncertainty_mode : str
+        Strategy for using predicted uncertainty in infill selection.
+        'none'              — standard behaviour
+        'extra_obj'         — add -predict_std as an extra inner objective
+        'ei_filter'         — keep only candidates above median predict_std
+        'exploration_bonus' — boost subset-selection score by predict_std
     """
 
     def __init__(self,
@@ -92,6 +135,17 @@ class SAMOSAblation(Algorithm):
                  selection_method='subset',  # 'subset', 'kmeans', 'crowding'
                  eliminate_duplicates=False,
                  dedup_key_fn=None,
+                 # ── new ──────────────────────────────────────────────── #
+                 pop_schedule='constant',
+                 pop_start=50,
+                 pop_end=1000,
+                 alpha=0,
+                 beta=0,
+                 rho=0.5,
+                 noise_tournament=False,
+                 noise_k=1.0,
+                 use_trace=False,
+                 uncertainty_mode='none',
                  **kwargs):
         super().__init__(eliminate_duplicates=False, **kwargs)
         self.sampling             = sampling
@@ -108,14 +162,30 @@ class SAMOSAblation(Algorithm):
         self.eliminate_duplicates = eliminate_duplicates
         self._dedup_key = dedup_key_fn if dedup_key_fn is not None \
             else lambda x: tuple(np.round(x, decimals=8).tolist())
+        # new
+        self.pop_schedule    = pop_schedule
+        self.pop_start       = pop_start
+        self.pop_end         = pop_end
+        self.alpha           = alpha
+        self.beta            = beta
+        self.rho             = rho
+        self.noise_tournament = noise_tournament
+        self.noise_k         = noise_k
+        self.use_trace       = use_trace
+        self.uncertainty_mode = uncertainty_mode
 
         self._archive      = Population()
         self._archive_keys: set = set()
         self._init         = Initialization(sampling)
         self.diagnostics   = []
+        self._n_total_gen  = None   # set in _setup from termination
 
     def _setup(self, problem, **kwargs):
-        pass
+        # Resolve total number of outer generations for population scheduling.
+        try:
+            self._n_total_gen = self.termination.n_max_gen
+        except AttributeError:
+            self._n_total_gen = None
 
     def _initialize_infill(self):
         return self._init.do(self.problem, self.n_doe, algorithm=self)
@@ -125,12 +195,153 @@ class SAMOSAblation(Algorithm):
         self._add_to_archive_keys(infills)
         self.pop = infills
 
+    # ── helpers ────────────────────────────────────────────────────────────
+
+    def _effective_pop_size(self):
+        """Return inner NSGA-II population size for the current generation."""
+        if self.pop_schedule == 'constant' or self._n_total_gen is None:
+            return self.ga_pop_size
+        t  = max(0, self.n_gen - 1)
+        T  = max(1, self._n_total_gen - 1)
+        lo, hi = self.pop_start, self.pop_end
+        if self.pop_schedule == 'linear_inc':
+            size = lo + (hi - lo) * t / T
+        elif self.pop_schedule == 'linear_dec':
+            size = hi - (hi - lo) * t / T
+        elif self.pop_schedule == 'exp_inc':
+            size = lo * (hi / max(lo, 1)) ** (t / T)
+        elif self.pop_schedule == 'exp_dec':
+            size = hi * (lo / max(hi, 1)) ** (t / T)
+        else:
+            size = self.ga_pop_size
+        return max(2, int(round(size)))
+
+    def _can_predict_std(self):
+        """True if ALL surrogates have been fitted and support predict_std."""
+        return all(hasattr(s, 'predict_std') and
+                   not isinstance(getattr(s, 'predict_std', None), type)
+                   for s in self.surrogates)
+
+    def _surrogates_std(self, X):
+        """Return (n_candidates, n_objectives) array of surrogate std estimates."""
+        stds = []
+        for s in self.surrogates:
+            try:
+                stds.append(s.predict_std(X).ravel())
+            except NotImplementedError:
+                stds.append(np.zeros(len(X)))
+        return np.column_stack(stds)
+
+    # ── alpha phase (surrogate-based tournament) ───────────────────────────
+
+    def _alpha_tournament(self, cand_pop):
+        """Run self.alpha rounds of pairwise surrogate-dominance tournament.
+
+        Each round replaces every individual with the better of itself and a
+        random opponent (based on predicted F).  The population size is unchanged.
+        """
+        if self.alpha <= 0 or len(cand_pop) < 2:
+            return cand_pop, 0
+        X = cand_pop.get('X')
+        F_pred = np.column_stack([s.predict(X).ravel() for s in self.surrogates])
+        n = len(X)
+        survivors = np.arange(n)
+        rng = np.random.default_rng()
+        for _ in range(self.alpha):
+            opponents = rng.integers(0, n, size=n)
+            for i in range(n):
+                j = opponents[i]
+                fi, fj = F_pred[survivors[i]], F_pred[survivors[j]]
+                # i dominates j?
+                if np.all(fi <= fj) and np.any(fi < fj):
+                    pass  # keep i
+                elif np.all(fj <= fi) and np.any(fj < fi):
+                    survivors[i] = survivors[j]
+                # else: tie → keep current
+        unique_survivors = np.unique(survivors)
+        return cand_pop[unique_survivors], len(cand_pop) - len(unique_survivors)
+
+    # ── beta phase (additional surrogate generations) ──────────────────────
+
+    def _beta_extend(self, cand_pop, effective_pop_size):
+        """Run self.beta additional inner NSGA-II generations then merge candidates."""
+        if self.beta <= 0:
+            return cand_pop, 0
+        from problem.pymoo.surrogate_problem import SurrogateProblemMOO
+        surr_problem = SurrogateProblemMOO(
+            self.surrogates, self.problem.n_var,
+            self.problem.xl.copy(), self.problem.xu.copy(),
+            real_problem=self.problem,
+        )
+        # seed inner NSGA-II from current candidate pool (or archive if pool is empty)
+        if len(cand_pop) > 0:
+            init_X = cand_pop.get('X')
+        else:
+            init_X = self._archive.get('X')
+        n_pad = max(0, effective_pop_size - len(init_X))
+        if n_pad > 0:
+            pad = self._init.do(self.problem, n_pad, algorithm=self).get('X')
+            init_X = np.vstack([init_X, pad])
+        inner_init = Population.new('X', init_X[:effective_pop_size])
+        inner_alg = NSGA2(
+            pop_size=effective_pop_size,
+            sampling=inner_init,
+            crossover=self.crossover,
+            mutation=self.mutation,
+            eliminate_duplicates=self.eliminate_duplicates,
+        )
+        res = minimize(surr_problem, inner_alg,
+                       termination=('n_gen', self.beta), verbose=False)
+        beta_pop = res.pop if res.pop is not None else Population.empty()
+        # randomly sample rho fraction of beta candidates to add
+        n_take = max(1, int(round(self.rho * len(beta_pop))))
+        idx = np.random.choice(len(beta_pop), size=min(n_take, len(beta_pop)), replace=False)
+        beta_sample = beta_pop[idx]
+        if len(cand_pop) > 0:
+            merged = Population.merge(cand_pop, beta_sample)
+        else:
+            merged = beta_sample
+        return merged, len(beta_sample)
+
+    # ── noise-aware tournament selection ───────────────────────────────────
+
+    def _make_noise_aware_tournament(self):
+        """Return a TournamentSelection that uses F_hat - noise_k*std."""
+        from pymoo.operators.selection.tournament import TournamentSelection
+
+        surrogates = self.surrogates
+        noise_k    = self.noise_k
+
+        def _comp(pop, P, **kwargs):
+            # P: (n_tournaments, 2) indices into pop
+            S = np.full(P.shape[0], -1, dtype=int)
+            for i, (a, b) in enumerate(P):
+                X_pair = pop[[a, b]].get('X')
+                F_pair = np.column_stack([s.predict(X_pair).ravel() for s in surrogates])
+                try:
+                    stds = np.column_stack([s.predict_std(X_pair).ravel() for s in surrogates])
+                    F_opt = F_pair - noise_k * stds
+                except NotImplementedError:
+                    F_opt = F_pair
+                fa, fb = F_opt[0], F_opt[1]
+                if np.all(fa <= fb) and np.any(fa < fb):
+                    S[i] = a
+                elif np.all(fb <= fa) and np.any(fb < fa):
+                    S[i] = b
+                else:
+                    S[i] = a if np.random.rand() < 0.5 else b
+            return S
+
+        return TournamentSelection(func_comp=_comp)
+
+    # ── main infill ─────────────────────────────────────────────────────────
+
     def _infill(self):
         X_arc = self._archive.get('X')
         F_arc = self._archive.get('F')
-        diag = {'gen': self.n_gen, 'n_archive': len(self._archive)}
+        diag  = {'gen': self.n_gen, 'n_archive': len(self._archive)}
 
-        # 1. Fit surrogates + compute diagnostics
+        # ── 1. Fit surrogates + compute diagnostics ────────────────────────
         rmses, spearmans, kendalls = [], [], []
         for s, surrogate in enumerate(self.surrogates):
             surrogate.fit(X_arc, F_arc[:, s])
@@ -142,14 +353,18 @@ class SAMOSAblation(Algorithm):
             rmses.append(rmse)
             spearmans.append(float(rho))
             kendalls.append(float(tau))
-        diag['surrogate_rmse'] = rmses
+        diag['surrogate_rmse']     = rmses
         diag['surrogate_spearman'] = spearmans
-        diag['surrogate_kendall'] = kendalls
+        diag['surrogate_kendall']  = kendalls
 
-        # 2. Warm-start
-        topx    = max(1, int(self.ga_pop_size * self.warm_start_ratio))
+        # ── 2. Effective population size for this generation ───────────────
+        effective_pop_size = self._effective_pop_size()
+        diag['effective_pop_size'] = effective_pop_size
+
+        # ── 3. Warm-start inner NSGA-II ────────────────────────────────────
+        topx    = max(1, int(effective_pop_size * self.warm_start_ratio))
         top_pop = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=topx)
-        n_rand  = self.ga_pop_size - len(top_pop)
+        n_rand  = effective_pop_size - len(top_pop)
         if n_rand > 0:
             rand_pop = self._init.do(self.problem, n_rand, algorithm=self)
             inner_X  = np.vstack([top_pop.get('X'), rand_pop.get('X')])
@@ -157,22 +372,41 @@ class SAMOSAblation(Algorithm):
             inner_X  = top_pop.get('X')
         inner_init = Population.new('X', inner_X)
         diag['n_warm_archive'] = len(top_pop)
-        diag['n_warm_random'] = max(0, n_rand)
+        diag['n_warm_random']  = max(0, n_rand)
 
-        # 3. Inner NSGA-II on surrogate
+        # ── 4. Build inner surrogate problem ──────────────────────────────
         from problem.pymoo.surrogate_problem import SurrogateProblemMOO
-        surr_problem = SurrogateProblemMOO(
-            self.surrogates, self.problem.n_var,
-            self.problem.xl.copy(), self.problem.xu.copy(),
-            real_problem=self.problem,
-        )
-        inner_alg = NSGA2(
-            pop_size=self.ga_pop_size,
+
+        if self.uncertainty_mode == 'extra_obj':
+            # extra_obj: augment the inner problem with -predict_std objective
+            surr_problem = _UncertaintySurrogateProblem(
+                self.surrogates, self.problem.n_var,
+                self.problem.xl.copy(), self.problem.xu.copy(),
+                real_problem=self.problem,
+            )
+        else:
+            surr_problem = SurrogateProblemMOO(
+                self.surrogates, self.problem.n_var,
+                self.problem.xl.copy(), self.problem.xu.copy(),
+                real_problem=self.problem,
+            )
+
+        # ── 5. Inner NSGA-II ───────────────────────────────────────────────
+        selection_op = None
+        if self.noise_tournament and self._can_predict_std():
+            selection_op = self._make_noise_aware_tournament()
+
+        inner_alg_kwargs = dict(
+            pop_size=effective_pop_size,
             sampling=inner_init,
             crossover=self.crossover,
             mutation=self.mutation,
             eliminate_duplicates=self.eliminate_duplicates,
         )
+        if selection_op is not None:
+            inner_alg_kwargs['selection'] = selection_op
+
+        inner_alg = NSGA2(**inner_alg_kwargs)
         res = minimize(
             surr_problem, inner_alg,
             termination=('n_gen', self.n_gen_inner),
@@ -180,7 +414,7 @@ class SAMOSAblation(Algorithm):
         )
         diag['n_surr_eval'] = res.algorithm.evaluator.n_eval
 
-        # 4. Deduplicate
+        # ── 6. Deduplicate ─────────────────────────────────────────────────
         cand_pop = res.pop if res.pop is not None else Population.empty()
         n_before_dedup = len(cand_pop)
         if len(cand_pop) > 0:
@@ -190,29 +424,100 @@ class SAMOSAblation(Algorithm):
             ], dtype=bool)
             cand_pop = cand_pop[not_dup]
         diag['n_before_dedup'] = n_before_dedup
-        diag['n_after_dedup'] = len(cand_pop)
+        diag['n_after_dedup']  = len(cand_pop)
 
-        # 5. Select candidates
+        # ── 7. Alpha phase (surrogate tournament) ─────────────────────────
+        cand_pop, n_alpha_eliminated = self._alpha_tournament(cand_pop)
+        diag['n_alpha_eliminated'] = n_alpha_eliminated
+
+        # ── 8. Beta phase (additional surrogate gens) ─────────────────────
+        cand_pop, n_beta_added = self._beta_extend(cand_pop, effective_pop_size)
+        diag['n_beta_added'] = n_beta_added
+        # Dedup again after beta
+        if n_beta_added > 0 and len(cand_pop) > 0:
+            not_dup2 = np.array([
+                self._dedup_key(cx) not in self._archive_keys
+                for cx in cand_pop.get('X')
+            ], dtype=bool)
+            cand_pop = cand_pop[not_dup2]
+
+        # ── 9. Uncertainty filter (ei_filter / exploration_bonus) ─────────
+        mean_std_selected = 0.0
+        if self.uncertainty_mode in ('ei_filter', 'exploration_bonus') \
+                and len(cand_pop) > 0 and self._can_predict_std():
+            cand_X  = cand_pop.get('X')
+            std_arr = self._surrogates_std(cand_X).mean(axis=1)   # (n_cand,)
+            if self.uncertainty_mode == 'ei_filter':
+                threshold = np.median(std_arr)
+                keep = std_arr >= threshold
+                if keep.sum() >= 1:
+                    cand_pop = cand_pop[keep]
+            # exploration_bonus is handled inside _select_subset via the
+            # std_arr we'll pass through the diag; subset_selection itself
+            # is not modified, but we pre-sort candidates by std desc here
+            elif self.uncertainty_mode == 'exploration_bonus':
+                order = np.argsort(-std_arr)
+                cand_pop = cand_pop[order]
+            mean_std_selected = float(std_arr[:len(cand_pop)].mean()) \
+                if len(cand_pop) > 0 else 0.0
+        diag['mean_surrogate_std'] = mean_std_selected
+
+        # ── 10. Select final infill batch ──────────────────────────────────
         infill_pop, n_random_fill = self._select_infill(cand_pop, F_arc)
-        diag['n_selected'] = len(infill_pop) - n_random_fill
+        diag['n_selected']    = len(infill_pop) - n_random_fill
         diag['n_random_fill'] = n_random_fill
 
-        # 6. Evaluate candidates on REAL problem to measure surrogate-to-real correlation
+        # ── 11. Trace assignment ───────────────────────────────────────────
+        if self.use_trace and len(infill_pop) > 0:
+            infill_X  = infill_pop.get('X')
+            arc_X     = X_arc
+            # squared L2 distances; shape (n_infill, n_archive)
+            dists     = np.sum((infill_X[:, None, :] - arc_X[None, :, :]) ** 2, axis=2)
+            parents   = dists.argmin(axis=1)
+            infill_pop.set('trace_parent', parents)
+            diag['trace_parents'] = parents.tolist()
+        else:
+            diag['trace_parents'] = []
+
+        # ── 12. Surrogate-vs-real correlation on selected candidates ───────
         infill_X = infill_pop.get('X')
         real_out = {}
         self.problem._evaluate(infill_X, real_out)
-        real_F = real_out['F']
-        surr_F = np.column_stack([s.predict(infill_X).ravel() for s in self.surrogates])
+        real_F   = real_out['F']
+        surr_F   = np.column_stack([s.predict(infill_X).ravel() for s in self.surrogates])
         infill_corrs = []
         for j in range(real_F.shape[1]):
-            rho, _ = spearmanr(surr_F[:, j], real_F[:, j])
-            infill_corrs.append(float(rho) if not np.isnan(rho) else 0.0)
+            rho_val, _ = spearmanr(surr_F[:, j], real_F[:, j])
+            infill_corrs.append(float(rho_val) if not np.isnan(rho_val) else 0.0)
         diag['infill_surrogate_vs_real_spearman'] = infill_corrs
 
         self.diagnostics.append(diag)
         return Population.new('X', infill_X)
 
     def _advance(self, infills=None, **kwargs):
+        if self.use_trace and infills is not None and len(infills) > 0:
+            trace_parents = infills.get('trace_parent')
+            if trace_parents is not None:
+                # Remove traced parents from archive (replace-parent semantics)
+                # Filter out None values (individuals without a traced parent)
+                valid_parents = [p for p in trace_parents if p is not None]
+                unique_parents = np.unique(valid_parents) if valid_parents else np.array([], dtype=int)
+                n_arc = len(self._archive)
+                keep_mask = np.ones(n_arc, dtype=bool)
+                for pidx in unique_parents:
+                    if 0 <= pidx < n_arc:
+                        keep_mask[pidx] = False
+                diag_entry = self.diagnostics[-1] if self.diagnostics else {}
+                diag_entry['n_replaced_by_trace'] = int((~keep_mask).sum())
+                self._archive = self._archive[keep_mask]
+                # Remove displaced keys
+                self._archive_keys = {
+                    self._dedup_key(x) for x in self._archive.get('X')
+                }
+        else:
+            if self.diagnostics:
+                self.diagnostics[-1]['n_replaced_by_trace'] = 0
+
         self._archive = Population.merge(self._archive, infills)
         self._add_to_archive_keys(infills)
         self.pop = infills
@@ -317,6 +622,38 @@ class SAMOSAblation(Algorithm):
         return Population.new('X', np.array(collected)) if collected else Population.empty()
 
 
+# ─── Uncertainty-augmented inner surrogate problem ───────────────────────────
+
+class _UncertaintySurrogateProblem(Problem):
+    """Wraps SurrogateProblemMOO and appends -mean_std as an extra objective.
+
+    This makes the inner NSGA-II explicitly trade off objective quality vs.
+    exploration (high surrogate uncertainty).
+    """
+
+    def __init__(self, surrogates, n_var, xl, xu, real_problem=None):
+        from problem.pymoo.surrogate_problem import SurrogateProblemMOO
+        self._base = SurrogateProblemMOO(surrogates, n_var, xl, xu,
+                                          real_problem=real_problem)
+        self._surrogates = surrogates
+        n_obj_aug = self._base.n_obj + 1  # +1 for uncertainty objective
+        super().__init__(n_var=n_var, n_obj=n_obj_aug, xl=xl, xu=xu)
+
+    def _evaluate(self, X, out, *args, **kwargs):
+        base_out = {}
+        self._base._evaluate(X, base_out, *args, **kwargs)
+        F_base = base_out['F']  # shape (n, n_base_obj)
+        # Uncertainty: mean std across objectives (negate so NSGA-II minimises it)
+        stds = []
+        for s in self._surrogates:
+            try:
+                stds.append(s.predict_std(X).ravel())
+            except NotImplementedError:
+                stds.append(np.zeros(len(X)))
+        mean_std = np.column_stack(stds).mean(axis=1, keepdims=True)
+        out['F'] = np.hstack([F_base, -mean_std])  # minimise -std = maximise std
+
+
 # ─── Reference baseline runner ───────────────────────────────────────────────
 
 def run_reference_baseline(method, seed, problem_name, pop_size, n_gen,
@@ -392,6 +729,7 @@ def run_reference_baseline(method, seed, problem_name, pop_size, n_gen,
 # ─── Ablation configurations ─────────────────────────────────────────────────
 
 def _make_surrogates(stype, n_obj, seed):
+    from strategy.surrogate.models.knn import KNN
     rng = np.random.RandomState(seed)
     surrs = []
     for _ in range(n_obj):
@@ -400,49 +738,113 @@ def _make_surrogates(stype, n_obj, seed):
             surrs.append(XGBoost(100, seed=s))
         elif stype == 'rfr':
             surrs.append(RFR(100, seed=s))
+        elif stype == 'etr':
+            surrs.append(ETR(100, seed=s))
+        elif stype == 'knn':
+            surrs.append(KNN(n_neighbors=5, random_state=np.random.RandomState(s)))
         elif stype == 'gpr':
             surrs.append(GPR(seed=s))
+        elif stype == 'gpr_mle':
+            surrs.append(GPR_MLE(seed=s))
+        elif stype == 'gpr_matern15':
+            surrs.append(GPR_Matern15(seed=s))
+        elif stype == 'gpr_matern25':
+            surrs.append(GPR_Matern25(seed=s))
+        elif stype == 'gpr_white':
+            surrs.append(GPR_White(seed=s))
         else:
             raise ValueError(f'Unknown surrogate type: {stype}')
     return surrs
 
 
+# Default SAMOSAblation kwargs shared across all ablations (can be overridden)
+_SAMOS_DEFAULTS = dict(
+    warm_start_ratio=1.0,
+    selection_method='subset',
+    use_subset_selection=True,
+    ga_pop_size=200,
+    pop_schedule='constant',
+    pop_start=50,
+    pop_end=1000,
+    alpha=0,
+    beta=0,
+    rho=0.5,
+    noise_tournament=False,
+    use_trace=False,
+    uncertainty_mode='none',
+)
+
 ABLATION_CONFIGS = {
+    # ── original ablations ──────────────────────────────────────────────── #
     'surrogate': {
         'sweep_param': 'surrogate_type',
         'values': ['gpr', 'xgb', 'rfr'],
-        'defaults': dict(warm_start_ratio=1.0, selection_method='subset',
-                         use_subset_selection=True, ga_pop_size=200),
+        'defaults': dict(**_SAMOS_DEFAULTS),
     },
     'warm_start': {
         'sweep_param': 'warm_start_ratio',
         'values': [0.0, 0.25, 0.5, 0.75, 1.0],
-        'defaults': dict(surrogate_type='xgb', selection_method='subset',
-                         use_subset_selection=True, ga_pop_size=200),
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
     },
     'selection': {
         'sweep_param': 'selection_method',
         'values': ['subset', 'kmeans', 'crowding'],
-        'defaults': dict(surrogate_type='xgb', warm_start_ratio=1.0,
-                         use_subset_selection=True, ga_pop_size=200),
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
     },
     'inner_pop': {
         'sweep_param': 'ga_pop_size',
         'values': [50, 100, 200, 500],
-        'defaults': dict(surrogate_type='xgb', warm_start_ratio=1.0,
-                         selection_method='subset', use_subset_selection=True),
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
     },
     'subset_sel': {
         'sweep_param': 'use_subset_selection',
         'values': [True, False],
-        'defaults': dict(surrogate_type='xgb', warm_start_ratio=1.0,
-                         selection_method='subset', ga_pop_size=200),
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    # ── new ablations ───────────────────────────────────────────────────── #
+    'surrogate_ext': {
+        'sweep_param': 'surrogate_type',
+        'values': ['gpr', 'gpr_mle', 'gpr_matern15', 'gpr_matern25',
+                   'gpr_white', 'xgb', 'rfr', 'etr', 'knn'],
+        'defaults': dict(**_SAMOS_DEFAULTS),
+    },
+    'inner_gens': {
+        'sweep_param': 'n_gen_inner',
+        'values': [5, 10, 20, 40, 80],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'pop_schedule': {
+        'sweep_param': 'pop_schedule',
+        'values': ['constant', 'linear_inc', 'linear_dec', 'exp_inc', 'exp_dec'],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb',
+                            'pop_start': 50, 'pop_end': 1000}),
+    },
+    'alpha_beta': {
+        'sweep_param': 'alpha_beta_pair',   # special: decoded in run_ablation_single
+        'values': [(0, 0), (3, 0), (0, 10), (3, 10), (5, 20)],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'noise_tournament': {
+        'sweep_param': 'noise_tournament',
+        'values': [False, True],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'gpr'}),
+    },
+    'trace': {
+        'sweep_param': 'use_trace',
+        'values': [False, True],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'uncertainty': {
+        'sweep_param': 'uncertainty_mode',
+        'values': ['none', 'extra_obj', 'ei_filter', 'exploration_bonus'],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'gpr'}),
     },
 }
 
 
 def run_ablation_single(problem_name, seed, ablation, sweep_value, pop_size, n_gen,
-                         n_obj=2, n_var=None, n_gen_inner=20, defaults=None):
+                        n_obj=2, n_var=None, n_gen_inner=20, defaults=None,
+                        pop_start=50, pop_end=1000):
     np.random.seed(seed)
     random.seed(seed)
 
@@ -455,10 +857,28 @@ def run_ablation_single(problem_name, seed, ablation, sweep_value, pop_size, n_g
     mutation  = PM(eta=20)
 
     cfg = dict(defaults) if defaults else {}
-    cfg[ABLATION_CONFIGS[ablation]['sweep_param']] = sweep_value
 
+    # Decode the sweep value into cfg
+    sweep_param = ABLATION_CONFIGS[ablation]['sweep_param']
+    if sweep_param == 'alpha_beta_pair':
+        alpha_val, beta_val = sweep_value
+        cfg['alpha'] = alpha_val
+        cfg['beta']  = beta_val
+    elif sweep_param == 'n_gen_inner':
+        n_gen_inner = sweep_value   # Override inner gens for this run
+    else:
+        cfg[sweep_param] = sweep_value
+
+    # Pull + remove surrogate_type so it doesn't reach SAMOSAblation kwargs
     surrogate_type = cfg.pop('surrogate_type', 'xgb')
     surrogates = _make_surrogates(surrogate_type, problem.n_obj, seed)
+
+    # Apply pop_start/pop_end from CLI if not already in cfg
+    cfg.setdefault('pop_start', pop_start)
+    cfg.setdefault('pop_end', pop_end)
+
+    # Remove keys that are not SAMOSAblation parameters
+    cfg.pop('alpha_beta_pair', None)
 
     algorithm = SAMOSAblation(
         sampling=sampling,
@@ -486,9 +906,10 @@ def run_ablation_single(problem_name, seed, ablation, sweep_value, pop_size, n_g
     data['diagnostics'] = results.algorithm.diagnostics
     data['config'] = {
         'ablation': ablation,
-        'sweep_param': ABLATION_CONFIGS[ablation]['sweep_param'],
-        'sweep_value': sweep_value,
+        'sweep_param': sweep_param,
+        'sweep_value': str(sweep_value),
         'surrogate_type': surrogate_type,
+        'n_gen_inner': n_gen_inner,
         **cfg,
     }
     return data
@@ -529,10 +950,10 @@ def main(args):
 
         # ── run ablation sweeps ──────────────────────────────────────────
         for ablation in ablations:
-            config = ABLATION_CONFIGS[ablation]
+            config      = ABLATION_CONFIGS[ablation]
             sweep_param = config['sweep_param']
-            values = config['values']
-            defaults = config['defaults']
+            values      = config['values']
+            defaults    = config['defaults']
 
             print(f'\n{"="*80}')
             print(f'Ablation: {ablation}  |  sweep: {sweep_param}  |  problem: {prob}')
@@ -565,6 +986,8 @@ def main(args):
                         n_var=args.n_var,
                         n_gen_inner=args.n_gen_inner,
                         defaults=defaults,
+                        pop_start=args.pop_start,
+                        pop_end=args.pop_end,
                     )
 
                     with open(out_path, 'wb') as f:
@@ -581,118 +1004,130 @@ def _plot_ablation(prob, ablation, values, sweep_param, results_root,
     """Generate HV/IGD+ trajectory + surrogate-diagnostics plots for one ablation.
 
     Reference baselines (SSA-NSGA-II, GPSAF) are drawn as dashed lines.
+    A second figure is produced for new diagnostic channels when present.
     """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    problem   = build_problem(prob, n_obj, n_var)
-    pf        = get_pareto_front(problem, problem.n_obj)
-    ref_point = default_ref_point(prob, problem.n_obj)
-    hv_ind    = HV(ref_point=ref_point)
+    problem    = build_problem(prob, n_obj, n_var)
+    pf         = get_pareto_front(problem, problem.n_obj)
+    ref_point  = default_ref_point(prob, problem.n_obj)
+    hv_ind     = HV(ref_point=ref_point)
     hv_ceiling = float(hv_ind(pf))
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    ax_hv, ax_igd, ax_rmse = axes[0]
-    ax_spearman, ax_nfill, ax_infill_corr = axes[1]
+    # ── primary 3×3 figure ────────────────────────────────────────────────
+    fig, axes = plt.subplots(3, 3, figsize=(21, 15))
+    (ax_hv,  ax_igd,         ax_rmse,
+     ax_sp,  ax_nfill,       ax_infill_corr,
+     ax_ps,  ax_alpha_beta,  ax_misc) = axes.flat
 
     n_colours = max(len(values), 10)
-    colours = plt.cm.tab10(np.linspace(0, 1, n_colours))
+    colours   = plt.cm.tab10(np.linspace(0, 1, n_colours))
 
-    # ── Helper: load seeds from a directory and compute mean trajectories ──
+    # ── Helper: load all seeds and build trajectory arrays ────────────────
     def _load_trajectories(save_dir):
-        all_hv, all_igd = [], []
-        all_rmse, all_spearman, all_nfill, all_infill_corr = [], [], [], []
         if not os.path.isdir(save_dir):
             return None
+        buckets = {k: [] for k in (
+            'hv', 'igd', 'rmse', 'spearman', 'nfill', 'infill_corr',
+            'pop_size_sched', 'alpha_beta_diag', 'surrogate_std',
+            'trace_replaced',
+        )}
         for seed_file in sorted(os.listdir(save_dir)):
             if not seed_file.endswith('.pkl'):
                 continue
             with open(os.path.join(save_dir, seed_file), 'rb') as f:
                 data = pickle.load(f)
-            hvs  = [ind['hv'] for ind in data['indicators']]
-            igds = [ind['igd_plus'] for ind in data['indicators']]
-            all_hv.append(hvs)
-            all_igd.append(igds)
+            buckets['hv'].append([ind['hv'] for ind in data['indicators']])
+            buckets['igd'].append([ind['igd_plus'] for ind in data['indicators']])
             if 'diagnostics' in data:
                 diags = data['diagnostics']
-                all_rmse.append([np.mean(d['surrogate_rmse']) for d in diags])
-                all_spearman.append([np.mean(d['surrogate_spearman']) for d in diags])
-                all_nfill.append([d['n_random_fill'] for d in diags])
-                all_infill_corr.append([np.mean(d['infill_surrogate_vs_real_spearman']) for d in diags])
-        if not all_hv:
+                buckets['rmse'].append(
+                    [np.mean(d.get('surrogate_rmse', [0])) for d in diags])
+                buckets['spearman'].append(
+                    [np.mean(d.get('surrogate_spearman', [0])) for d in diags])
+                buckets['nfill'].append(
+                    [d.get('n_random_fill', 0) for d in diags])
+                buckets['infill_corr'].append(
+                    [np.mean(d.get('infill_surrogate_vs_real_spearman', [0]))
+                     for d in diags])
+                buckets['pop_size_sched'].append(
+                    [d.get('effective_pop_size', 0) for d in diags])
+                buckets['alpha_beta_diag'].append(
+                    [d.get('n_alpha_eliminated', 0) + d.get('n_beta_added', 0)
+                     for d in diags])
+                buckets['surrogate_std'].append(
+                    [d.get('mean_surrogate_std', 0.0) for d in diags])
+                buckets['trace_replaced'].append(
+                    [d.get('n_replaced_by_trace', 0) for d in diags])
+        if not buckets['hv']:
             return None
-        return dict(hv=all_hv, igd=all_igd, rmse=all_rmse,
-                    spearman=all_spearman, nfill=all_nfill, infill_corr=all_infill_corr)
+        return buckets
 
     def _plot_mean_std(ax, data_list, color, label, linestyle='-', **kw):
         if not data_list:
             return
         min_len = min(len(d) for d in data_list)
         arr = np.array([d[:min_len] for d in data_list])
-        x = np.arange(1, min_len + 1) * pop_size
-        mu = arr.mean(axis=0)
-        sd = arr.std(axis=0)
+        x   = np.arange(1, min_len + 1) * pop_size
+        mu  = arr.mean(axis=0)
+        sd  = arr.std(axis=0)
         ax.plot(x, mu, color=color, label=label, linestyle=linestyle, **kw)
         ax.fill_between(x, mu - sd, mu + sd, alpha=0.10, color=color)
 
     # ── Plot ablation sweep variants (solid lines) ────────────────────────
     for vi, val in enumerate(values):
         method_name = f'{sweep_param}={val}'
-        save_dir = os.path.join(results_root, method_name)
-        traj = _load_trajectories(save_dir)
+        save_dir    = os.path.join(results_root, method_name)
+        traj        = _load_trajectories(save_dir)
         if traj is None:
             continue
-        c = colours[vi]
+        c     = colours[vi % len(colours)]
         label = str(val)
-        _plot_mean_std(ax_hv, traj['hv'], c, label)
-        _plot_mean_std(ax_igd, traj['igd'], c, label)
-        _plot_mean_std(ax_rmse, traj['rmse'], c, label)
-        _plot_mean_std(ax_spearman, traj['spearman'], c, label)
-        _plot_mean_std(ax_nfill, traj['nfill'], c, label)
-        _plot_mean_std(ax_infill_corr, traj['infill_corr'], c, label)
+        _plot_mean_std(ax_hv,         traj['hv'],            c, label)
+        _plot_mean_std(ax_igd,        traj['igd'],           c, label)
+        _plot_mean_std(ax_rmse,       traj['rmse'],          c, label)
+        _plot_mean_std(ax_sp,         traj['spearman'],      c, label)
+        _plot_mean_std(ax_nfill,      traj['nfill'],         c, label)
+        _plot_mean_std(ax_infill_corr,traj['infill_corr'],   c, label)
+        _plot_mean_std(ax_ps,         traj['pop_size_sched'],c, label)
+        _plot_mean_std(ax_alpha_beta, traj['alpha_beta_diag'],c, label)
+        _plot_mean_std(ax_misc,       traj['surrogate_std'], c, label)
 
     # ── Plot reference baselines (dashed lines) ──────────────────────────
     ref_colours = {
         'ssa-nsga2-default': 'black',
-        'ssa-nsga2-xgb':    'dimgrey',
-        'gpsaf-default':    'royalblue',
-        'gpsaf-xgb':        'cornflowerblue',
+        'ssa-nsga2-xgb':     'dimgrey',
+        'gpsaf-default':     'royalblue',
+        'gpsaf-xgb':         'cornflowerblue',
     }
     for ref_method in REFERENCE_BASELINES:
         save_dir = os.path.join(ref_root, ref_method)
-        traj = _load_trajectories(save_dir)
+        traj     = _load_trajectories(save_dir)
         if traj is None:
             continue
         c = ref_colours.get(ref_method, 'grey')
-        _plot_mean_std(ax_hv, traj['hv'], c, ref_method, linestyle='--', linewidth=1.5)
+        _plot_mean_std(ax_hv,  traj['hv'],  c, ref_method, linestyle='--', linewidth=1.5)
         _plot_mean_std(ax_igd, traj['igd'], c, ref_method, linestyle='--', linewidth=1.5)
-        # Reference baselines don't have diagnostics — only HV/IGD
 
     ax_hv.axhline(hv_ceiling, color='grey', linestyle=':', alpha=0.5, label='PF ceiling')
-    ax_hv.set_title('HV (↑)')
-    ax_hv.set_xlabel('Evaluations')
-    ax_hv.legend(fontsize=7)
 
-    ax_igd.set_title('IGD+ (↓)')
-    ax_igd.set_xlabel('Evaluations')
-    ax_igd.legend(fontsize=7)
-
-    ax_rmse.set_title('Surrogate RMSE (train, ↓)')
-    ax_rmse.set_xlabel('Evaluations')
-    ax_rmse.legend(fontsize=7)
-
-    ax_spearman.set_title('Surrogate Spearman ρ (train, ↑)')
-    ax_spearman.set_xlabel('Evaluations')
-    ax_spearman.legend(fontsize=7)
-
-    ax_nfill.set_title('Random fill-in count (↓)')
-    ax_nfill.set_xlabel('Evaluations')
-    ax_nfill.legend(fontsize=7)
-
-    ax_infill_corr.set_title('Infill surr-vs-real Spearman ρ (↑)')
-    ax_infill_corr.set_xlabel('Evaluations')
-    ax_infill_corr.legend(fontsize=7)
+    titles = {
+        ax_hv:          'HV (↑)',
+        ax_igd:         'IGD+ (↓)',
+        ax_rmse:        'Surrogate RMSE (train ↓)',
+        ax_sp:          'Surrogate Spearman ρ (train ↑)',
+        ax_nfill:       'Random fill-in count (↓)',
+        ax_infill_corr: 'Infill surr-vs-real ρ (↑)',
+        ax_ps:          'Effective pop size',
+        ax_alpha_beta:  'α eliminated + β added per gen',
+        ax_misc:        'Mean surrogate std of selected',
+    }
+    for ax, title in titles.items():
+        ax.set_title(title)
+        ax.set_xlabel('Evaluations')
+        ax.legend(fontsize=7)
 
     fig.suptitle(
         f'{prob.upper()} — Ablation: {ablation} (sweep: {sweep_param})\n'
@@ -708,21 +1143,26 @@ def _plot_ablation(prob, ablation, values, sweep_param, results_root,
 
 
 if __name__ == '__main__':
+    _all_ablations = list(ABLATION_CONFIGS.keys())
     parser = argparse.ArgumentParser(description='SAMOS ablation study')
-    parser.add_argument('--problem', type=str, nargs='+', default=['wfg3'],
-                        help='WFG problem(s) to run on (default: wfg3)')
-    parser.add_argument('--n_obj', type=int, default=2)
-    parser.add_argument('--n_var', type=int, default=None)
+    parser.add_argument('--problem', type=str, nargs='+', default=['wfg1', 'wfg3', 'wfg7'],
+                        help='WFG problem(s) to run on (default: wfg1 wfg3 wfg7)')
+    parser.add_argument('--n_obj',   type=int, default=2)
+    parser.add_argument('--n_var',   type=int, default=None)
     parser.add_argument('--ablation', type=str, default='all',
-                        choices=['surrogate', 'warm_start', 'selection', 'inner_pop',
-                                 'subset_sel', 'all'],
+                        choices=_all_ablations + ['all'],
                         help='Which ablation to run (default: all)')
-    parser.add_argument('--seeds', type=int, nargs='+', default=list(range(10)))
-    parser.add_argument('--pop_size', type=int, default=20)
-    parser.add_argument('--n_gen', type=int, default=60)
-    parser.add_argument('--n_gen_inner', type=int, default=20)
+    parser.add_argument('--seeds',      type=int, nargs='+', default=list(range(10)))
+    parser.add_argument('--pop_size',   type=int, default=20)
+    parser.add_argument('--n_gen',      type=int, default=60)
+    parser.add_argument('--n_gen_inner',type=int, default=20,
+                        help='Inner NSGA-II generations (also passed to GPSAF/SSA-NSGA-II refs)')
+    parser.add_argument('--pop_start',  type=int, default=50,
+                        help='Start population size for pop_schedule ablation')
+    parser.add_argument('--pop_end',    type=int, default=1000,
+                        help='End population size for pop_schedule ablation')
     parser.add_argument('--experiment_name', type=str, default='samos_ablation/2_obj')
-    parser.add_argument('--overwrite', action='store_true')
+    parser.add_argument('--overwrite',  action='store_true')
     args = parser.parse_args()
     print(f'Arguments: {args}')
     main(args)

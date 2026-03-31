@@ -4,18 +4,27 @@
 # as reference baselines.
 #
 # Each array task runs ONE ablation type on ONE problem for ALL seeds.
-# 5 ablation types × 9 WFG problems = 45 tasks.
+# 12 ablation types × 9 WFG problems = 108 tasks.
 #
 # Submit:
 #   sbatch WFG_SAMOS_ABLATION.sbatch
 #
 # Or run a single ablation:
 #   sbatch --export=ALL,ABLATION=warm_start WFG_SAMOS_ABLATION.sbatch
+#
+# New ablation types (7 added):
+#   surrogate_ext  - extended surrogate comparison (9 types incl. GPR variants, ETR, KNN)
+#   inner_gens     - inner NSGA-II generation budget [5,10,20,40,80]
+#   pop_schedule   - inner pop size schedule [constant,linear_inc,linear_dec,exp_inc,exp_dec]
+#   alpha_beta     - surrogate tournament/extension phases [(0,0),(3,0),(0,10),(3,10),(5,20)]
+#   noise_tournament - uncertainty-aware tournament selection [False,True]
+#   trace          - replace-parent semantics in archive [False,True]
+#   uncertainty    - uncertainty exploitation mode [none,extra_obj,ei_filter,exploration_bonus]
 # ─────────────────────────────────────────────────────────────────────────────
 
 #SBATCH -J wfg_ablation
 #SBATCH -c 2
-#SBATCH --array=0-44              # 5 ablations × 9 problems
+#SBATCH --array=0-107             # 12 ablations × 9 problems
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -31,6 +40,8 @@ N_OBJ=${N_OBJ:-2}
 POP_SIZE=${POP_SIZE:-20}
 N_GEN_INNER=${N_GEN_INNER:-20}
 N_SEEDS=${N_SEEDS:-10}
+POP_START=${POP_START:-50}    # used by pop_schedule ablation
+POP_END=${POP_END:-1000}      # used by pop_schedule ablation
 
 # ─── derived parameters ───────────────────────────────────────────────────────
 N_VAR=$(( 2 * (N_OBJ - 1) + 10 ))
@@ -40,10 +51,12 @@ N_GEN=$(( TOTAL_BUDGET / POP_SIZE ))
 EXPERIMENT_NAME="samos_ablation/${N_OBJ}_obj"
 
 # ─── ablation/problem from array task ID ─────────────────────────────────────
-ABLATIONS=(surrogate warm_start selection inner_pop subset_sel)
+ABLATIONS=(surrogate warm_start selection inner_pop subset_sel
+           surrogate_ext inner_gens pop_schedule alpha_beta
+           noise_tournament trace uncertainty)
 PROBLEMS=(wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9)
 
-N_ABLATIONS=${#ABLATIONS[@]}   # 5
+N_ABLATIONS=${#ABLATIONS[@]}   # 12
 N_PROBLEMS=${#PROBLEMS[@]}     # 9
 
 # If ABLATION is set via --export, run only that ablation for all problems
@@ -99,6 +112,8 @@ echo "N_VAR             = $N_VAR"
 echo "N_GEN             = $N_GEN"
 echo "POP_SIZE          = $POP_SIZE"
 echo "SEEDS             = $SEEDS"
+echo "POP_START         = $POP_START"
+echo "POP_END           = $POP_END"
 
 # ─── run ──────────────────────────────────────────────────────────────────────
 python main_samos_ablation.py \
@@ -110,6 +125,8 @@ python main_samos_ablation.py \
     --pop_size      "$POP_SIZE" \
     --n_gen         "$N_GEN" \
     --n_gen_inner   "$N_GEN_INNER" \
+    --pop_start     "$POP_START" \
+    --pop_end       "$POP_END" \
     --experiment_name "$EXPERIMENT_NAME"
 
 # ── copy results back ────────────────────────────────────────────────────────

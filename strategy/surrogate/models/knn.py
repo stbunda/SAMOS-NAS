@@ -21,6 +21,12 @@ class KNN:
     def predict(self, x):
         return self.model.predict(x)
 
+    def predict_std(self, x):
+        raise NotImplementedError(
+            "KNN does not support predict_std(). "
+            "Use a GPR or ensemble-based surrogate for uncertainty-aware ablations."
+        )
+
     def to_config(self):
         self.metadata = {
             "class": self.__class__.__name__,

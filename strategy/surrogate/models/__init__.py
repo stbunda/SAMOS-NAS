@@ -7,32 +7,39 @@ surrogate-assisted optimization.
 
 Available Models:
 -----------------
-- RFR: Random Forest Regressor
+- RFR: Random Forest Regressor (ensemble std via predict_std)
+- ETR: Extra Trees Regressor (ensemble std via predict_std)
 - KNN: K-Nearest Neighbors
-- GP: Gaussian Process (simple)
+- GP: Gaussian Process (simple alias for GPR)
+- GPR: Gaussian Process Regressor — fixed RBF kernel
+- GPR_MLE: GPR with MLE kernel optimisation (free length-scale)
+- GPR_Matern15: GPR with Matérn ν=1.5 kernel
+- GPR_Matern25: GPR with Matérn ν=2.5 kernel
+- GPR_White: GPR with RBF + WhiteKernel (noise-aware)
 - XGBoost: XGBoost Regressor
-- GPR: Gaussian Process Regressor (Kriging)
 - CART: Classification and Regression Trees
 - MLP: Multi-Layer Perceptron
 - RNN: Recurrent Neural Network
 
+GPR variants all expose predict_std(x) returning posterior std.
+RFR and ETR expose predict_std(x) via ensemble tree disagreement.
+XGBoost and KNN raise NotImplementedError for predict_std().
+
 Usage:
 ------
-    from strategy.surrogate.models import RFR, KNN, GP, XGBoost
+    from strategy.surrogate.models import RFR, GPR, GPR_MLE, ETR
 
-    # Create a Random Forest surrogate
     model = RFR(n_estimators=100, seed=42)
-
-    # Create an XGBoost surrogate
-    model = XGBoost(n_estimators=100, seed=42)
+    model = GPR_MLE(seed=42)
 """
 
 # Core surrogate models (always available)
 from .rf import RFR
 from .knn import KNN
 from .gp import GP
-from .kriging import GPR
+from .kriging import GPR, GPR_MLE, GPR_Matern15, GPR_Matern25, GPR_White
 from .carts import CART
+from .extra_trees import ETR
 
 # XGBoost (optional dependency)
 try:
@@ -63,10 +70,15 @@ except (ImportError, OSError):
 __all__ = [
     # Core models (always available)
     'RFR',
+    'ETR',
     'KNN',
     'GP',
-    'XGBoost',
     'GPR',
+    'GPR_MLE',
+    'GPR_Matern15',
+    'GPR_Matern25',
+    'GPR_White',
+    'XGBoost',
     'CART',
 ]
 
@@ -79,10 +91,15 @@ if _GPR_ENHANCED_AVAILABLE:
 # Model registry for dynamic instantiation
 SURROGATE_MODELS = {
     'RFR': RFR,
+    'ETR': ETR,
     'KNN': KNN,
     'GP': GP,
-    'XGBoost': XGBoost,
     'GPR': GPR,
+    'GPR_MLE': GPR_MLE,
+    'GPR_Matern15': GPR_Matern15,
+    'GPR_Matern25': GPR_Matern25,
+    'GPR_White': GPR_White,
+    'XGBoost': XGBoost,
     'CART': CART,
 }
 
