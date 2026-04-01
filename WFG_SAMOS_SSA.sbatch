@@ -152,7 +152,7 @@ flock --wait 60 \
         --problems        wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9 \
         --n_obj           "$N_OBJ" \
         --n_var           "$N_VAR" \
-        --methods         random nsga2 samos-xgb samos-ssa samos2 mosmac parego gpsaf-default ssa-nsga2-default \
+        --methods         random nsga2 samos-xgb-i200-g20 samos2 mosmac parego gpsaf-default ssa-nsga2-default \
         --pop_size        "$POP_SIZE" \
         --n_gen           "$N_GEN" \
         --checkpoints_d   10 25 50 100 \
