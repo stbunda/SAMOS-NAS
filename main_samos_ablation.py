@@ -1205,6 +1205,116 @@ ABLATION_CONFIGS = {
     },
 }
 
+# ─── SAMOS2 ablation configs ─────────────────────────────────────────────────
+# Identical sweep_param / values as V1; only defaults use SAMOS2's tuned settings.
+
+_SAMOS2_DEFAULTS = dict(
+    warm_start_ratio=0.25,
+    selection_method='subset',
+    use_subset_selection=True,
+    ga_pop_size=100,
+    pop_schedule='exp_dec',
+    pop_start=500,
+    pop_end=50,
+    alpha=3,
+    beta=10,
+    rho=0.5,
+    noise_tournament=False,
+    use_trace=False,
+    uncertainty_mode='none',
+)
+
+ABLATION_CONFIGS_V2 = {
+    # ── original ablations ──────────────────────────────────────────────── #
+    'surrogate': {
+        'sweep_param': 'surrogate_type',
+        'values': ['gpr', 'xgb', 'rfr'],
+        'defaults': dict(**_SAMOS2_DEFAULTS),
+    },
+    'warm_start': {
+        'sweep_param': 'warm_start_ratio',
+        'values': [0.0, 0.25, 0.5, 0.75, 1.0],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'selection': {
+        'sweep_param': 'selection_method',
+        'values': ['subset', 'kmeans', 'crowding'],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'inner_pop': {
+        'sweep_param': 'ga_pop_size',
+        'values': [50, 100, 200, 500],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'subset_sel': {
+        'sweep_param': 'use_subset_selection',
+        'values': [True, False],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    # ── new ablations ───────────────────────────────────────────────────── #
+    'surrogate_ext': {
+        'sweep_param': 'surrogate_type',
+        'values': ['gpr', 'gpr_mle', 'gpr_matern15', 'gpr_matern25',
+                   'gpr_white', 'xgb', 'rfr', 'etr', 'knn'],
+        'defaults': dict(**_SAMOS2_DEFAULTS),
+    },
+    'inner_gens': {
+        'sweep_param': 'n_gen_inner',
+        'values': [5, 10, 20, 40, 80],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'pop_schedule': {
+        'sweep_param': 'pop_schedule',
+        'values': ['constant', 'linear_inc', 'linear_dec', 'exp_inc', 'exp_dec'],
+        # pop_start/pop_end from _SAMOS2_DEFAULTS (500→50) — sweeps schedule shape
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'alpha_beta': {
+        'sweep_param': 'alpha_beta_pair',
+        'values': [(0, 0), (3, 0), (0, 10), (3, 10), (5, 20)],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'noise_tournament': {
+        'sweep_param': 'noise_tournament',
+        'values': [False, True],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'gpr'}),
+    },
+    'trace': {
+        'sweep_param': 'use_trace',
+        'values': [False, True],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'uncertainty': {
+        'sweep_param': 'uncertainty_mode',
+        'values': ['none', 'extra_obj', 'ei_filter', 'exploration_bonus', 'hvi_rerank'],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'gpr'}),
+    },
+    # ── batch-2 ablations ───────────────────────────────────────────────── #
+    'ensemble': {
+        'sweep_param': 'surrogate_type',
+        'values': ['gpr', 'xgb', 'rfr', 'etr', 'knn',
+                   'gpr+xgb', 'gpr+rfr', 'gpr+etr', 'gpr+knn',
+                   'xgb+rfr', 'knn+xgb', 'gpr+xgb+rfr'],
+        'defaults': dict(**_SAMOS2_DEFAULTS),
+    },
+    'doe_strategy': {
+        'sweep_param': 'doe_strategy',
+        'values': ['uniform', 'lhs', 'halton', 'sobol', 'riesz'],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'rbf_surrogate': {
+        'sweep_param': 'surrogate_type',
+        'values': ['rbf_cubic', 'rbf_tps', 'rbf_gaussian',
+                   'rbf_multiquadric', 'rbf_invquad', 'rbf_invmultiquad'],
+        'defaults': dict(**_SAMOS2_DEFAULTS),
+    },
+    'infill_criterion': {
+        'sweep_param': 'uncertainty_mode',
+        'values': ['none', 'hvi_rerank', 'ei_filter', 'exploration_bonus', 'extra_obj'],
+        'defaults': dict(**{**_SAMOS2_DEFAULTS, 'surrogate_type': 'gpr'}),
+    },
+}
+
 
 def run_ablation_single(problem_name, seed, ablation, sweep_value, pop_size, n_gen,
                         n_obj=2, n_var=None, n_gen_inner=20, defaults=None,
@@ -1353,12 +1463,13 @@ def run_ablation_single(problem_name, seed, ablation, sweep_value, pop_size, n_g
 
 def main(args):
     ablations = list(ABLATION_CONFIGS.keys()) if args.ablation == 'all' else [args.ablation]
+    ablation_configs = ABLATION_CONFIGS_V2 if args.base_algorithm == 'samos2' else ABLATION_CONFIGS
 
     if args.benchmark == 'nasbench101':
-        _main_nasbench(args, ablations, benchmark='nasbench101', datasets=[None])
+        _main_nasbench(args, ablations, ablation_configs, benchmark='nasbench101', datasets=[None])
         return
     if args.benchmark == 'nasbench201':
-        _main_nasbench(args, ablations, benchmark='nasbench201', datasets=args.dataset)
+        _main_nasbench(args, ablations, ablation_configs, benchmark='nasbench201', datasets=args.dataset)
         return
 
     # ── WFG benchmark (original path) ─────────────────────────────────────
@@ -1397,7 +1508,7 @@ def main(args):
 
         # ── run ablation sweeps ──────────────────────────────────────────
         for ablation in ablations:
-            config      = ABLATION_CONFIGS[ablation]
+            config      = ablation_configs[ablation]
             sweep_param = config['sweep_param']
             values      = config['values']
             defaults    = config['defaults']
@@ -1448,7 +1559,7 @@ def main(args):
     # ── cross-benchmark summary (only when multiple problems requested) ───
     if len(args.problem) > 1:
         for ablation in ablations:
-            config      = ABLATION_CONFIGS[ablation]
+            config      = ablation_configs[ablation]
             sweep_param = config['sweep_param']
             values      = config['values']
             summary = _aggregate_ablation(
@@ -1462,7 +1573,7 @@ def main(args):
             )
 
 
-def _main_nasbench(args, ablations, benchmark, datasets):
+def _main_nasbench(args, ablations, ablation_configs, benchmark, datasets):
     """Run the ablation study on one or more NAS benchmark datasets."""
     budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
 
@@ -1521,7 +1632,7 @@ def _main_nasbench(args, ablations, benchmark, datasets):
                       f'(requires continuous QMC sampling)')
                 continue
 
-            config      = ABLATION_CONFIGS[ablation]
+            config      = ablation_configs[ablation]
             sweep_param = config['sweep_param']
             values      = config['values']
             defaults    = config['defaults']
@@ -1843,6 +1954,10 @@ if __name__ == '__main__':
                         help='End population size for pop_schedule ablation')
     parser.add_argument('--experiment_name', type=str, default='samos_ablation/2_obj')
     parser.add_argument('--overwrite',  action='store_true')
+    parser.add_argument('--base_algorithm', type=str, default='samos1',
+                        choices=['samos1', 'samos2'],
+                        help='Which SAMOS generation to use as the ablation base '
+                             '(samos1 = original defaults, samos2 = tuned defaults)')
     parser.add_argument('--benchmark', type=str, default='wfg',
                         choices=['wfg', 'nasbench101', 'nasbench201'],
                         help='Benchmark to run the ablation on')
