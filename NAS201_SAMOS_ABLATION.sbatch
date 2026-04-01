@@ -21,11 +21,11 @@
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
 #SBATCH --time=24:00:00
-#SBATCH --output=slurm_logs_nas201_ablation/%x_%A_%a.log
+#SBATCH --output=slurm_logs_nas_ablation/201_%x_%A_%a.log
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline
 
-mkdir -p slurm_logs_nas201_ablation
+mkdir -p slurm_logs_nas_ablation
 
 # ─── tunable parameters ───────────────────────────────────────────────────────
 N_VAR=6
