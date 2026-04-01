@@ -111,7 +111,7 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
         --n_gen         "$N_GEN" \
         --experiment_name "$EXPERIMENT_NAME" \
         --no_plot \
-        --overwrite
+        # --overwrite
 
     # ── copy results back ─────────────────────────────────────────────────────
     DEST="${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}"
@@ -152,7 +152,7 @@ flock --wait 60 \
         --problems        wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9 \
         --n_obj           "$N_OBJ" \
         --n_var           "$N_VAR" \
-        --methods         "$SAMOS_SSA" \
+        --methods         random nsga2 samos-xgb samos-ssa samos2 mosmac parego gpsaf-default ssa-nsga2-default \
         --pop_size        "$POP_SIZE" \
         --n_gen           "$N_GEN" \
         --checkpoints_d   10 25 50 100 \
