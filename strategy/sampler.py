@@ -37,18 +37,17 @@ class SamplingGP(Sampling):
 
 # ─── NASBench-101 sampling ────────────────────────────────────────────────────
 
-from problem.nasbench101.utils import (
-    N_VAR as _NB101_N_VAR,
-    N_OPS as _NB101_N_OPS,
-    N_EDGES as _NB101_N_EDGES,
-    _is_valid_vec as _nb101_is_valid_vec,
-)
-
 
 class ValidRandomSampling101(Sampling):
     """Generates a matrix of valid 26-gene NASBench-101 integer vectors."""
 
     def _do(self, problem, n_samples, **kwargs):
+        from problem.nasbench101.utils import (
+            N_VAR as _NB101_N_VAR,
+            N_OPS as _NB101_N_OPS,
+            N_EDGES as _NB101_N_EDGES,
+            _is_valid_vec as _nb101_is_valid_vec,
+        )
         X = np.zeros((n_samples, _NB101_N_VAR), dtype=float)
         for i in range(n_samples):
             for _ in range(200):

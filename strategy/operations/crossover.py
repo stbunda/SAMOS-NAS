@@ -139,8 +139,6 @@ class CrossoverProgram(Crossover):
 
 # ─── NASBench-101 crossover operators ────────────────────────────────────────
 
-from problem.nasbench101.utils import _is_valid_vec as _nb101_is_valid_vec
-
 
 class NoCrossover(Crossover):
     """
@@ -178,6 +176,7 @@ class TwoPointCrossover101(Crossover):
         }
 
     def _do(self, problem, X, **kwargs):
+        from problem.nasbench101.utils import _is_valid_vec as _nb101_is_valid_vec
         _, n_matings, n_var = X.shape
         Xp = np.empty_like(X)
 

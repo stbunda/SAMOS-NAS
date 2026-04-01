@@ -2,9 +2,6 @@ from pprint import pprint
 
 import numpy as np
 from pymoo.core.duplicate import DuplicateElimination
-from problem.nasbench101.utils import (
-    _vec_to_arch_str, _fast_canonical_bytes, load_nasbench101_lut,
-)
 
 
 class NoDuplicateElimination(DuplicateElimination):
@@ -70,6 +67,9 @@ class NASBench101DuplicateElimination(DuplicateElimination):
     """
 
     def __init__(self, bench_db: dict, **kwargs):
+        from problem.nasbench101.utils import (
+            _vec_to_arch_str, _fast_canonical_bytes, load_nasbench101_lut,
+        )
         super().__init__(**kwargs)
         self.bench_db = bench_db
         # Per-run cache: raw_vec_bytes -> arch_str | None
@@ -77,6 +77,8 @@ class NASBench101DuplicateElimination(DuplicateElimination):
         # Precomputed LUT: canonical_bytes -> arch_str (loaded from disk).
         # When present, replaces ModelSpec + hash_module on every cache miss.
         self._lut: 'dict | None' = load_nasbench101_lut()
+        self._vec_to_arch_str = _vec_to_arch_str
+        self._fast_canonical_bytes = _fast_canonical_bytes
 
     def _resolve(self, vec_int8: np.ndarray) -> 'str | None':
         """Map a rounded int8 vector to its arch_str.

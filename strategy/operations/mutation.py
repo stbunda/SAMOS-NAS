@@ -118,12 +118,6 @@ class MutateProgram(Mutation):
 from pymoo.core.variable import Real, get
 from pymoo.operators.mutation.pm import mut_pm
 
-from problem.nasbench101.utils import (
-    N_VAR as _NB101_N_VAR,
-    N_OPS as _NB101_N_OPS,
-    _is_valid_vec as _nb101_is_valid_vec,
-)
-
 
 class UniformMutation101(Mutation):
     """
@@ -144,6 +138,11 @@ class UniformMutation101(Mutation):
         }
 
     def _do(self, problem, X, params=None, **kwargs):
+        from problem.nasbench101.utils import (
+            N_VAR as _NB101_N_VAR,
+            N_OPS as _NB101_N_OPS,
+            _is_valid_vec as _nb101_is_valid_vec,
+        )
         X = X.astype(float)
         Xp = np.copy(X)
         eta      = get(self.eta, size=len(X))
@@ -177,6 +176,11 @@ class SinglePointMutation101(Mutation):
         super().__init__(**kwargs)
 
     def _do(self, problem, X, **kwargs):
+        from problem.nasbench101.utils import (
+            N_VAR as _NB101_N_VAR,
+            N_OPS as _NB101_N_OPS,
+            _is_valid_vec as _nb101_is_valid_vec,
+        )
         X = X.astype(float)
         Xp = np.copy(X)
 
