@@ -19,7 +19,7 @@
 
 #SBATCH -J wfg2_ablation
 #SBATCH -c 2
-#SBATCH --array=0-99#143
+#SBATCH --array=0-79#143
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
