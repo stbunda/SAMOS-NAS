@@ -66,6 +66,26 @@ except (ImportError, OSError):
     _GPR_ENHANCED_AVAILABLE = False
     GPR_Enhanced = None
 
+# RBF interpolation surrogates (scipy required)
+try:
+    from .rbf import (
+        RBFSurrogate,
+        RBF_Cubic,
+        RBF_ThinPlateSpline,
+        RBF_Gaussian,
+        RBF_Multiquadric,
+        RBF_InverseQuadratic,
+        RBF_InverseMultiquadric,
+    )
+    _RBF_AVAILABLE = True
+except (ImportError, OSError):
+    _RBF_AVAILABLE = False
+    RBFSurrogate = RBF_Cubic = RBF_ThinPlateSpline = RBF_Gaussian = None
+    RBF_Multiquadric = RBF_InverseQuadratic = RBF_InverseMultiquadric = None
+
+# Ensemble surrogate
+from .ensemble import EnsembleSurrogate
+
 # Build __all__ dynamically based on what's available
 __all__ = [
     # Core models (always available)
@@ -80,7 +100,14 @@ __all__ = [
     'GPR_White',
     'XGBoost',
     'CART',
+    'EnsembleSurrogate',
 ]
+
+if _RBF_AVAILABLE:
+    __all__.extend([
+        'RBFSurrogate', 'RBF_Cubic', 'RBF_ThinPlateSpline', 'RBF_Gaussian',
+        'RBF_Multiquadric', 'RBF_InverseQuadratic', 'RBF_InverseMultiquadric',
+    ])
 
 if _RNN_AVAILABLE:
     __all__.extend(['MLP', 'RNN'])
@@ -101,7 +128,18 @@ SURROGATE_MODELS = {
     'GPR_White': GPR_White,
     'XGBoost': XGBoost,
     'CART': CART,
+    'EnsembleSurrogate': EnsembleSurrogate,
 }
+
+if _RBF_AVAILABLE:
+    SURROGATE_MODELS.update({
+        'RBF_Cubic':              RBF_Cubic,
+        'RBF_ThinPlateSpline':    RBF_ThinPlateSpline,
+        'RBF_Gaussian':           RBF_Gaussian,
+        'RBF_Multiquadric':       RBF_Multiquadric,
+        'RBF_InverseQuadratic':   RBF_InverseQuadratic,
+        'RBF_InverseMultiquadric': RBF_InverseMultiquadric,
+    })
 
 if _RNN_AVAILABLE:
     SURROGATE_MODELS['MLP'] = MLP

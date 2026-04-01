@@ -8,8 +8,6 @@ Isolates factors that differ between SAMOS and SSA-NSGA-II / GPSAF:
     C. Candidate selection method (subset, kmeans, crowding)
     D. Inner population size      (50, 100, 200, 500)
     E. Subset selection on/off    (True, False)
-
-  New ablations:
     F. Surrogate model extended   (gpr, gpr_mle, gpr_matern15, gpr_matern25,
                                    gpr_white, xgb, rfr, etr, knn)
     G. Inner NSGA-II generations  (5, 10, 20, 40, 80) — refs use same value
@@ -62,6 +60,16 @@ from problem.pymoo.benchmark_utils import build_problem, get_pareto_front, defau
 from strategy.callbacks import PymooBenchmarkCallback
 from strategy.surrogate.models import RFR, XGBoost, ETR
 from strategy.surrogate.models.kriging import GPR, GPR_MLE, GPR_Matern15, GPR_Matern25, GPR_White
+from strategy.surrogate.models.ensemble import EnsembleSurrogate
+try:
+    from strategy.surrogate.models.rbf import (
+        RBF_Cubic, RBF_ThinPlateSpline, RBF_Gaussian,
+        RBF_Multiquadric, RBF_InverseQuadratic, RBF_InverseMultiquadric,
+    )
+    _RBF_AVAILABLE = True
+except ImportError:
+    _RBF_AVAILABLE = False
+from scipy.stats import qmc as _qmc
 
 # Reference baselines
 from strategy.algorithm.gpsaf import GPSAF, SklearnGPSAF
@@ -76,6 +84,82 @@ REFERENCE_BASELINES = [
     'gpsaf-default',
     'gpsaf-xgb',
 ]
+
+
+# ─── DOE sampling helpers ─────────────────────────────────────────────────────
+
+def _riesz_energy_samples(n: int, n_var: int, xl: np.ndarray, xu: np.ndarray,
+                           s: float = 1.0, n_iter: int = 200,
+                           lr: float = 0.01, seed: int = 0) -> np.ndarray:
+    """Riesz s-energy repulsion sampling normalised to [xl, xu]."""
+    rng = np.random.RandomState(seed)
+    pts = rng.uniform(0.0, 1.0, (n, n_var))
+    for _ in range(n_iter):
+        diff  = pts[:, None, :] - pts[None, :, :]      # (n, n, d)
+        dist2 = np.sum(diff ** 2, axis=2) + 1e-12      # (n, n)
+        np.fill_diagonal(dist2, np.inf)
+        coeff = s / (dist2 ** (s / 2 + 1))             # (n, n)
+        force = (coeff[:, :, None] * diff).sum(axis=1) # (n, d)
+        pts   = np.clip(pts + lr * force, 0.0, 1.0)
+    return xl + pts * (xu - xl)
+
+
+def _doe_samples(problem, n: int, strategy: str, seed: int = 0) -> np.ndarray:
+    """Return (n, n_var) DOE samples in decision space using *strategy*."""
+    xl    = problem.xl.astype(float)
+    xu    = problem.xu.astype(float)
+    n_var = problem.n_var
+    if strategy == 'uniform':
+        return np.random.RandomState(seed).uniform(xl, xu, (n, n_var))
+    if strategy == 'lhs':
+        pts = _qmc.LatinHypercube(n_var, seed=seed).random(n)
+    elif strategy == 'halton':
+        pts = _qmc.Halton(n_var, scramble=True, seed=seed).random(n)
+    elif strategy == 'sobol':
+        import math as _math
+        m   = _math.ceil(_math.log2(max(n, 1)))
+        pts = _qmc.Sobol(n_var, scramble=True, seed=seed).random(2 ** m)[:n]
+    elif strategy == 'riesz':
+        return _riesz_energy_samples(n, n_var, xl, xu, seed=seed)
+    else:
+        raise ValueError(f'Unknown DOE strategy: {strategy!r}')
+    return _qmc.scale(pts, xl, xu)
+
+
+def _make_single_surrogate(stype: str, seed: int = 0):
+    """Construct a single surrogate model from a type string."""
+    stype = stype.strip().lower()
+    if stype == 'gpr':
+        return GPR(seed=seed)
+    if stype == 'gpr_mle':
+        return GPR_MLE(seed=seed)
+    if stype == 'gpr_matern15':
+        return GPR_Matern15(seed=seed)
+    if stype == 'gpr_matern25':
+        return GPR_Matern25(seed=seed)
+    if stype == 'gpr_white':
+        return GPR_White(seed=seed)
+    if stype == 'xgb':
+        return XGBoost(100, seed=seed)
+    if stype == 'rfr':
+        return RFR(100, seed=seed)
+    if stype == 'etr':
+        return ETR(100, seed=seed)
+    if stype == 'knn':
+        from strategy.surrogate.models.knn import KNN
+        return KNN(n_neighbors=5, random_state=np.random.RandomState(seed))
+    if _RBF_AVAILABLE:
+        _RBF_MAP = {
+            'rbf_cubic':        RBF_Cubic,
+            'rbf_tps':          RBF_ThinPlateSpline,
+            'rbf_gaussian':     RBF_Gaussian,
+            'rbf_multiquadric': RBF_Multiquadric,
+            'rbf_invquad':      RBF_InverseQuadratic,
+            'rbf_invmultiquad': RBF_InverseMultiquadric,
+        }
+        if stype in _RBF_MAP:
+            return _RBF_MAP[stype]()
+    raise ValueError(f'Unknown surrogate type: {stype!r}')
 
 
 # ─── Diagnostics-enhanced SAMOS ──────────────────────────────────────────────
@@ -119,6 +203,10 @@ class SAMOSAblation(Algorithm):
         'extra_obj'         — add -predict_std as an extra inner objective
         'ei_filter'         — keep only candidates above median predict_std
         'exploration_bonus' — boost subset-selection score by predict_std
+        'hvi_rerank'        — re-rank infill candidates by predicted hypervolume improvement
+    doe_strategy : str
+        Initial DOE sampling strategy for the first generation.
+        'uniform' (default), 'lhs', 'halton', 'sobol', 'riesz'
     """
 
     def __init__(self,
@@ -146,6 +234,7 @@ class SAMOSAblation(Algorithm):
                  noise_k=1.0,
                  use_trace=False,
                  uncertainty_mode='none',
+                 doe_strategy='uniform',
                  **kwargs):
         super().__init__(eliminate_duplicates=False, **kwargs)
         self.sampling             = sampling
@@ -173,6 +262,7 @@ class SAMOSAblation(Algorithm):
         self.noise_k         = noise_k
         self.use_trace       = use_trace
         self.uncertainty_mode = uncertainty_mode
+        self.doe_strategy    = doe_strategy
 
         self._archive      = Population()
         self._archive_keys: set = set()
@@ -186,9 +276,15 @@ class SAMOSAblation(Algorithm):
             self._n_total_gen = self.termination.n_max_gen
         except AttributeError:
             self._n_total_gen = None
+        # Capture seed from the algorithm (set by pymoo minimize via seed= arg)
+        self._doe_seed = getattr(self, 'seed', 0) or 0
 
     def _initialize_infill(self):
-        return self._init.do(self.problem, self.n_doe, algorithm=self)
+        if self.doe_strategy == 'uniform':
+            return self._init.do(self.problem, self.n_doe, algorithm=self)
+        X = _doe_samples(self.problem, self.n_doe, self.doe_strategy,
+                        seed=getattr(self, '_doe_seed', 0))
+        return Population.new('X', X)
 
     def _initialize_advance(self, infills=None, **kwargs):
         self._archive = Population.merge(self._archive, infills)
@@ -334,6 +430,28 @@ class SAMOSAblation(Algorithm):
 
         return TournamentSelection(func_comp=_comp)
 
+    def _hvi_rerank(self, cand_pop: Population, F_arc: np.ndarray) -> Population:
+        """Re-rank candidates by predicted hypervolume improvement (descending).
+
+        Uses an adaptive reference point = 1.1 × worst observed values, so no
+        problem-specific prior is needed.
+        """
+        if len(cand_pop) == 0:
+            return cand_pop
+        cand_X    = cand_pop.get('X')
+        surr_F    = np.column_stack([s.predict(cand_X).ravel() for s in self.surrogates])
+        ref_point = F_arc.max(axis=0) * 1.1
+        hv_ind    = HV(ref_point=ref_point)
+        pf_idx    = NonDominatedSorting().do(F_arc, only_non_dominated_front=True)
+        pf_F      = F_arc[pf_idx]
+        hv_base   = float(hv_ind(pf_F))
+        hvi_scores = np.zeros(len(cand_pop))
+        for i, f_cand in enumerate(surr_F):
+            aug_F         = np.vstack([pf_F, f_cand[None, :]])
+            hvi_scores[i] = float(hv_ind(aug_F)) - hv_base
+        order = np.argsort(-hvi_scores)
+        return cand_pop[order]
+
     # ── main infill ─────────────────────────────────────────────────────────
 
     def _infill(self):
@@ -441,7 +559,7 @@ class SAMOSAblation(Algorithm):
             ], dtype=bool)
             cand_pop = cand_pop[not_dup2]
 
-        # ── 9. Uncertainty filter (ei_filter / exploration_bonus) ─────────
+        # ── 9. Uncertainty filter / infill criterion ───────────────────────
         mean_std_selected = 0.0
         if self.uncertainty_mode in ('ei_filter', 'exploration_bonus') \
                 and len(cand_pop) > 0 and self._can_predict_std():
@@ -452,14 +570,15 @@ class SAMOSAblation(Algorithm):
                 keep = std_arr >= threshold
                 if keep.sum() >= 1:
                     cand_pop = cand_pop[keep]
-            # exploration_bonus is handled inside _select_subset via the
-            # std_arr we'll pass through the diag; subset_selection itself
-            # is not modified, but we pre-sort candidates by std desc here
+            # exploration_bonus: pre-sort candidates by std desc so subset
+            # selection naturally picks high-uncertainty candidates first
             elif self.uncertainty_mode == 'exploration_bonus':
                 order = np.argsort(-std_arr)
                 cand_pop = cand_pop[order]
             mean_std_selected = float(std_arr[:len(cand_pop)].mean()) \
                 if len(cand_pop) > 0 else 0.0
+        elif self.uncertainty_mode == 'hvi_rerank' and len(cand_pop) > 0:
+            cand_pop = self._hvi_rerank(cand_pop, F_arc)
         diag['mean_surrogate_std'] = mean_std_selected
 
         # ── 10. Select final infill batch ──────────────────────────────────
@@ -729,31 +848,23 @@ def run_reference_baseline(method, seed, problem_name, pop_size, n_gen,
 # ─── Ablation configurations ─────────────────────────────────────────────────
 
 def _make_surrogates(stype, n_obj, seed):
-    from strategy.surrogate.models.knn import KNN
+    """Build one surrogate per objective.
+
+    *stype* may be:
+    - a simple key, e.g. ``'xgb'``, ``'gpr'``, ``'rbf_cubic'``
+    - a ``'+'``-separated ensemble spec, e.g. ``'gpr+xgb'`` → one
+      :class:`EnsembleSurrogate` per objective whose members are those types
+    """
     rng = np.random.RandomState(seed)
+    member_types = [t.strip() for t in stype.split('+')]
     surrs = []
     for _ in range(n_obj):
-        s = rng.randint(0, 2**31 - 1)
-        if stype == 'xgb':
-            surrs.append(XGBoost(100, seed=s))
-        elif stype == 'rfr':
-            surrs.append(RFR(100, seed=s))
-        elif stype == 'etr':
-            surrs.append(ETR(100, seed=s))
-        elif stype == 'knn':
-            surrs.append(KNN(n_neighbors=5, random_state=np.random.RandomState(s)))
-        elif stype == 'gpr':
-            surrs.append(GPR(seed=s))
-        elif stype == 'gpr_mle':
-            surrs.append(GPR_MLE(seed=s))
-        elif stype == 'gpr_matern15':
-            surrs.append(GPR_Matern15(seed=s))
-        elif stype == 'gpr_matern25':
-            surrs.append(GPR_Matern25(seed=s))
-        elif stype == 'gpr_white':
-            surrs.append(GPR_White(seed=s))
+        s = int(rng.randint(0, 2**31 - 1))
+        if len(member_types) == 1:
+            surrs.append(_make_single_surrogate(member_types[0], seed=s))
         else:
-            raise ValueError(f'Unknown surrogate type: {stype}')
+            members = [_make_single_surrogate(mt, seed=s) for mt in member_types]
+            surrs.append(EnsembleSurrogate(members))
     return surrs
 
 
@@ -836,7 +947,31 @@ ABLATION_CONFIGS = {
     },
     'uncertainty': {
         'sweep_param': 'uncertainty_mode',
-        'values': ['none', 'extra_obj', 'ei_filter', 'exploration_bonus'],
+        'values': ['none', 'extra_obj', 'ei_filter', 'exploration_bonus', 'hvi_rerank'],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'gpr'}),
+    },
+    # ── batch-2 ablations ───────────────────────────────────────────────── #
+    'ensemble': {
+        'sweep_param': 'surrogate_type',
+        'values': ['gpr', 'xgb', 'rfr', 'etr', 'knn',
+                   'gpr+xgb', 'gpr+rfr', 'gpr+etr', 'gpr+knn',
+                   'xgb+rfr', 'knn+xgb', 'gpr+xgb+rfr'],
+        'defaults': dict(**_SAMOS_DEFAULTS),
+    },
+    'doe_strategy': {
+        'sweep_param': 'doe_strategy',
+        'values': ['uniform', 'lhs', 'halton', 'sobol', 'riesz'],
+        'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'xgb'}),
+    },
+    'rbf_surrogate': {
+        'sweep_param': 'surrogate_type',
+        'values': ['rbf_cubic', 'rbf_tps', 'rbf_gaussian',
+                   'rbf_multiquadric', 'rbf_invquad', 'rbf_invmultiquad'],
+        'defaults': dict(**_SAMOS_DEFAULTS),
+    },
+    'infill_criterion': {
+        'sweep_param': 'uncertainty_mode',
+        'values': ['none', 'hvi_rerank', 'ei_filter', 'exploration_bonus', 'extra_obj'],
         'defaults': dict(**{**_SAMOS_DEFAULTS, 'surrogate_type': 'gpr'}),
     },
 }
@@ -997,6 +1132,135 @@ def main(args):
             # ── plot ablation results ────────────────────────────────────
             _plot_ablation(prob, ablation, values, sweep_param, results_root,
                            ref_root, args.n_gen, args.pop_size, args.n_obj, args.n_var)
+
+    # ── cross-benchmark summary (only when multiple problems requested) ───
+    if len(args.problem) > 1:
+        for ablation in ablations:
+            config      = ABLATION_CONFIGS[ablation]
+            sweep_param = config['sweep_param']
+            values      = config['values']
+            summary = _aggregate_ablation(
+                args.problem, ablation, values, sweep_param,
+                args.experiment_name, args.n_gen, args.pop_size,
+                args.n_obj, args.n_var,
+            )
+            _plot_cross_benchmark_summary(
+                ablation, values, sweep_param, summary,
+                args.experiment_name, args.n_gen, args.pop_size,
+            )
+
+
+
+def _aggregate_ablation(problems, ablation, values, sweep_param,
+                        experiment_name, n_gen, pop_size, n_obj, n_var):
+    """Return a dict  {problem: {str(val): final_hv_mean}}  over all seeds."""
+    summary = {}
+    budget_folder = f"B{n_gen * pop_size}_P{pop_size}"
+    for prob in problems:
+        results_root = os.path.join(
+            'results', experiment_name, prob, budget_folder, f'ablation_{ablation}'
+        )
+        problem   = build_problem(prob, n_obj, n_var)
+        ref_point = default_ref_point(prob, problem.n_obj)
+        hv_ind    = HV(ref_point=ref_point)
+
+        row = {}
+        for val in values:
+            method_name = f'{sweep_param}={val}'
+            save_dir    = os.path.join(results_root, method_name)
+            if not os.path.isdir(save_dir):
+                continue
+            finals = []
+            for seed_file in sorted(os.listdir(save_dir)):
+                if not seed_file.endswith('.pkl'):
+                    continue
+                with open(os.path.join(save_dir, seed_file), 'rb') as fh:
+                    data = pickle.load(fh)
+                hv_curve = [ind['hv'] for ind in data['indicators']]
+                if hv_curve:
+                    finals.append(hv_curve[-1])
+            if finals:
+                row[str(val)] = float(np.mean(finals))
+        summary[prob] = row
+    return summary
+
+
+def _plot_cross_benchmark_summary(ablation, values, sweep_param, summary,
+                                  experiment_name, n_gen, pop_size):
+    """Heatmap + rank bar chart of final-HV across problems × sweep values."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    probs     = list(summary.keys())
+    val_strs  = [str(v) for v in values]
+    # Filter to values that have data in at least one problem
+    val_strs  = [v for v in val_strs if any(v in summary[p] for p in probs)]
+    if not val_strs or not probs:
+        return
+
+    # Build HV matrix (probs × vals); fill unknowns with NaN
+    hv_mat = np.full((len(probs), len(val_strs)), np.nan)
+    for pi, prob in enumerate(probs):
+        for vi, val in enumerate(val_strs):
+            hv_mat[pi, vi] = summary[prob].get(val, np.nan)
+
+    # Row-wise Min–Max normalisation so each problem is on [0,1]
+    row_min = np.nanmin(hv_mat, axis=1, keepdims=True)
+    row_max = np.nanmax(hv_mat, axis=1, keepdims=True)
+    norm_mat = (hv_mat - row_min) / np.maximum(row_max - row_min, 1e-12)
+
+    # Rank per problem (1 = best), ignore NaN
+    rank_mat = np.full_like(norm_mat, np.nan)
+    for pi in range(len(probs)):
+        row = norm_mat[pi]
+        valid = ~np.isnan(row)
+        if valid.any():
+            sorted_idx = np.argsort(-row[valid])  # descending
+            ranks      = np.empty(valid.sum())
+            ranks[sorted_idx] = np.arange(1, valid.sum() + 1)
+            rank_mat[pi, valid] = ranks
+
+    mean_ranks = np.nanmean(rank_mat, axis=0)
+
+    # ── Figure ──────────────────────────────────────────────────────────
+    fig, (ax_heat, ax_rank) = plt.subplots(1, 2, figsize=(max(12, len(val_strs) * 1.2), 5))
+
+    # Heatmap
+    im = ax_heat.imshow(norm_mat, aspect='auto', cmap='RdYlGn',
+                         vmin=0, vmax=1)
+    ax_heat.set_xticks(range(len(val_strs)))
+    ax_heat.set_xticklabels(val_strs, rotation=45, ha='right', fontsize=8)
+    ax_heat.set_yticks(range(len(probs)))
+    ax_heat.set_yticklabels(probs, fontsize=9)
+    for pi in range(len(probs)):
+        for vi in range(len(val_strs)):
+            v = norm_mat[pi, vi]
+            if not np.isnan(v):
+                ax_heat.text(vi, pi, f'{v:.2f}', ha='center', va='center', fontsize=7,
+                             color='black' if 0.2 < v < 0.85 else 'white')
+    plt.colorbar(im, ax=ax_heat, fraction=0.03)
+    ax_heat.set_title(f'Normalised final HV\n(ablation: {ablation}, sweep: {sweep_param})',
+                       fontsize=10)
+
+    # Rank bar chart (lower = better)
+    bar_x = np.arange(len(val_strs))
+    ax_rank.bar(bar_x, mean_ranks, color='steelblue', alpha=0.8)
+    ax_rank.set_xticks(bar_x)
+    ax_rank.set_xticklabels(val_strs, rotation=45, ha='right', fontsize=8)
+    ax_rank.set_ylabel('Mean rank (1 = best)')
+    ax_rank.set_title(f'Cross-benchmark avg rank\n(ablation: {ablation})', fontsize=10)
+    ax_rank.invert_yaxis()   # rank 1 at top
+
+    fig.tight_layout()
+    budget_folder = f"B{n_gen * pop_size}_P{pop_size}"
+    out_dir = os.path.join('results', experiment_name, '_cross_benchmark',
+                           budget_folder, f'ablation_{ablation}')
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f'cross_benchmark_{ablation}.png')
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f'  Cross-benchmark plot saved -> {out_path}')
 
 
 def _plot_ablation(prob, ablation, values, sweep_param, results_root,

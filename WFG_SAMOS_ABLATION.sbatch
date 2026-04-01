@@ -4,7 +4,7 @@
 # as reference baselines.
 #
 # Each array task runs ONE ablation type on ONE problem for ALL seeds.
-# 12 ablation types × 9 WFG problems = 108 tasks.
+# 16 ablation types × 9 WFG problems = 144 tasks.
 #
 # Submit:
 #   sbatch WFG_SAMOS_ABLATION.sbatch
@@ -12,19 +12,30 @@
 # Or run a single ablation:
 #   sbatch --export=ALL,ABLATION=warm_start WFG_SAMOS_ABLATION.sbatch
 #
-# New ablation types (7 added):
-#   surrogate_ext  - extended surrogate comparison (9 types incl. GPR variants, ETR, KNN)
-#   inner_gens     - inner NSGA-II generation budget [5,10,20,40,80]
-#   pop_schedule   - inner pop size schedule [constant,linear_inc,linear_dec,exp_inc,exp_dec]
-#   alpha_beta     - surrogate tournament/extension phases [(0,0),(3,0),(0,10),(3,10),(5,20)]
+# Ablation types (batch 1 — 12 types):
+#   surrogate       - surrogate model comparison [gpr,xgb,rfr]
+#   warm_start      - warm-start ratio [0.0,0.25,0.5,0.75,1.0]
+#   selection       - selection method [subset,kmeans,crowding]
+#   inner_pop       - inner population size [50,100,200,500]
+#   subset_sel      - use_subset_selection [True,False]
+#   surrogate_ext   - extended surrogate comparison (9 types incl. GPR variants, ETR, KNN)
+#   inner_gens      - inner NSGA-II generation budget [5,10,20,40,80]
+#   pop_schedule    - inner pop size schedule [constant,linear_inc,linear_dec,exp_inc,exp_dec]
+#   alpha_beta      - surrogate tournament/extension phases [(0,0),(3,0),(0,10),(3,10),(5,20)]
 #   noise_tournament - uncertainty-aware tournament selection [False,True]
-#   trace          - replace-parent semantics in archive [False,True]
-#   uncertainty    - uncertainty exploitation mode [none,extra_obj,ei_filter,exploration_bonus]
+#   trace           - replace-parent semantics in archive [False,True]
+#   uncertainty     - uncertainty exploitation mode [none,extra_obj,ei_filter,exploration_bonus,hvi_rerank]
+#
+# Ablation types (batch 2 — 4 new types):
+#   ensemble        - heterogeneous surrogate ensembles (12 combos)
+#   doe_strategy    - DOE sampling strategy [uniform,lhs,halton,sobol,riesz]
+#   rbf_surrogate   - RBF kernel surrogates (6 kernels)
+#   infill_criterion - standalone HVI vs. other infill criteria [none,hvi_rerank,ei_filter,...]
 # ─────────────────────────────────────────────────────────────────────────────
 
 #SBATCH -J wfg_ablation
 #SBATCH -c 2
-#SBATCH --array=0-107             # 12 ablations × 9 problems
+#SBATCH --array=108-143             # 16 ablations × 9 problems
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -53,10 +64,11 @@ EXPERIMENT_NAME="samos_ablation/${N_OBJ}_obj"
 # ─── ablation/problem from array task ID ─────────────────────────────────────
 ABLATIONS=(surrogate warm_start selection inner_pop subset_sel
            surrogate_ext inner_gens pop_schedule alpha_beta
-           noise_tournament trace uncertainty)
+           noise_tournament trace uncertainty
+           ensemble doe_strategy rbf_surrogate infill_criterion)
 PROBLEMS=(wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9)
 
-N_ABLATIONS=${#ABLATIONS[@]}   # 12
+N_ABLATIONS=${#ABLATIONS[@]}   # 16
 N_PROBLEMS=${#PROBLEMS[@]}     # 9
 
 # If ABLATION is set via --export, run only that ablation for all problems
