@@ -82,10 +82,12 @@ SEEDS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27
 #  11  → samos-xgb-xo-single-1000       (SAMOS-XGB + xo + single + inner_pop=1000)
 #  12  → samos-xgb-no-xo-single-1000    (SAMOS-XGB + no xo + single + inner_pop=1000)
 # -----------------------------------------------------------------
-METHODS=(random_ga nsga2-uniform nsga2-xo-single nsga2-no-xo-single \
-          samos-xgb-xo-uniform-200 samos-xgb-xo-single-200 samos-xgb-no-xo-single-200 \
-          samos-xgb-xo-uniform-50 samos-xgb-xo-single-50 samos-xgb-no-xo-single-50 \
-          samos-xgb-xo-uniform-1000 samos-xgb-xo-single-1000 samos-xgb-no-xo-single-1000)
+# METHODS=(random_ga nsga2-uniform nsga2-xo-single nsga2-no-xo-single \
+#           samos-xgb-xo-uniform-200 samos-xgb-xo-single-200 samos-xgb-no-xo-single-200 \
+#           samos-xgb-xo-uniform-50 samos-xgb-xo-single-50 samos-xgb-no-xo-single-50 \
+#           samos-xgb-xo-uniform-1000 samos-xgb-xo-single-1000 samos-xgb-no-xo-single-1000)
+
+METHODS=(samos-ssa)
 
 N_METHODS=${#METHODS[@]}
 
@@ -173,6 +175,10 @@ while (( IDX < TOTAL )); do
         samos-xgb-no-xo-single-1000)
             METHOD_FLAG="--samos_xgb_no_xo_single_1000"
             LABEL="SAMOS_XGB_no_xo_single_1000"
+            ;;
+        samos-ssa)
+            METHOD_FLAG="--samos_ssa"
+            LABEL="SAMOS_SSA"
             ;;
     esac
 

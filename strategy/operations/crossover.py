@@ -139,7 +139,7 @@ class CrossoverProgram(Crossover):
 
 # ─── NASBench-101 crossover operators ────────────────────────────────────────
 
-from problem.nasbench101_utils import _is_valid_vec as _nb101_is_valid_vec
+from problem.nasbench101.utils import _is_valid_vec as _nb101_is_valid_vec
 
 
 class NoCrossover(Crossover):

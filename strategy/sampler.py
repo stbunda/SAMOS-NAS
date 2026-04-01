@@ -37,7 +37,7 @@ class SamplingGP(Sampling):
 
 # ─── NASBench-101 sampling ────────────────────────────────────────────────────
 
-from problem.nasbench101_utils import (
+from problem.nasbench101.utils import (
     N_VAR as _NB101_N_VAR,
     N_OPS as _NB101_N_OPS,
     N_EDGES as _NB101_N_EDGES,
@@ -65,7 +65,7 @@ class ValidRandomSampling101(Sampling):
 
 # ─── NASBench-201 sampling ────────────────────────────────────────────────────
 
-from problem.nasbench201_utils import (
+from problem.nasbench201.utils import (
     N_VAR as _NB201_N_VAR,
     N_OPS_PER_GENE as _NB201_N_OPS,
 )

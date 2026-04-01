@@ -85,6 +85,19 @@ REFERENCE_BASELINES = [
     'gpsaf-xgb',
 ]
 
+# NAS benchmarks: include simple baselines for richer comparison
+NAS_REFERENCE_BASELINES = [
+    'random',
+    'nsga2',
+    'ssa-nsga2-default',
+    'ssa-nsga2-xgb',
+    'gpsaf-default',
+    'gpsaf-xgb',
+]
+
+# Ablations that use continuous QMC sampling — not valid for discrete NAS spaces
+NAS_EXCLUDED_ABLATIONS = frozenset({'doe_strategy'})
+
 
 # ─── DOE sampling helpers ─────────────────────────────────────────────────────
 
@@ -223,6 +236,7 @@ class SAMOSAblation(Algorithm):
                  selection_method='subset',  # 'subset', 'kmeans', 'crowding'
                  eliminate_duplicates=False,
                  dedup_key_fn=None,
+                 surrogate_problem_factory=None,
                  # ── new ──────────────────────────────────────────────── #
                  pop_schedule='constant',
                  pop_start=50,
@@ -263,6 +277,7 @@ class SAMOSAblation(Algorithm):
         self.use_trace       = use_trace
         self.uncertainty_mode = uncertainty_mode
         self.doe_strategy    = doe_strategy
+        self._surrogate_problem_factory = surrogate_problem_factory
 
         self._archive      = Population()
         self._archive_keys: set = set()
@@ -311,6 +326,17 @@ class SAMOSAblation(Algorithm):
         else:
             size = self.ga_pop_size
         return max(2, int(round(size)))
+
+    def _build_surr_problem(self, surrs):
+        """Build the inner surrogate problem using the factory if provided, else default SurrogateProblemMOO."""
+        if self._surrogate_problem_factory is not None:
+            return self._surrogate_problem_factory(surrs)
+        from problem.pymoo.surrogate_problem import SurrogateProblemMOO
+        return SurrogateProblemMOO(
+            surrs, self.problem.n_var,
+            self.problem.xl.copy(), self.problem.xu.copy(),
+            real_problem=self.problem,
+        )
 
     def _can_predict_std(self):
         """True if ALL surrogates have been fitted and support predict_std."""
@@ -363,12 +389,7 @@ class SAMOSAblation(Algorithm):
         """Run self.beta additional inner NSGA-II generations then merge candidates."""
         if self.beta <= 0:
             return cand_pop, 0
-        from problem.pymoo.surrogate_problem import SurrogateProblemMOO
-        surr_problem = SurrogateProblemMOO(
-            self.surrogates, self.problem.n_var,
-            self.problem.xl.copy(), self.problem.xu.copy(),
-            real_problem=self.problem,
-        )
+        surr_problem = self._build_surr_problem(self.surrogates)
         # seed inner NSGA-II from current candidate pool (or archive if pool is empty)
         if len(cand_pop) > 0:
             init_X = cand_pop.get('X')
@@ -744,19 +765,18 @@ class SAMOSAblation(Algorithm):
 # ─── Uncertainty-augmented inner surrogate problem ───────────────────────────
 
 class _UncertaintySurrogateProblem(Problem):
-    """Wraps SurrogateProblemMOO and appends -mean_std as an extra objective.
+    """Wraps an inner surrogate problem and appends -mean_std as an extra objective.
 
     This makes the inner NSGA-II explicitly trade off objective quality vs.
     exploration (high surrogate uncertainty).
     """
 
-    def __init__(self, surrogates, n_var, xl, xu, real_problem=None):
-        from problem.pymoo.surrogate_problem import SurrogateProblemMOO
-        self._base = SurrogateProblemMOO(surrogates, n_var, xl, xu,
-                                          real_problem=real_problem)
+    def __init__(self, base_problem, surrogates):
+        self._base = base_problem
         self._surrogates = surrogates
         n_obj_aug = self._base.n_obj + 1  # +1 for uncertainty objective
-        super().__init__(n_var=n_var, n_obj=n_obj_aug, xl=xl, xu=xu)
+        super().__init__(n_var=base_problem.n_var, n_obj=n_obj_aug,
+                         xl=base_problem.xl.copy(), xu=base_problem.xu.copy())
 
     def _evaluate(self, X, out, *args, **kwargs):
         base_out = {}
@@ -773,14 +793,223 @@ class _UncertaintySurrogateProblem(Problem):
         out['F'] = np.hstack([F_base, -mean_std])  # minimise -std = maximise std
 
 
+# ─── NASBench data loaders ───────────────────────────────────────────────────
+
+def _load_nasbench101_data():
+    """Load NASBench-101 benchmark DB and test-acc Pareto reference front."""
+    from problem.nasbench101.utils import MIN_PARAMS, MAX_PARAMS
+    data_file = 'problem/data/data_nasbench101.pkl'
+    with open(data_file, 'rb') as f:
+        bench_db = pickle.load(f)
+    print(f'  NASBench-101: {len(bench_db):,} architectures')
+
+    # Build Pareto reference front from all architectures in the DB.
+    # Objectives (both already in [0, 1]):
+    #   obj0 = 1 - test_acc_108  (minimise error)
+    #   obj1 = (n_params - MIN_PARAMS) / (MAX_PARAMS - MIN_PARAMS)  (minimise params)
+    F_all = np.array([
+        [1.0 - v['test_acc_108'],
+         (v['n_params'] - MIN_PARAMS) / (MAX_PARAMS - MIN_PARAMS)]
+        for v in bench_db.values() if 'test_acc_108' in v
+    ])
+    order = np.argsort(F_all[:, 0], kind='stable')
+    F_sorted = F_all[order]
+    nd_mask = np.zeros(len(F_sorted), dtype=bool)
+    best_obj1 = np.inf
+    for i in range(len(F_sorted)):
+        if F_sorted[i, 1] < best_obj1:
+            nd_mask[i] = True
+            best_obj1 = F_sorted[i, 1]
+    pareto_ref = F_sorted[nd_mask]
+    print(f'  NASBench-101 Pareto ref: {len(pareto_ref)} points')
+    return bench_db, pareto_ref
+
+
+def _load_nasbench201_data(dataset: str):
+    """Load NASBench-201 DB and derived metadata for *dataset*."""
+    from problem.nasbench201.utils import (
+        DATASET_INFO, compute_flops_range, build_test_pareto_ref,
+    )
+    data_file = 'problem/data/data_nasbench201.pkl'
+    with open(data_file, 'rb') as f:
+        bench_db = pickle.load(f)
+    print(f'  NASBench-201: {len(bench_db):,} architectures')
+
+    info = DATASET_INFO[dataset]
+    val_key, test_key = info['val_key'], info['test_key']
+    val_min_flops,  val_max_flops  = compute_flops_range(bench_db, val_key)
+    test_min_flops, test_max_flops = compute_flops_range(bench_db, test_key)
+    pareto_ref = build_test_pareto_ref(bench_db, test_key, test_min_flops, test_max_flops)
+    print(f'  NASBench-201 ({dataset}) Pareto ref: {len(pareto_ref)} points')
+    return bench_db, pareto_ref, val_min_flops, val_max_flops, test_key, test_min_flops, test_max_flops
+
+
+def _build_nas101_run_context(bench_db, pareto_ref):
+    """Return factories and shared operators for NASBench-101 runs."""
+    from problem.nasbench101.baseline_problem import NASBench101Problem
+    from problem.nasbench101.surrogate_problem import SurrogateProblem101
+    from problem.nasbench101.utils import _update_archive, _test_archive as _test_archive_101
+    from strategy.sampler import ValidRandomSampling101
+    from strategy.operations.crossover import TwoPointCrossover101
+    from strategy.operations.mutation import SinglePointMutation101
+    from strategy.genetics.duplicate import NASBench101DuplicateElimination
+    from strategy.callbacks import NASArchiveCallback
+    from strategy.algorithm.algorithms import RandomGA
+
+    _db = bench_db
+    _pf = pareto_ref
+
+    def make_problem():
+        return NASBench101Problem(_db)
+
+    def make_callback():
+        return NASArchiveCallback(_db, _pf, _update_archive, _test_archive_101)
+
+    def make_elim_dupes():
+        return NASBench101DuplicateElimination(_db)
+
+    def make_surrogate_factory():
+        return lambda surrs: SurrogateProblem101(surrs, ['n_params'], _db)
+
+    return {
+        'bench_db':   bench_db,
+        'pareto_ref': pareto_ref,
+        'n_obj':      2,
+        'make_problem':           make_problem,
+        'make_callback':          make_callback,
+        'make_elim_dupes':        make_elim_dupes,
+        'make_surrogate_factory': make_surrogate_factory,
+        'sampling':   ValidRandomSampling101(),
+        'crossover':  TwoPointCrossover101(prob=0.9),
+        'mutation':   SinglePointMutation101(),
+        'RandomGA':   RandomGA,
+    }
+
+
+def _build_nas201_run_context(bench_db, pareto_ref, dataset,
+                               val_min_flops, val_max_flops,
+                               test_key, test_min_flops, test_max_flops):
+    """Return factories and shared operators for NASBench-201 runs."""
+    from problem.nasbench201.baseline_problem import NASBench201Problem
+    from problem.nasbench201.surrogate_problem import SurrogateProblem201
+    from problem.nasbench201.utils import _update_archive, _test_archive as _test_archive_201
+    from strategy.sampler import ValidRandomSampling201
+    from strategy.operations.crossover import UniformCrossover201
+    from strategy.operations.mutation import SinglePointMutation201
+    from strategy.genetics.duplicate import NASBench201DuplicateElimination
+    from strategy.callbacks import NASArchiveCallback
+    from strategy.algorithm.algorithms import RandomGA
+
+    _db = bench_db
+    _pf = pareto_ref
+    _ds = dataset
+    _vmf, _vMf = val_min_flops, val_max_flops
+    _tk  = test_key
+    _tmf, _tMf = test_min_flops, test_max_flops
+
+    def make_problem():
+        return NASBench201Problem(_db, dataset=_ds,
+                                  min_flops=_vmf, max_flops=_vMf)
+
+    def make_callback():
+        return NASArchiveCallback(_db, _pf, _update_archive, _test_archive_201,
+                                  test_key=_tk,
+                                  min_flops=_tmf, max_flops=_tMf)
+
+    def make_elim_dupes():
+        return NASBench201DuplicateElimination()
+
+    def make_surrogate_factory():
+        return lambda surrs: SurrogateProblem201(surrs, ['flops'], _db, _ds, _vmf, _vMf)
+
+    return {
+        'bench_db':   bench_db,
+        'pareto_ref': pareto_ref,
+        'n_obj':      2,
+        'make_problem':           make_problem,
+        'make_callback':          make_callback,
+        'make_elim_dupes':        make_elim_dupes,
+        'make_surrogate_factory': make_surrogate_factory,
+        'sampling':   ValidRandomSampling201(),
+        'crossover':  UniformCrossover201(prob=0.9),
+        'mutation':   SinglePointMutation201(),
+        'RandomGA':   RandomGA,
+    }
+
+
 # ─── Reference baseline runner ───────────────────────────────────────────────
 
 def run_reference_baseline(method, seed, problem_name, pop_size, n_gen,
-                            n_obj=2, n_var=None, n_gen_inner=20):
-    """Run SSA-NSGA-II or GPSAF as a reference baseline."""
+                            n_obj=2, n_var=None, n_gen_inner=20,
+                            benchmark='wfg', nas_context=None):
+    """Run a reference baseline for WFG or NAS benchmarks."""
     np.random.seed(seed)
     random.seed(seed)
 
+    if benchmark != 'wfg':
+        # ── NAS benchmark ─────────────────────────────────────────────────
+        from strategy.algorithm.algorithms import RandomGA
+        ctx       = nas_context
+        problem   = ctx['make_problem']()
+        callback  = ctx['make_callback']()
+        sampling  = ctx['sampling']
+        crossover = ctx['crossover']
+        mutation  = ctx['mutation']
+        elim_dupes = ctx['make_elim_dupes']()
+        n_infill_ = pop_size
+        n_doe_    = pop_size
+        inner_ps  = pop_size * 10
+
+        if method == 'random':
+            algorithm = ctx['RandomGA'](pop_size=pop_size, sampling=sampling,
+                                        eliminate_duplicates=elim_dupes)
+        elif method == 'nsga2':
+            algorithm = NSGA2(pop_size=pop_size, sampling=sampling,
+                              crossover=crossover, mutation=mutation,
+                              eliminate_duplicates=elim_dupes)
+        elif method.startswith('ssa-nsga2-') or method.startswith('gpsaf-'):
+            surrogate_type = (method[len('ssa-nsga2-'):]
+                              if method.startswith('ssa-nsga2-')
+                              else method[len('gpsaf-'):])
+            sklearn_models = None
+            if surrogate_type in ('rfr', 'xgb'):
+                rng = np.random.RandomState(seed)
+                sklearn_models = [
+                    (RFR(20, seed=rng.randint(0, 2**31 - 1))
+                     if surrogate_type == 'rfr'
+                     else XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
+                    for _ in range(ctx['n_obj'])
+                ]
+            if method.startswith('ssa-nsga2-'):
+                algorithm = (SSANSGA2 if surrogate_type == 'default' else SklearnSSANSGA2)(
+                    **({} if surrogate_type == 'default' else {'sklearn_models': sklearn_models}),
+                    sampling=sampling,
+                    n_infills=n_infill_, surr_pop_size=inner_ps,
+                    surr_n_gen=n_gen_inner, n_initial_doe=n_doe_,
+                )
+            else:
+                base_algo = NSGA2(pop_size=pop_size, sampling=sampling,
+                                  crossover=crossover, mutation=mutation,
+                                  eliminate_duplicates=elim_dupes)
+                kw = {} if surrogate_type == 'default' else {'sklearn_models': sklearn_models}
+                algorithm = (GPSAF if surrogate_type == 'default' else SklearnGPSAF)(
+                    base_algo, **kw,
+                    n_initial_doe=n_doe_, n_max_infills=n_infill_, beta=n_gen_inner,
+                )
+        else:
+            raise ValueError(f'Unknown NAS reference method: {method!r}')
+
+        results = minimize(
+            problem=problem, algorithm=algorithm,
+            termination=('n_gen', n_gen), seed=seed,
+            callback=callback, save_history=False, verbose=False,
+        )
+        data = results.algorithm.callback.data
+        data['time']      = getattr(problem, 'time', None)
+        data['log_archs'] = getattr(problem, 'log_archs', [])
+        return data
+
+    # ── WFG benchmark (original path) ─────────────────────────────────────
     problem   = build_problem(problem_name, n_obj, n_var)
     pf        = get_pareto_front(problem, problem.n_obj)
     ref_point = default_ref_point(problem_name, problem.n_obj)
@@ -979,10 +1208,82 @@ ABLATION_CONFIGS = {
 
 def run_ablation_single(problem_name, seed, ablation, sweep_value, pop_size, n_gen,
                         n_obj=2, n_var=None, n_gen_inner=20, defaults=None,
-                        pop_start=50, pop_end=1000):
+                        pop_start=50, pop_end=1000,
+                        benchmark='wfg', nas_context=None):
     np.random.seed(seed)
     random.seed(seed)
 
+    if benchmark != 'wfg':
+        # ── NAS benchmark ─────────────────────────────────────────────────
+        ctx        = nas_context
+        problem    = ctx['make_problem']()
+        callback   = ctx['make_callback']()
+        sampling   = ctx['sampling']
+        crossover  = ctx['crossover']
+        mutation   = ctx['mutation']
+        elim_dupes = ctx['make_elim_dupes']()
+        surr_factory = ctx['make_surrogate_factory']()
+        dedup_key_fn = elim_dupes.key
+
+        cfg = dict(defaults) if defaults else {}
+        sweep_param = ABLATION_CONFIGS[ablation]['sweep_param']
+        if sweep_param == 'alpha_beta_pair':
+            alpha_val, beta_val = sweep_value
+            cfg['alpha'] = alpha_val
+            cfg['beta']  = beta_val
+        elif sweep_param == 'n_gen_inner':
+            n_gen_inner = sweep_value
+        else:
+            cfg[sweep_param] = sweep_value
+
+        surrogate_type = cfg.pop('surrogate_type', 'xgb')
+        surrogates = _make_surrogates(surrogate_type, ctx['n_obj'], seed)
+
+        cfg.setdefault('pop_start', pop_start)
+        cfg.setdefault('pop_end',   pop_end)
+        cfg.pop('alpha_beta_pair', None)
+        # Force uniform DOE for discrete NAS spaces
+        cfg['doe_strategy'] = 'uniform'
+
+        algorithm = SAMOSAblation(
+            sampling=sampling,
+            surrogates=surrogates,
+            surrogate_problem_factory=surr_factory,
+            crossover=crossover,
+            mutation=mutation,
+            n_doe=pop_size,
+            n_infill=pop_size,
+            n_gen_inner=n_gen_inner,
+            eliminate_duplicates=elim_dupes,
+            dedup_key_fn=dedup_key_fn,
+            **cfg,
+        )
+
+        results = minimize(
+            problem=problem,
+            algorithm=algorithm,
+            termination=('n_gen', n_gen),
+            seed=seed,
+            callback=callback,
+            save_history=False,
+            verbose=False,
+        )
+
+        data = results.algorithm.callback.data
+        data['diagnostics'] = results.algorithm.diagnostics
+        data['time']        = getattr(problem, 'time', None)
+        data['log_archs']   = getattr(problem, 'log_archs', [])
+        data['config'] = {
+            'ablation': ablation,
+            'sweep_param': sweep_param,
+            'sweep_value': str(sweep_value),
+            'surrogate_type': surrogate_type,
+            'n_gen_inner': n_gen_inner,
+            **cfg,
+        }
+        return data
+
+    # ── WFG benchmark (original path) ─────────────────────────────────────
     problem   = build_problem(problem_name, n_obj, n_var)
     pf        = get_pareto_front(problem, problem.n_obj)
     ref_point = default_ref_point(problem_name, problem.n_obj)
@@ -1053,10 +1354,21 @@ def run_ablation_single(problem_name, seed, ablation, sweep_value, pop_size, n_g
 def main(args):
     ablations = list(ABLATION_CONFIGS.keys()) if args.ablation == 'all' else [args.ablation]
 
+    if args.benchmark == 'nasbench101':
+        _main_nasbench(args, ablations, benchmark='nasbench101', datasets=[None])
+        return
+    if args.benchmark == 'nasbench201':
+        _main_nasbench(args, ablations, benchmark='nasbench201', datasets=args.dataset)
+        return
+
+    # ── WFG benchmark (original path) ─────────────────────────────────────
+    # The WFG SBATCH passes --experiment_name "samos_ablation/2_obj" so we
+    # use args.experiment_name directly (no extra n_obj suffix here).
+    budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
+
     for prob in args.problem:
 
         # ── run reference baselines first ─────────────────────────────────
-        budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
         ref_root = os.path.join(
             'results', args.experiment_name, prob, budget_folder, 'reference'
         )
@@ -1148,6 +1460,110 @@ def main(args):
                 ablation, values, sweep_param, summary,
                 args.experiment_name, args.n_gen, args.pop_size,
             )
+
+
+def _main_nasbench(args, ablations, benchmark, datasets):
+    """Run the ablation study on one or more NAS benchmark datasets."""
+    budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
+
+    for dataset in datasets:
+        # ── load data ─────────────────────────────────────────────────────
+        print(f'\n{"="*80}')
+        if benchmark == 'nasbench101':
+            print('Loading NASBench-101 data ...')
+            bench_db, pareto_ref = _load_nasbench101_data()
+            nas_ctx = _build_nas101_run_context(bench_db, pareto_ref)
+            bench_key = 'nasbench101'
+        else:
+            print(f'Loading NASBench-201 data for dataset={dataset} ...')
+            (bench_db, pareto_ref, val_min_flops, val_max_flops,
+             test_key, test_min_flops, test_max_flops) = _load_nasbench201_data(dataset)
+            nas_ctx = _build_nas201_run_context(
+                bench_db, pareto_ref, dataset,
+                val_min_flops, val_max_flops,
+                test_key, test_min_flops, test_max_flops,
+            )
+            bench_key = f'nasbench201/{dataset}'
+
+        # Results land in results/<experiment_name>/<bench_key>/B…_P…/…
+        bench_root = os.path.join('results', args.experiment_name, bench_key)
+        ref_root   = os.path.join(bench_root, budget_folder, 'reference')
+
+        # ── run reference baselines ────────────────────────────────────────
+        for ref_method in NAS_REFERENCE_BASELINES:
+            save_dir = os.path.join(ref_root, ref_method)
+            os.makedirs(save_dir, exist_ok=True)
+
+            for seed in args.seeds:
+                out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
+                if os.path.exists(out_path) and not args.overwrite:
+                    print(f'  [SKIP] ref:{ref_method}/seed_{seed}')
+                    continue
+
+                print(f'  [RUN] ref:{ref_method}  seed={seed}')
+                try:
+                    data = run_reference_baseline(
+                        ref_method, seed, problem_name=None,
+                        pop_size=args.pop_size, n_gen=args.n_gen,
+                        n_gen_inner=args.n_gen_inner,
+                        benchmark=benchmark, nas_context=nas_ctx,
+                    )
+                    with open(out_path, 'wb') as f:
+                        pickle.dump(data, f)
+                    print(f'    Saved -> {out_path}')
+                except Exception as e:
+                    print(f'    [FAIL] ref:{ref_method} seed={seed}: {e}')
+
+        # ── run ablation sweeps ────────────────────────────────────────────
+        for ablation in ablations:
+            if ablation in NAS_EXCLUDED_ABLATIONS:
+                print(f'  [SKIP] ablation={ablation} not supported for NAS benchmarks '
+                      f'(requires continuous QMC sampling)')
+                continue
+
+            config      = ABLATION_CONFIGS[ablation]
+            sweep_param = config['sweep_param']
+            values      = config['values']
+            defaults    = config['defaults']
+
+            print(f'\n{"="*80}')
+            print(f'Ablation: {ablation}  |  sweep: {sweep_param}  |  benchmark: {bench_key}')
+            print(f'{"="*80}')
+
+            results_root = os.path.join(bench_root, budget_folder, f'ablation_{ablation}')
+
+            for val in values:
+                method_name = f'{sweep_param}={val}'
+                save_dir = os.path.join(results_root, method_name)
+                os.makedirs(save_dir, exist_ok=True)
+
+                for seed in args.seeds:
+                    out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
+                    if os.path.exists(out_path) and not args.overwrite:
+                        print(f'  [SKIP] {method_name}/seed_{seed}')
+                        continue
+
+                    print(f'  [RUN] {sweep_param}={val}  seed={seed}')
+                    try:
+                        data = run_ablation_single(
+                            problem_name=None,
+                            seed=seed,
+                            ablation=ablation,
+                            sweep_value=val,
+                            pop_size=args.pop_size,
+                            n_gen=args.n_gen,
+                            n_gen_inner=args.n_gen_inner,
+                            defaults=defaults,
+                            pop_start=args.pop_start,
+                            pop_end=args.pop_end,
+                            benchmark=benchmark,
+                            nas_context=nas_ctx,
+                        )
+                        with open(out_path, 'wb') as f:
+                            pickle.dump(data, f)
+                        print(f'    Saved -> {out_path}')
+                    except Exception as e:
+                        print(f'    [FAIL] {sweep_param}={val} seed={seed}: {e}')
 
 
 
@@ -1427,6 +1843,13 @@ if __name__ == '__main__':
                         help='End population size for pop_schedule ablation')
     parser.add_argument('--experiment_name', type=str, default='samos_ablation/2_obj')
     parser.add_argument('--overwrite',  action='store_true')
+    parser.add_argument('--benchmark', type=str, default='wfg',
+                        choices=['wfg', 'nasbench101', 'nasbench201'],
+                        help='Benchmark to run the ablation on')
+    parser.add_argument('--dataset', type=str, nargs='+',
+                        default=['cifar10-valid'],
+                        choices=['cifar10-valid', 'cifar100', 'ImageNet16-120'],
+                        help='NASBench-201 dataset(s); ignored for wfg/nasbench101')
     args = parser.parse_args()
     print(f'Arguments: {args}')
     main(args)

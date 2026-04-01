@@ -2,7 +2,7 @@ from pprint import pprint
 
 import numpy as np
 from pymoo.core.duplicate import DuplicateElimination
-from problem.nasbench101_utils import (
+from problem.nasbench101.utils import (
     _vec_to_arch_str, _fast_canonical_bytes, load_nasbench101_lut,
 )
 
@@ -127,7 +127,7 @@ class NASBench101DuplicateElimination(DuplicateElimination):
 
 # ─── NASBench-201 duplicate elimination ──────────────────────────────────────
 
-from problem.nasbench201_utils import _vec_to_arch_str as _vec_to_arch_str_201
+from problem.nasbench201.utils import _vec_to_arch_str as _vec_to_arch_str_201
 
 
 class NASBench201DuplicateElimination(DuplicateElimination):

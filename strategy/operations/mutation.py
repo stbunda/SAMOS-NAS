@@ -118,7 +118,7 @@ class MutateProgram(Mutation):
 from pymoo.core.variable import Real, get
 from pymoo.operators.mutation.pm import mut_pm
 
-from problem.nasbench101_utils import (
+from problem.nasbench101.utils import (
     N_VAR as _NB101_N_VAR,
     N_OPS as _NB101_N_OPS,
     _is_valid_vec as _nb101_is_valid_vec,
@@ -199,7 +199,7 @@ class SinglePointMutation101(Mutation):
 
 # ─── NASBench-201 mutation operators ─────────────────────────────────────────
 
-from problem.nasbench201_utils import (
+from problem.nasbench201.utils import (
     N_VAR as _NB201_N_VAR,
     N_OPS_PER_GENE as _NB201_N_OPS,
     XL as _NB201_XL,

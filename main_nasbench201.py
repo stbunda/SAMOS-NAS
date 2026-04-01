@@ -22,6 +22,9 @@ from pymoo.indicators.igd_plus import IGDPlus
 from pymoo.optimize import minimize
 
 from strategy.algorithm.algorithms import RandomGA
+from strategy.algorithm.gpsaf import GPSAF, SklearnGPSAF
+from strategy.algorithm.ssansga2 import SSANSGA2, SklearnSSANSGA2
+from strategy.algorithm.parego import run_parego_nasbench
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 
@@ -35,8 +38,8 @@ from problem.nasbench201.surrogate_problem import SurrogateProblem201
 from strategy.callbacks import NASArchiveCallback
 from problem.nasbench201.utils import _update_archive, _test_archive as _test_archive_201
 from strategy.sampler import ValidRandomSampling201
-from strategy.operations.crossover import NoCrossover, UniformCrossover201
-from strategy.operations.mutation import UniformMutation201, SinglePointMutation201
+from strategy.operations.crossover import UniformCrossover201
+from strategy.operations.mutation import SinglePointMutation201
 from analysis.plotter import plot_results
 from analysis.latex_table_generator import generate_latex_table_nasbench201
 
@@ -95,130 +98,86 @@ def run_single(
     sampling   = ValidRandomSampling201()
     elim_dupes = NASBench201DuplicateElimination()
 
-    if method == 'random_ga':
-        algorithm = RandomGA(
-            pop_size=pop_size,
-            sampling=sampling,
-            eliminate_duplicates=elim_dupes,
-        )
+    # ─── Standalone methods ───────────────────────────────────────────────────
+    if method == 'parego':
+        return run_parego_nasbench(problem, callback, sampling, seed, pop_size, n_gen,
+                                   n_doe=n_doe)
 
-    # ─── NSGA-II variants ────────────────────────────────────────────────────
-    elif method == 'nsga2-uniform':
-        algorithm = NSGA2(
-            pop_size=pop_size,
-            sampling=sampling,
-            crossover=UniformCrossover201(prob=0.9),
-            mutation=UniformMutation201(prob=1.0 / N_VAR),
-            eliminate_duplicates=elim_dupes,
-        )
-    elif method == 'nsga2-xo-single':
-        algorithm = NSGA2(
-            pop_size=pop_size,
-            sampling=sampling,
-            crossover=UniformCrossover201(prob=0.9),
-            mutation=SinglePointMutation201(),
-            eliminate_duplicates=elim_dupes,
-        )
-    elif method == 'nsga2-no-xo-single':
-        algorithm = NSGA2(
-            pop_size=pop_size,
-            sampling=sampling,
-            crossover=NoCrossover(),
-            mutation=SinglePointMutation201(),
-            eliminate_duplicates=elim_dupes,
-        )
+    # ─── pymoo minimize-based methods ─────────────────────────────────────────
+    xover = UniformCrossover201(prob=0.9)
+    mut   = SinglePointMutation201()
 
-    # Legacy names (for backward compatibility)
+    if method == 'random':
+        algorithm = RandomGA(pop_size=pop_size, sampling=sampling,
+                             eliminate_duplicates=elim_dupes)
+
     elif method == 'nsga2':
-        algorithm = NSGA2(
-            pop_size=pop_size,
-            sampling=sampling,
-            crossover=UniformCrossover201(prob=0.9),
-            mutation=UniformMutation201(prob=1.0 / N_VAR),
-            eliminate_duplicates=elim_dupes,
-        )
-    elif method == 'nsga2-single':
-        algorithm = NSGA2(
-            pop_size=pop_size,
-            sampling=sampling,
-            crossover=NoCrossover(),
-            mutation=SinglePointMutation201(),
-            eliminate_duplicates=elim_dupes,
-        )
+        algorithm = NSGA2(pop_size=pop_size, sampling=sampling,
+                          crossover=xover, mutation=mut,
+                          eliminate_duplicates=elim_dupes)
 
-    # ─── SAMOS variants ──────────────────────────────────────────────────────
-    elif method.startswith('samos-'):
-        # Format: samos-{type}-{xo_type}-{mut_type}-{inner_infill}
-        # e.g., samos-xgb-xo-uniform-200, samos-xgb-no-xo-single-50
-        parts = method.split('-')
-
-        samos_type = parts[1]   # 'xgb' or 'rfr'
-
-        inner_infill  = None
-        crossover_op  = NoCrossover()
-        mutation_op   = SinglePointMutation201()
-
-        if 'xo' in parts:
-            if 'xo-uniform' in method:
-                crossover_op = UniformCrossover201(prob=0.9)
-                mutation_op  = UniformMutation201(prob=1.0 / N_VAR)
-            elif 'xo-single' in method:
-                crossover_op = UniformCrossover201(prob=0.9)
-                mutation_op  = SinglePointMutation201()
-
-        last_part = parts[-1]
-        try:
-            inner_infill = int(last_part)
-        except ValueError:
-            pass
-
-        n_doe    = n_doe    if n_doe    is not None else pop_size
-        n_infill = n_infill if n_infill is not None else pop_size
-
-        if inner_infill is not None:
-            inner_pop_size = inner_infill
-        else:
-            inner_pop_size = inner_pop_size if inner_pop_size is not None else pop_size * 10
-
+    elif method in ('samos-rfr', 'samos-xgb'):
+        samos_type  = 'rfr' if method == 'samos-rfr' else 'xgb'
+        n_doe_      = n_doe    if n_doe    is not None else pop_size
+        n_infill_   = n_infill if n_infill is not None else pop_size
+        inner_ps    = inner_pop_size if inner_pop_size is not None else pop_size * 10
         predict_obj = predict_obj if predict_obj is not None else ['val_err']
         real_obj    = real_obj    if real_obj    is not None else ['flops']
-        print(
-            f'  [SAMOS] type={samos_type}  predict={predict_obj}  real={real_obj}  '
-            f'n_infill={n_infill} (real evals)  inner_pop_size={inner_pop_size} (surrogate evals)'
-        )
-
+        print(f'  [SAMOS] type={samos_type}  predict={predict_obj}  real={real_obj}  '
+              f'n_infill={n_infill_} (real evals)  inner_pop_size={inner_ps} (surrogate evals)')
         rng = np.random.RandomState(seed)
         surrogates = [
-            (RFR(20, seed=rng.randint(0, 2**31 - 1))
-             if samos_type == 'rfr' else
-             XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
+            RFR(20, seed=rng.randint(0, 2**31 - 1)) if samos_type == 'rfr'
+            else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
             for _ in range(len(predict_obj))
         ]
-
-        _ds  = dataset
-        _mf  = val_min_flops
-        _Mf  = val_max_flops
+        _ds, _mf, _Mf = dataset, val_min_flops, val_max_flops
         factory = lambda surrs, _ro=real_obj, _db=bench_db, _d=_ds, _mi=_mf, _ma=_Mf: (
             SurrogateProblem201(surrs, _ro, _db, _d, _mi, _ma)
         )
-
         algorithm = SAMOS(
-            sampling=sampling,
-            surrogates=surrogates,
+            sampling=sampling, surrogates=surrogates,
             surrogate_problem_factory=factory,
-            crossover=crossover_op,
-            mutation=mutation_op,
-            n_doe=n_doe,
-            n_infill=n_infill,
-            n_gen_inner=n_gen_inner,
-            ga_pop_size=inner_pop_size,
-            warm_start_ratio=warm_start_ratio,
+            crossover=xover, mutation=mut,
+            n_doe=n_doe_, n_infill=n_infill_, n_gen_inner=n_gen_inner,
+            ga_pop_size=inner_ps, warm_start_ratio=warm_start_ratio,
             use_subset_selection=False,
-            eliminate_duplicates=elim_dupes,
-            dedup_key_fn=elim_dupes.key,
+            eliminate_duplicates=elim_dupes, dedup_key_fn=elim_dupes.key,
         )
+
+    elif method.startswith('gpsaf-') or method.startswith('ssa-nsga2-'):
+        algo_family    = 'gpsaf' if method.startswith('gpsaf-') else 'ssa-nsga2'
+        surrogate_type = method[len('gpsaf-'):] if algo_family == 'gpsaf' else method[len('ssa-nsga2-'):]
+        if surrogate_type not in ('default', 'rfr', 'xgb'):
+            raise ValueError(f'Unknown surrogate type {surrogate_type!r} in {method!r}')
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+        if surrogate_type in ('rfr', 'xgb'):
+            rng = np.random.RandomState(seed)
+            sklearn_models = [
+                RFR(20, seed=rng.randint(0, 2**31 - 1)) if surrogate_type == 'rfr'
+                else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                for _ in range(2)
+            ]
+        if algo_family == 'ssa-nsga2':
+            algorithm = (SSANSGA2 if surrogate_type == 'default' else SklearnSSANSGA2)(
+                **({} if surrogate_type == 'default' else {'sklearn_models': sklearn_models}),
+                sampling=sampling, n_infills=n_infill_,
+                surr_pop_size=inner_ps, surr_n_gen=n_gen_inner, n_initial_doe=n_doe_,
+            )
+        else:
+            base_algo = NSGA2(pop_size=pop_size, sampling=sampling,
+                              crossover=xover, mutation=mut,
+                              eliminate_duplicates=elim_dupes)
+            kw = {} if surrogate_type == 'default' else {'sklearn_models': sklearn_models}
+            algorithm = (GPSAF if surrogate_type == 'default' else SklearnGPSAF)(
+                base_algo, **kw,
+                n_initial_doe=n_doe_, n_max_infills=n_infill_, beta=n_gen_inner,
+            )
+
     else:
-        raise ValueError(f'Unknown method: {method}')
+        raise ValueError(f'Unknown method: {method!r}')
 
     results = minimize(
         problem=problem,
@@ -271,50 +230,13 @@ def main(args):
     )
     print(f'  {len(pareto_ref)} non-dominated points')
 
-    # ── define all available methods ──────────────────────────────────────────
     all_methods = [
-        'random_ga',
-        'nsga2-uniform',
-        'nsga2-xo-single',
-        'nsga2-no-xo-single',
-        'samos-xgb-xo-uniform-200',
-        'samos-xgb-xo-single-200',
-        'samos-xgb-no-xo-single-200',
-        'samos-xgb-xo-uniform-50',
-        'samos-xgb-xo-single-50',
-        'samos-xgb-no-xo-single-50',
-        'samos-xgb-xo-uniform-1000',
-        'samos-xgb-xo-single-1000',
-        'samos-xgb-no-xo-single-1000',
-        # Legacy names
-        'nsga2',
-        'nsga2-single',
-        'samos-rfr',
-        'samos-xgb',
+        'random', 'nsga2',
+        'samos-rfr', 'samos-xgb', 'parego',
+        'ssa-nsga2-default', 'ssa-nsga2-rfr', 'ssa-nsga2-xgb',
+        'gpsaf-default', 'gpsaf-rfr', 'gpsaf-xgb',
     ]
-
-    methods = []
-    if args.random_ga:       methods.append('random_ga')
-    if args.nsga2_uniform:   methods.append('nsga2-uniform')
-    if args.nsga2_xo_single: methods.append('nsga2-xo-single')
-    if args.nsga2_no_xo_single: methods.append('nsga2-no-xo-single')
-    if args.samos_xgb_uniform_200:    methods.append('samos-xgb-xo-uniform-200')
-    if args.samos_xgb_single_200:     methods.append('samos-xgb-xo-single-200')
-    if args.samos_xgb_no_xo_single_200: methods.append('samos-xgb-no-xo-single-200')
-    if args.samos_xgb_uniform_50:     methods.append('samos-xgb-xo-uniform-50')
-    if args.samos_xgb_single_50:      methods.append('samos-xgb-xo-single-50')
-    if args.samos_xgb_no_xo_single_50: methods.append('samos-xgb-no-xo-single-50')
-    if args.samos_xgb_uniform_1000:   methods.append('samos-xgb-xo-uniform-1000')
-    if args.samos_xgb_single_1000:    methods.append('samos-xgb-xo-single-1000')
-    if args.samos_xgb_no_xo_single_1000: methods.append('samos-xgb-no-xo-single-1000')
-    # Legacy
-    if args.nsga2:       methods.append('nsga2')
-    if args.nsga2_single: methods.append('nsga2-single')
-    if args.samos_rfr:   methods.append('samos-rfr')
-    if args.samos_xgb:   methods.append('samos-xgb')
-
-    if not methods:
-        methods = all_methods
+    methods = args.methods if args.methods else all_methods
 
     # ── run each method / seed ────────────────────────────────────────────────
     for method in methods:
@@ -395,51 +317,11 @@ if __name__ == '__main__':
         help='Benchmark dataset to optimise (default: cifar10-valid)',
     )
 
-    # ─── Basic methods ────────────────────────────────────────────────────────
-    parser.add_argument('--random_ga', action='store_true',
-                        help='Run generational random search')
-
-    # ─── NSGA-II variants ────────────────────────────────────────────────────
-    parser.add_argument('--nsga2_uniform', action='store_true',
-                        help='Run NSGA-II with uniform crossover + uniform mutation')
-    parser.add_argument('--nsga2_xo_single', action='store_true',
-                        help='Run NSGA-II with uniform crossover + single-point mutation')
-    parser.add_argument('--nsga2_no_xo_single', action='store_true',
-                        help='Run NSGA-II with no crossover + single-point mutation')
-
-    # ─── SAMOS-XGB variants with infill=200 ──────────────────────────────────
-    parser.add_argument('--samos_xgb_uniform_200', action='store_true',
-                        help='Run SAMOS-XGB with unif. XO + uniform mutation, infill=200')
-    parser.add_argument('--samos_xgb_single_200', action='store_true',
-                        help='Run SAMOS-XGB with unif. XO + single-pt mutation, infill=200')
-    parser.add_argument('--samos_xgb_no_xo_single_200', action='store_true',
-                        help='Run SAMOS-XGB with no XO + single-pt mutation, infill=200')
-
-    # ─── SAMOS-XGB variants with infill=50 ───────────────────────────────────
-    parser.add_argument('--samos_xgb_uniform_50', action='store_true',
-                        help='Run SAMOS-XGB with unif. XO + uniform mutation, infill=50')
-    parser.add_argument('--samos_xgb_single_50', action='store_true',
-                        help='Run SAMOS-XGB with unif. XO + single-pt mutation, infill=50')
-    parser.add_argument('--samos_xgb_no_xo_single_50', action='store_true',
-                        help='Run SAMOS-XGB with no XO + single-pt mutation, infill=50')
-
-    # ─── SAMOS-XGB variants with infill=1000 ─────────────────────────────────
-    parser.add_argument('--samos_xgb_uniform_1000', action='store_true',
-                        help='Run SAMOS-XGB with unif. XO + uniform mutation, infill=1000')
-    parser.add_argument('--samos_xgb_single_1000', action='store_true',
-                        help='Run SAMOS-XGB with unif. XO + single-pt mutation, infill=1000')
-    parser.add_argument('--samos_xgb_no_xo_single_1000', action='store_true',
-                        help='Run SAMOS-XGB with no XO + single-pt mutation, infill=1000')
-
-    # ─── Legacy method flags (for backward compatibility) ────────────────────
-    parser.add_argument('--nsga2',  action='store_true',
-                        help='(Legacy) Run NSGA-II with uniform XO + uniform mutation')
-    parser.add_argument('--nsga2_single', action='store_true',
-                        help='(Legacy) Run NSGA-II with no XO + single-point mutation')
-    parser.add_argument('--samos_rfr', action='store_true',
-                        help='(Legacy) Run SAMOS with Random Forest surrogate')
-    parser.add_argument('--samos_xgb', action='store_true',
-                        help='(Legacy) Run SAMOS with XGBoost surrogate')
+    parser.add_argument('--methods', type=str, nargs='+', default=None,
+                        help='Methods to run (default: all). Choices: '
+                             'random, nsga2, samos-rfr, samos-xgb, parego, '
+                             'ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb, '
+                             'gpsaf-default, gpsaf-rfr, gpsaf-xgb')
 
     # ─── Search budget parameters ─────────────────────────────────────────────
     parser.add_argument('--seeds', type=int, nargs='+', default=list(range(10)),
