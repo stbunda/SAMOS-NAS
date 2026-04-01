@@ -13,7 +13,7 @@
 
 #SBATCH -J wfg_samos2
 #SBATCH -c 2
-#SBATCH --array=0-29                # Seeds 0-9
+#SBATCH --array=0 #-29                # Seeds 0-9
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
