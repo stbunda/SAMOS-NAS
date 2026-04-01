@@ -73,6 +73,7 @@ mkdir -p "$SCRATCH_DIRECTORY"
 RSYNC_SOURCES=(
     analysis
     problem/nasbench101
+    problem/pymoo
     problem/data/data_nasbench101.pkl
     strategy
     utils
