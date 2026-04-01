@@ -11,7 +11,7 @@
 #   [edit array to 20-29, then] sbatch ...          # seeds 20-29
 # ─────────────────────────────────────────────────────────────────────────────
 
-#SBATCH -J wfg_samos_ssa
+#SBATCH -J wfg_samos2
 #SBATCH -c 2
 #SBATCH --array=0-29                # Seeds 0-9
 #SBATCH --mem=16gb
@@ -34,7 +34,7 @@ N_VAR=$(( 2 * (N_OBJ - 1) + 10 ))
 TOTAL_BUDGET=$(( 100 * N_VAR ))
 N_GEN=$(( TOTAL_BUDGET / POP_SIZE ))
 
-SAMOS_SSA="samos-ssa-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
+SAMOS_SSA="samos2"
 EXPERIMENT_NAME="pymoo_benchmark/${N_OBJ}_obj"
 
 # ─── seed from array task ID ─────────────────────────────────────────────────
@@ -110,8 +110,8 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
         --pop_size      "$POP_SIZE" \
         --n_gen         "$N_GEN" \
         --experiment_name "$EXPERIMENT_NAME" \
-        --no_plot
-       --overwrite
+        --no_plot \
+        --overwrite
 
     # ── copy results back ─────────────────────────────────────────────────────
     DEST="${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}"
@@ -122,23 +122,42 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
     echo "Results copied to $DEST"
 
     # ── inline analysis ───────────────────────────────────────────────────────
-    cd "${SLURM_SUBMIT_DIR}"
-    flock --wait 60 \
-        "${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}/.analyze.lock" \
-        python analyze_pymoo_benchmark.py \
-            --experiment_name "$EXPERIMENT_NAME" \
-            --problems        "$PROBLEM" \
-            --n_obj           "$N_OBJ" \
-            --n_var           "$N_VAR" \
-            --methods         "$SAMOS_SSA" \
-            --pop_size        "$POP_SIZE" \
-            --n_gen           "$N_GEN" \
-            --checkpoints_d   10 25 50 100 \
-        && echo "Analysis updated for $PROBLEM seed ${SEED}" \
-        || echo "[WARN] Analysis failed or timed out for $PROBLEM seed ${SEED} (non-fatal)"
+    # cd "${SLURM_SUBMIT_DIR}"
+    # flock --wait 60 \
+    #     "${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/${PROBLEM}/.analyze.lock" \
+    #     python analyze_pymoo_benchmark.py \
+    #         --experiment_name "$EXPERIMENT_NAME" \
+    #         --problems        "$PROBLEM" \
+    #         --n_obj           "$N_OBJ" \
+    #         --n_var           "$N_VAR" \
+    #         --methods         "$SAMOS_SSA" \
+    #         --pop_size        "$POP_SIZE" \
+    #         --n_gen           "$N_GEN" \
+    #         --checkpoints_d   10 25 50 100 \
+    #     && echo "Analysis updated for $PROBLEM seed ${SEED}" \
+    #     || echo "[WARN] Analysis failed or timed out for $PROBLEM seed ${SEED} (non-fatal)"
 
-    cd "$SCRATCH_DIRECTORY"
+    # cd "$SCRATCH_DIRECTORY"
+
 done
+
+# ── final cross-benchmark analysis (all problems, for summary table) ──────────
+echo ""
+echo "─── Final cross-benchmark analysis"
+cd "${SLURM_SUBMIT_DIR}"
+flock --wait 60 \
+    "${SLURM_SUBMIT_DIR}/results/${EXPERIMENT_NAME}/.analyze_final.lock" \
+    python analyze_pymoo_benchmark.py \
+        --experiment_name "$EXPERIMENT_NAME" \
+        --problems        wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9 \
+        --n_obj           "$N_OBJ" \
+        --n_var           "$N_VAR" \
+        --methods         "$SAMOS_SSA" \
+        --pop_size        "$POP_SIZE" \
+        --n_gen           "$N_GEN" \
+        --checkpoints_d   10 25 50 100 \
+    && echo "Cross-benchmark analysis complete" \
+    || echo "[WARN] Cross-benchmark analysis failed (non-fatal)"
 
 echo ""
 echo "Date (done)       = $(date)"

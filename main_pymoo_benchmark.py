@@ -41,6 +41,7 @@ from strategy.callbacks import PymooBenchmarkCallback
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
 from strategy.surrogate.samos_ssa import SAMOSSA
+from strategy.surrogate.samos2 import SAMOS2
 
 # ─── MOSMAC on continuous benchmarks ─────────────────────────────────────────
 
@@ -258,6 +259,25 @@ def run_single(
             dedup_key_fn=lambda x: tuple(np.round(x, 4).tolist()),
         )
 
+    elif method == 'samos2':
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        rng = np.random.RandomState(seed)
+        surrogates = [
+            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+            for _ in range(problem.n_obj)
+        ]
+        algorithm = SAMOS2(
+            sampling=sampling,
+            surrogates=surrogates,
+            crossover=crossover,
+            mutation=mutation,
+            n_doe=n_doe_,
+            n_infill=n_infill_,
+            eliminate_duplicates=False,
+            dedup_key_fn=lambda x: tuple(np.round(x, 4).tolist()),
+        )
+
     elif method.startswith('gpsaf-') or method.startswith('ssa-nsga2-'):
         if method.startswith('gpsaf-'):
             algo_family    = 'gpsaf'
@@ -414,7 +434,7 @@ if __name__ == '__main__':
                         default=['random', 'nsga2', 'samos-xgb',],
                         help='Methods: random, nsga2, samos-rfr, samos-xgb, samos-ssa, '
                              'mosmac, parego, cobra, gpsaf-default, gpsaf-rfr, gpsaf-xgb, '
-                             'ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb')
+                             'ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb, samos2')
     parser.add_argument('--seeds',   type=int, nargs='+', default=list(range(2)))
     parser.add_argument('--pop_size',        type=int,   default=20)
     parser.add_argument('--n_gen',           type=int,   default=50)
