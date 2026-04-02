@@ -362,3 +362,116 @@ def run_parego_nasbench(
     data['log_archs']  = problem.log_archs
     return data
 
+
+def run_parego_evoxbench(
+    benchmark,
+    problem,
+    callback,
+    sampling,
+    seed: int,
+    pop_size: int,
+    n_gen: int,
+    n_doe: Optional[int] = None,
+    max_train_n: int = 500,
+    inner_solver: str = 'lbfgsb',
+    n_restarts_inner: int = 3,
+) -> dict:
+    """Run ParEGO on an evoxbench problem instance.
+
+    Mirrors ``run_parego_nasbench`` but records data in the format expected by
+    ``EvoxBenchCallback`` (no bench_db / log_archs; test re-eval via benchmark).
+    """
+    from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+
+    rng    = np.random.RandomState(seed)
+    n_doe_ = n_doe if n_doe is not None else pop_size
+    xl     = problem.xl.astype(float)
+    xu     = problem.xu.astype(float)
+    n_var  = problem.n_var
+    n_obj  = problem.n_obj
+
+    surrogate = GaussianProcessSurrogate(n_var=n_var)
+    solver    = (EASolver(pop_size=20, max_iter=100)
+                 if inner_solver == 'ea'
+                 else LBFGSBSolver(n_restarts=n_restarts_inner))
+
+    def _eval(X: np.ndarray) -> np.ndarray:
+        out: dict = {}
+        problem._evaluate(X, out)
+        return out['F'].copy()
+
+    def _record(X_batch: np.ndarray, F_batch: np.ndarray) -> None:
+        var_arch = list(callback.data['var_archive'][-1]) if callback.data['var_archive'] else []
+        obj_arch = list(callback.data['obj_archive'][-1]) if callback.data['obj_archive'] else []
+        for var_ind, obj_ind in zip(X_batch, F_batch):
+            var_arch, obj_arch = callback._update_archive(var_arch, obj_arch, var_ind, obj_ind)
+
+        if var_arch:
+            X_arch   = np.array([np.round(v).astype(int) for v in var_arch])
+            test_obj = benchmark.evaluate(X_arch, true_eval=True)
+            if not benchmark.normalized_objectives:
+                test_obj = benchmark.normalize(test_obj)
+            test_obj    = np.where(np.isfinite(test_obj), test_obj, 1.0)
+            nd_idx      = NonDominatedSorting().do(test_obj, only_non_dominated_front=True)
+            test_obj_nd = test_obj[nd_idx]
+        else:
+            test_obj_nd = np.empty((0, n_obj))
+
+        if len(test_obj_nd) > 0:
+            indicators = {
+                'hv':       float(callback._hv_ind(test_obj_nd)),
+                'igd_plus': float(callback._igd_ind(test_obj_nd))
+                            if callback._igd_ind is not None else float('nan'),
+            }
+        else:
+            indicators = {'hv': 0.0, 'igd_plus': float('nan')}
+
+        callback.data['var_pop'].append(X_batch)
+        callback.data['obj_pop'].append(F_batch)
+        callback.data['var_archive'].append(var_arch)
+        callback.data['obj_archive'].append(obj_arch)
+        callback.data['test_obj_archive'].append(test_obj_nd)
+        callback.data['indicators'].append(indicators)
+
+    def _norm(X):   return (X - xl) / np.maximum(xu - xl, 1e-10)
+    def _denorm(N): return np.clip(xl + N * (xu - xl), xl, xu)
+
+    # ── initial DoE ───────────────────────────────────────────────────────────
+    X_all = sampling.do(problem, n_doe_).get('X').astype(float)
+    F_all = _eval(X_all)
+    _record(X_all, F_all)
+
+    # ── ParEGO loop ───────────────────────────────────────────────────────────
+    for _ in range(n_gen - 1):
+        N   = len(X_all)
+        idx = rng.choice(N, max_train_n, replace=False) if N > max_train_n else slice(None)
+        Xt, Ft = X_all[idx], F_all[idx]
+
+        Xt_norm = _norm(Xt)
+        F_min   = Ft.min(axis=0)
+        F_rng   = np.maximum(Ft.max(axis=0) - F_min, 1e-10)
+        Yt_norm = (Ft - F_min) / F_rng
+
+        surrogate.fit(Xt_norm, Yt_norm)
+
+        weights    = np.vstack([_sample_weight(n_obj, rng) for _ in range(pop_size)])
+        Xcand_norm = solver.solve(
+            surrogate=surrogate,
+            y_min_norm=Yt_norm.min(axis=0),
+            n_candidates=pop_size,
+            n_var=n_var,
+            rng=rng,
+            acq_fn=_neg_scalarised_ei,
+            X_existing=_norm(X_all),
+            weights=weights,
+        )
+
+        Xcand = _denorm(Xcand_norm)
+        Fcand = _eval(Xcand)
+        X_all = np.vstack([X_all, Xcand])
+        F_all = np.vstack([F_all, Fcand])
+        _record(Xcand, Fcand)
+
+    callback.data['time'] = problem.time
+    return callback.data
+

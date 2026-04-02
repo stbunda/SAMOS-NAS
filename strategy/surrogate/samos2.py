@@ -15,30 +15,31 @@ Drop-in pymoo Algorithm with the same interface as SAMOSMinimal:
     )
     results = minimize(real_problem, algorithm, termination=('n_gen', n_gen), ...)
 
-Configuration derived from the SAMOS ablation study (WFG 2-obj, B1200_P20):
+Configuration derived from the SAMOS2 ablation study (WFG 2-obj, B1200_P20):
 
   Surrogate      : XGBoost(100)          — best mean rank across problems
   warm_start     : 0.25                  — 75 % fresh random keeps diversity
   n_gen_inner    : 5                     — fewer gens consistently better
-  pop_schedule   : exp_dec (500 → 50)    — large exploration budget early, tight late
-  alpha          : 3                     — 3 dominance-tournament rounds to refine pool
-  beta           : 10                    — 10 additional gens seeded from filtered pool
-  rho            : 0.5                   — sample half of beta candidates
-  selection      : subset                — best across problems
-  doe_strategy   : lhs                   — Latin Hypercube for better initial coverage
+  pop_schedule   : 500 → 50             — large early exploration, tight late refinement
+  selection      : kmeans               — k-means in F-space, best rank across problems
+  use_trace      : True                 — replace-parent semantics keep archive fresh
+  doe_strategy   : lhs                  — Latin Hypercube for better initial coverage
+
+  Removed (ablation showed no benefit):
+    alpha=3  — surrogate dominance-tournament rounds: (0,0) ≈ (3,10) in all metrics
+    beta=10  — extra inner gens from filtered pool:    same conclusion
 
 Per-generation flow:
   1. _initialize_infill()   — LHS-based DOE
   2. _infill()
        a. Fit surrogates on archive
        b. Warm-start inner NSGA-II: 25 % best archive + 75 % fresh random
-       c. Run 5 inner gens (exp_dec scheduled pop)
+       c. Run 5 inner gens (exp-scheduled pop 500→50)
        d. Deduplicate candidates against archive
-       e. 3 rounds of surrogate dominance tournament  (alpha phase)
-       f. 10 more inner gens seeded from filtered pool (beta phase), dedup again
-       g. Subset-select n_infill diverse candidates
-       h. Pad with random samples if pool is scarce
-  3. _advance()             — merge infills into archive, update dedup keys
+       e. k-means cluster in F-space, pick one representative per cluster
+       f. Pad with random samples if pool is scarce
+  3. _advance()             — if use_trace, replace each infill's closest archive
+                              parent; merge infills into archive, update dedup keys
 """
 
 import numpy as np
@@ -47,10 +48,11 @@ from pymoo.core.algorithm import Algorithm
 from pymoo.core.initialization import Initialization
 from pymoo.core.population import Population
 from pymoo.optimize import minimize
-from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+from pymoo.util.normalization import normalize
+from pymoo.util.roulette import RouletteWheelSelection
+from pymoo.operators.survival.rank_and_crowding.metrics import calc_crowding_distance
+from sklearn.cluster import KMeans
 from scipy.stats import qmc as _qmc
-
-from strategy.surrogate.subset_selection import subset_selection
 
 
 class SAMOS2(Algorithm):
@@ -63,6 +65,7 @@ class SAMOS2(Algorithm):
     surrogates : list[surrogate]
         One fitted surrogate per predicted objective.
         Each must implement ``fit(X, y)`` and ``predict(X) -> np.ndarray``.
+        For use_trace to be most effective, surrogates should generalise well.
     surrogate_problem_factory : callable or None
         ``factory(surrogates) -> pymoo Problem`` used as the inner NSGA-II
         objective.  If *None*, defaults to ``SurrogateProblemMOO``.
@@ -76,23 +79,18 @@ class SAMOS2(Algorithm):
         Inner NSGA-II generations per outer generation (default 5).
     ga_pop_size : int
         Base inner population size when pop scheduling is disabled.
-        Ignored when pop_start / pop_end are used (exp_dec schedule active).
+        Ignored when pop_start / pop_end are used (exp schedule active).
     pop_start, pop_end : int
-        Start / end values for exponential-decay pop scheduling.
+        Start / end values for exponential pop scheduling.
         Default 500 → 50 (large early exploration, tight late refinement).
-    alpha : int
-        Surrogate dominance-tournament rounds applied to the candidate pool
-        after deduplication and before the beta phase (default 3).
-    beta : int
-        Additional inner NSGA-II generations seeded from the alpha-filtered
-        pool, extending candidate diversity (default 10).
-    rho : float
-        Fraction of beta candidates merged into the pool (default 0.5).
     warm_start_ratio : float
         Fraction of the inner pop seeded from the best archive members;
         the remainder is fresh random (default 0.25, i.e. 75 % random).
-    use_subset_selection : bool
-        Diversify the infill batch via subset_selection (default True).
+    use_trace : bool
+        If True (default), each infill candidate is linked to its closest
+        archive member in X-space.  In _advance() the traced parent is
+        removed before adding the infill, so each infill effectively
+        replaces its nearest neighbour — keeps archive diversity high.
     eliminate_duplicates : bool or pymoo DuplicateElimination
         Passed to the inner NSGA-II (default False).
     dedup_key_fn : callable or None
@@ -113,11 +111,8 @@ class SAMOS2(Algorithm):
         ga_pop_size=100,
         pop_start=500,
         pop_end=50,
-        alpha=3,
-        beta=10,
-        rho=0.5,
         warm_start_ratio=0.25,
-        use_subset_selection=True,
+        use_trace=True,
         eliminate_duplicates=False,
         dedup_key_fn=None,
         **kwargs,
@@ -134,11 +129,8 @@ class SAMOS2(Algorithm):
         self.ga_pop_size                = ga_pop_size
         self.pop_start                  = pop_start
         self.pop_end                    = pop_end
-        self.alpha                      = alpha
-        self.beta                       = beta
-        self.rho                        = rho
         self.warm_start_ratio           = warm_start_ratio
-        self.use_subset_selection       = use_subset_selection
+        self.use_trace                  = use_trace
         self.eliminate_duplicates       = eliminate_duplicates
         self._dedup_key = dedup_key_fn if dedup_key_fn is not None \
             else lambda x: tuple(np.round(x, decimals=8).tolist())
@@ -213,81 +205,36 @@ class SAMOS2(Algorithm):
         # 4. Deduplicate candidates against the archive
         cand_pop = self._dedup(cand_pop)
 
-        # 5. Alpha phase — surrogate dominance-tournament rounds
-        cand_pop = self._alpha_tournament(cand_pop)
-
-        # 6. Beta phase — additional inner gens seeded from filtered pool
-        cand_pop = self._beta_extend(cand_pop, eff_pop, surr_problem)
-        cand_pop = self._dedup(cand_pop)
-
-        # 7. Select n_infill candidates; pad with random if scarce
+        # 5. k-means select n_infill candidates; pad with random if scarce
         infill_pop = self._select_infill(cand_pop, F_arc)
+
+        # 6. Trace assignment: link each infill to closest archive parent
+        if self.use_trace and len(infill_pop) > 0:
+            infill_X = infill_pop.get('X')
+            dists    = np.sum((infill_X[:, None, :] - X_arc[None, :, :]) ** 2, axis=2)
+            parents  = dists.argmin(axis=1)
+            infill_pop.set('trace_parent', parents)
 
         return Population.new('X', infill_pop.get('X'))
 
     def _advance(self, infills=None, **kwargs):
+        if self.use_trace and infills is not None and len(infills) > 0:
+            trace_parents = infills.get('trace_parent')
+            if trace_parents is not None:
+                valid_parents = [p for p in trace_parents if p is not None]
+                unique_parents = np.unique(valid_parents) if valid_parents else np.array([], dtype=int)
+                n_arc = len(self._archive)
+                keep_mask = np.ones(n_arc, dtype=bool)
+                for pidx in unique_parents:
+                    if 0 <= pidx < n_arc:
+                        keep_mask[pidx] = False
+                self._archive = self._archive[keep_mask]
+                self._archive_keys = {
+                    self._dedup_key(x) for x in self._archive.get('X')
+                }
         self._archive = Population.merge(self._archive, infills)
         self._add_to_archive_keys(infills)
         self.pop = infills
-
-    # ── alpha / beta phases ────────────────────────────────────────────────
-
-    def _alpha_tournament(self, cand_pop: Population) -> Population:
-        """``self.alpha`` rounds of pairwise surrogate dominance tournament.
-
-        Each round: every candidate competes against a random opponent; the
-        dominated one is replaced.  Pool is pruned to unique survivors.
-        """
-        if self.alpha <= 0 or len(cand_pop) < 2:
-            return cand_pop
-        X      = cand_pop.get('X')
-        F_pred = np.column_stack([s.predict(X).ravel() for s in self.surrogates])
-        n      = len(X)
-        idx    = np.arange(n)
-        rng    = np.random.default_rng()
-        for _ in range(self.alpha):
-            opponents = rng.integers(0, n, size=n)
-            for i in range(n):
-                j  = opponents[i]
-                fi = F_pred[idx[i]]
-                fj = F_pred[idx[j]]
-                if np.all(fj <= fi) and np.any(fj < fi):
-                    idx[i] = idx[j]
-        return cand_pop[np.unique(idx)]
-
-    def _beta_extend(
-        self,
-        cand_pop: Population,
-        eff_pop: int,
-        surr_problem,
-    ) -> Population:
-        """``self.beta`` additional inner gens seeded from alpha-filtered pool.
-
-        Merges a ``rho``-fraction of the resulting candidates back into the pool.
-        """
-        if self.beta <= 0:
-            return cand_pop
-        seed_X = cand_pop.get('X') if len(cand_pop) > 0 else self._archive.get('X')
-        n_pad  = max(0, eff_pop - len(seed_X))
-        if n_pad > 0:
-            pad    = self._init.do(self.problem, n_pad, algorithm=self).get('X')
-            seed_X = np.vstack([seed_X, pad])
-        inner_init = Population.new('X', seed_X[:eff_pop])
-        inner_alg  = NSGA2(
-            pop_size=eff_pop,
-            sampling=inner_init,
-            crossover=self.crossover,
-            mutation=self.mutation,
-            eliminate_duplicates=self.eliminate_duplicates,
-        )
-        res      = minimize(surr_problem, inner_alg,
-                            termination=('n_gen', self.beta), verbose=False)
-        beta_pop = res.pop if res.pop is not None else Population.empty()
-        if len(beta_pop) == 0:
-            return cand_pop
-        n_take  = max(1, int(round(self.rho * len(beta_pop))))
-        chosen  = beta_pop[np.random.choice(len(beta_pop), size=n_take, replace=False)]
-        return Population.merge(cand_pop, chosen) if len(cand_pop) > 0 else chosen
 
     # ── scheduling ────────────────────────────────────────────────────────
 
@@ -305,26 +252,36 @@ class SAMOS2(Algorithm):
     # ── infill selection ──────────────────────────────────────────────────
 
     def _select_infill(self, cand_pop: Population, F_arc: np.ndarray) -> Population:
-        """Subset-select n_infill diverse candidates; pad with random if needed."""
+        """k-means select n_infill diverse candidates; pad with random if needed."""
         if len(cand_pop) == 0:
             return self._sample_dedup(self.n_infill)
 
-        F_cand = cand_pop.get('F')
-        front  = NonDominatedSorting().do(F_arc, only_non_dominated_front=True)
+        if len(cand_pop) <= self.n_infill:
+            # Too few candidates — take all, pad with random
+            n_random = self.n_infill - len(cand_pop)
+            if n_random > 0:
+                extra = self._sample_dedup(n_random, extra_ref=cand_pop)
+                return Population.merge(extra, cand_pop) if len(extra) > 0 else cand_pop
+            return cand_pop
 
-        if self.use_subset_selection and len(cand_pop) > self.n_infill:
-            indices = subset_selection(F_cand, F_arc[front], self.n_infill)
-            found   = cand_pop if indices is None else cand_pop[indices]
-        else:
-            found = cand_pop
-
-        n_found = min(len(found), self.n_infill)
-        found   = found[:n_found]
-
-        if n_found < self.n_infill:
-            extra = self._sample_dedup(self.n_infill - n_found, extra_ref=found)
-            return Population.merge(extra, found) if len(extra) > 0 else found
-        return found
+        # k-means clustering in normalised F-space; pick one rep per cluster
+        F       = cand_pop.get('F')
+        ideal   = F.min(axis=0)
+        nadir   = F.max(axis=0) + 1e-16
+        F_norm  = normalize(F, ideal, nadir)
+        k       = min(self.n_infill, len(cand_pop))
+        labels  = KMeans(n_clusters=k, random_state=0, n_init=10).fit(F_norm).labels_
+        groups  = [[] for _ in range(k)]
+        for idx, lbl in enumerate(labels):
+            groups[lbl].append(idx)
+        selected = []
+        for group in groups:
+            if not group:
+                continue
+            crowd = calc_crowding_distance(F[group])
+            sel   = RouletteWheelSelection(crowd, larger_is_better=False)
+            selected.append(group[sel.next()])
+        return cand_pop[selected]
 
     # ── surrogate problem ─────────────────────────────────────────────────
 

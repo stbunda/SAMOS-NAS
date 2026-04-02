@@ -516,13 +516,22 @@ class SAMOSAblation(Algorithm):
         # ── 4. Build inner surrogate problem ──────────────────────────────
         from problem.pymoo.surrogate_problem import SurrogateProblemMOO
 
+        # Check if surrogates support predict_std for extra_obj mode
+        _supports_uncertainty = True
         if self.uncertainty_mode == 'extra_obj':
+            for s in self.surrogates:
+                if not hasattr(s, 'predict_std'):
+                    _supports_uncertainty = False
+                    break
+
+        if self.uncertainty_mode == 'extra_obj' and _supports_uncertainty:
             # extra_obj: augment the inner problem with -predict_std objective
-            surr_problem = _UncertaintySurrogateProblem(
+            _base_surr = SurrogateProblemMOO(
                 self.surrogates, self.problem.n_var,
                 self.problem.xl.copy(), self.problem.xu.copy(),
                 real_problem=self.problem,
             )
+            surr_problem = _UncertaintySurrogateProblem(_base_surr, self.surrogates)
         else:
             surr_problem = SurrogateProblemMOO(
                 self.surrogates, self.problem.n_var,
@@ -555,6 +564,14 @@ class SAMOSAblation(Algorithm):
 
         # ── 6. Deduplicate ─────────────────────────────────────────────────
         cand_pop = res.pop if res.pop is not None else Population.empty()
+        
+        # If uncertainty_mode='extra_obj', strip the extra uncertainty objective
+        if self.uncertainty_mode == 'extra_obj' and _supports_uncertainty and len(cand_pop) > 0:
+            # cand_pop.F has n_obj+1 columns; keep only first n_obj
+            X_arr = cand_pop.get('X')
+            F_arr = cand_pop.get('F')[:, :self.problem.n_obj]  # strip last column
+            cand_pop = Population.new('X', X_arr, 'F', F_arr)
+        
         n_before_dedup = len(cand_pop)
         if len(cand_pop) > 0:
             not_dup = np.array([
@@ -782,14 +799,34 @@ class _UncertaintySurrogateProblem(Problem):
         base_out = {}
         self._base._evaluate(X, base_out, *args, **kwargs)
         F_base = base_out['F']  # shape (n, n_base_obj)
+        
+        n_samples = len(X)
+        stds_list = []
+        
         # Uncertainty: mean std across objectives (negate so NSGA-II minimises it)
-        stds = []
         for s in self._surrogates:
             try:
-                stds.append(s.predict_std(X).ravel())
-            except NotImplementedError:
-                stds.append(np.zeros(len(X)))
-        mean_std = np.column_stack(stds).mean(axis=1, keepdims=True)
+                std_vals = s.predict_std(X)
+                if std_vals is not None:
+                    std_vals = np.asarray(std_vals).ravel()
+                    # Ensure length matches
+                    if len(std_vals) != n_samples:
+                        std_vals = np.zeros(n_samples)
+                    stds_list.append(std_vals)
+                else:
+                    stds_list.append(np.zeros(n_samples))
+            except Exception:
+                # Catch all exceptions (NotImplementedError, AttributeError, TypeError, etc.)
+                stds_list.append(np.zeros(n_samples))
+        
+        if stds_list and len(stds_list) > 0:
+            # Verify all arrays have same length before stacking
+            stds_list = [np.atleast_1d(s) for s in stds_list]
+            stds_array = np.column_stack(stds_list)  # shape (n, n_obj)
+            mean_std = stds_array.mean(axis=1, keepdims=True)  # shape (n, 1)
+        else:
+            mean_std = np.zeros((n_samples, 1))
+        
         out['F'] = np.hstack([F_base, -mean_std])  # minimise -std = maximise std
 
 

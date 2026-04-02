@@ -80,3 +80,34 @@ class ValidRandomSampling201(Sampling):
         return np.random.randint(
             0, _NB201_N_OPS, size=(n_samples, _NB201_N_VAR)
         ).astype(float)
+
+
+# ─── EvoXBench sampling ───────────────────────────────────────────────────────
+
+
+class EvoxBenchSampler(Sampling):
+    """Uniform random integer sampling over any evoxbench search space.
+
+    Bounds are passed explicitly so that this sampler works for every
+    evoxbench benchmark (NB-101, NB-201, NATS, DARTS, MNv3, …) without any
+    benchmark-specific logic.  All evoxbench spaces are unconstrained within
+    their integer bounds, so no validity retry is needed.
+
+    Parameters
+    ----------
+    xl : np.ndarray
+        Per-gene lower bounds (integer).
+    xu : np.ndarray
+        Per-gene upper bounds (integer).
+    """
+
+    def __init__(self, xl: np.ndarray, xu: np.ndarray):
+        super().__init__()
+        self.xl = np.asarray(xl, dtype=int)
+        self.xu = np.asarray(xu, dtype=int)
+
+    def _do(self, problem, n_samples, **kwargs):
+        return np.column_stack([
+            np.random.randint(lo, hi + 1, size=n_samples)
+            for lo, hi in zip(self.xl, self.xu)
+        ]).astype(float)
