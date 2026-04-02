@@ -31,7 +31,7 @@ mkdir -p slurm_logs_evoxbench_in1k
 # ─── tunable parameters ───────────────────────────────────────────────────────
 SUITE=in1kmop
 POP_SIZE=${POP_SIZE:-20}
-N_GEN=${N_GEN:-50}
+N_GEN=${N_GEN:-60}
 N_GEN_INNER=${N_GEN_INNER:-20}
 
 # ─── methods ──────────────────────────────────────────────────────────────────
