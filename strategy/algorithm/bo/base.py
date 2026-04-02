@@ -43,7 +43,6 @@ from pymoo.indicators.hv import HV
 from pymoo.indicators.igd_plus import IGDPlus
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
-from problem.pymoo.benchmark_utils import build_problem, get_pareto_front, default_ref_point
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +133,7 @@ class BayesianOptimizer:
         self.rng = np.random.RandomState(seed)
         np.random.seed(seed)
 
+        from problem.pymoo.benchmark_utils import build_problem, get_pareto_front, default_ref_point
         self.prob      = build_problem(problem_name, n_obj, n_var)
         self.pf        = get_pareto_front(self.prob, self.prob.n_obj)
         self.ref_point = default_ref_point(problem_name, self.prob.n_obj)

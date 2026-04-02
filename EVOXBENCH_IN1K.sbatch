@@ -55,6 +55,7 @@ fi
 rsync -aR \
     analysis \
     problem/evoxbench \
+    problem/pymoo \
     problem/data/evoxbench \
     strategy \
     utils \
