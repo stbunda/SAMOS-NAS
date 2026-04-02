@@ -6,7 +6,19 @@ import os
 
 # ─── data paths ───────────────────────────────────────────────────────────────
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# When running as a SLURM array job, multiple tasks on the same node share
+# ~/.config/evoxbench/config.json.  Each task writes its scratch-local data
+# path, but concurrent writes create a race: task A's config gets overwritten
+# by task B before task A constructs its benchmark, causing FileNotFoundError.
+#
+# Fix: always resolve data paths relative to SLURM_SUBMIT_DIR (the stable
+# project root on the shared filesystem).  All concurrent tasks then write
+# the *same* value to the config file, so writes are idempotent and races
+# are harmless.  When not running under SLURM (local dev), fall back to the
+# path derived from this file's location.
+_SUBMIT_DIR   = os.environ.get('SLURM_SUBMIT_DIR')
+_PROJECT_ROOT = _SUBMIT_DIR if _SUBMIT_DIR else \
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 EVOX_DB_PATH   = os.path.join(_PROJECT_ROOT, 'problem', 'data', 'evoxbench', 'database')
 EVOX_DATA_PATH = os.path.join(_PROJECT_ROOT, 'problem', 'data', 'evoxbench', 'data')

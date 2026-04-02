@@ -56,7 +56,6 @@ rsync -aR \
     analysis \
     problem/evoxbench \
     problem/pymoo \
-    problem/data/evoxbench \
     strategy \
     utils \
     main_evoxbench.py \
