@@ -129,7 +129,9 @@ class NASBench101DuplicateElimination(DuplicateElimination):
 
 # ─── NASBench-201 duplicate elimination ──────────────────────────────────────
 
-from problem.nasbench201.utils import _vec_to_arch_str as _vec_to_arch_str_201
+def _vec_to_arch_str_201(x):
+    from problem.nasbench201.utils import _vec_to_arch_str as _fn
+    return _fn(x)
 
 
 class NASBench201DuplicateElimination(DuplicateElimination):

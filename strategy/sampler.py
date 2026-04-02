@@ -64,11 +64,6 @@ class ValidRandomSampling101(Sampling):
 
 # ─── NASBench-201 sampling ────────────────────────────────────────────────────
 
-from problem.nasbench201.utils import (
-    N_VAR as _NB201_N_VAR,
-    N_OPS_PER_GENE as _NB201_N_OPS,
-)
-
 
 class ValidRandomSampling201(Sampling):
     """Generates a matrix of valid 6-gene NASBench-201 integer vectors.
@@ -77,6 +72,10 @@ class ValidRandomSampling201(Sampling):
     """
 
     def _do(self, problem, n_samples, **kwargs):
+        from problem.nasbench201.utils import (
+            N_VAR as _NB201_N_VAR,
+            N_OPS_PER_GENE as _NB201_N_OPS,
+        )
         return np.random.randint(
             0, _NB201_N_OPS, size=(n_samples, _NB201_N_VAR)
         ).astype(float)

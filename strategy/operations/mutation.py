@@ -203,12 +203,14 @@ class SinglePointMutation101(Mutation):
 
 # ─── NASBench-201 mutation operators ─────────────────────────────────────────
 
-from problem.nasbench201.utils import (
-    N_VAR as _NB201_N_VAR,
-    N_OPS_PER_GENE as _NB201_N_OPS,
-    XL as _NB201_XL,
-    XU as _NB201_XU,
-)
+def _nb201_utils():
+    from problem.nasbench201.utils import (
+        N_VAR as _NB201_N_VAR,
+        N_OPS_PER_GENE as _NB201_N_OPS,
+        XL as _NB201_XL,
+        XU as _NB201_XU,
+    )
+    return _NB201_N_VAR, _NB201_N_OPS, _NB201_XL, _NB201_XU
 
 
 class UniformMutation201(Mutation):
@@ -224,6 +226,7 @@ class UniformMutation201(Mutation):
         super().__init__(prob=prob, **kwargs)
 
     def _do(self, problem, X, **kwargs):
+        _NB201_N_VAR, _NB201_N_OPS, _, __ = _nb201_utils()
         X        = X.astype(float)
         Xp       = np.copy(X)
         prob_var = self.get_prob_var(problem, size=len(X))
@@ -250,6 +253,7 @@ class SinglePointMutation201(Mutation):
         super().__init__(**kwargs)
 
     def _do(self, problem, X, **kwargs):
+        _NB201_N_VAR, _NB201_N_OPS, _, __ = _nb201_utils()
         X  = X.astype(float)
         Xp = np.copy(X)
 
