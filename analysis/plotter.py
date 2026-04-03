@@ -23,6 +23,7 @@ COLOURS = {
     'nsga2-single':     '#59a14f',
     'samos-rfr':        '#e15759',
     'samos-xgb':        '#b07aa1',
+    'samos2':           '#8b0000',
     'mosmac':           '#76b7b2',
     # ── comparison methods ───────────────────────────────────────────────────
     'ssa-nsga2-default': '#ff9da7',
@@ -40,6 +41,7 @@ LABELS = {
     'nsga2-single':     'NSGA-II (no XO, single-pt mut)',
     'samos-rfr':        'SAMOS (RFR surrogate)',
     'samos-xgb':        'SAMOS (XGBoost surrogate)',
+    'samos2':           'SAMOS2 (XGBoost surrogate)',
     'mosmac':           'MO-SMAC',
     # ── comparison methods ───────────────────────────────────────────────────
     'ssa-nsga2-default': 'SSA-NSGA-II (default)',

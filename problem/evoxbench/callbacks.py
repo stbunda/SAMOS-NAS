@@ -27,13 +27,18 @@ class EvoxBenchCallback(Callback):
     def __init__(self, benchmark) -> None:
         super().__init__()
         self.benchmark  = benchmark
-        pareto_front    = benchmark.pareto_front   # (n_pts, n_obj) or None
+        pareto_front_raw = benchmark.pareto_front   # (n_pts, n_obj) or None
 
         n_obj = benchmark.evaluator.n_objs
 
-        if pareto_front is not None and len(pareto_front) > 0:
-            self._pareto_front = pareto_front
-            ref_point = pareto_front.max(axis=0) * 1.05
+        if pareto_front_raw is not None and len(pareto_front_raw) > 0:
+            # pareto_front is stored in raw objective space; normalize it to
+            # the same [utopian→0, nadir→1] scale used by test_obj in notify().
+            pf_norm = benchmark.normalize(pareto_front_raw)
+            pf_norm = np.where(np.isfinite(pf_norm), pf_norm, 1.0)
+            self._pareto_front = pf_norm
+            # After normalization nadir ≈ 1.0, so 1.05 is always a valid ref.
+            ref_point = np.ones(n_obj) * 1.05
         else:
             # No reference front available — use a unit ref-point as fallback
             self._pareto_front = None

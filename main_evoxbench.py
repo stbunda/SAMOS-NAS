@@ -323,42 +323,44 @@ def run_single(
 
 def main(args):
     budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
-    results_root  = os.path.join(
-        'results', 'evoxbench', args.suite, f'pid{args.pid}', budget_folder
-    )
 
-    for method in args.methods:
-        save_dir = os.path.join(results_root, method)
-        os.makedirs(save_dir, exist_ok=True)
+    for pid in args.pids:
+        results_root = os.path.join(
+            'results', 'evoxbench', args.suite, f'pid{pid}', budget_folder
+        )
 
-        for seed in args.seeds:
-            out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
-            if os.path.exists(out_path) and not args.overwrite:
-                print(f'[SKIP] {method}/seed_{seed} already exists')
-                continue
+        for method in args.methods:
+            save_dir = os.path.join(results_root, method)
+            os.makedirs(save_dir, exist_ok=True)
 
-            print(
-                f'\n[RUN] suite={args.suite}  pid={args.pid}'
-                f'  method={method}  seed={seed}'
-                f'  pop={args.pop_size}  n_gen={args.n_gen}'
-            )
-            data = run_single(
-                suite=args.suite,
-                pid=args.pid,
-                method=method,
-                seed=seed,
-                pop_size=args.pop_size,
-                n_gen=args.n_gen,
-                n_doe=args.n_doe,
-                n_infill=args.n_infill,
-                n_gen_inner=args.n_gen_inner,
-                inner_pop_size=args.inner_pop_size,
-                warm_start_ratio=args.warm_start_ratio,
-                proxy_obj_indices=args.proxy_obj_indices,
-            )
-            with open(out_path, 'wb') as f:
-                pickle.dump(data, f)
-            print(f'  Saved -> {out_path}')
+            for seed in args.seeds:
+                out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
+                if os.path.exists(out_path) and not args.overwrite:
+                    print(f'[SKIP] pid{pid}/{method}/seed_{seed} already exists')
+                    continue
+
+                print(
+                    f'\n[RUN] suite={args.suite}  pid={pid}'
+                    f'  method={method}  seed={seed}'
+                    f'  pop={args.pop_size}  n_gen={args.n_gen}'
+                )
+                data = run_single(
+                    suite=args.suite,
+                    pid=pid,
+                    method=method,
+                    seed=seed,
+                    pop_size=args.pop_size,
+                    n_gen=args.n_gen,
+                    n_doe=args.n_doe,
+                    n_infill=args.n_infill,
+                    n_gen_inner=args.n_gen_inner,
+                    inner_pop_size=args.inner_pop_size,
+                    warm_start_ratio=args.warm_start_ratio,
+                    proxy_obj_indices=args.proxy_obj_indices,
+                )
+                with open(out_path, 'wb') as f:
+                    pickle.dump(data, f)
+                print(f'  Saved -> {out_path}')
 
 
 if __name__ == '__main__':
@@ -369,8 +371,8 @@ if __name__ == '__main__':
     parser.add_argument('--suite', type=str, required=True,
                         choices=['c10mop', 'in1kmop', 'citysegmop'],
                         help='EvoXBench test suite')
-    parser.add_argument('--pid', type=int, required=True,
-                        help='Problem ID within the suite (e.g. 1-9 for c10mop/in1kmop)')
+    parser.add_argument('--pids', type=int, nargs='+', required=True,
+                        help='Problem ID(s) within the suite (e.g. --pids 1 2 3 or --pids 7)'}
     parser.add_argument('--methods', type=str, nargs='+',
                         default=['random', 'nsga2', 'samos-xgb'],
                         help='Methods: random, nsga2, samos-xgb, samos-rfr, samos2, '

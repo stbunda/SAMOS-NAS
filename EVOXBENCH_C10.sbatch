@@ -96,7 +96,7 @@ for PID in 1 2 3 4 5 6 7 8 9; do
 
     python main_evoxbench.py \
         --suite         "$SUITE" \
-        --pid           "$PID" \
+        --pids          "$PID" \
         --methods       "$METHOD" \
         --seeds         "$SEED" \
         --pop_size      "$POP_SIZE" \
