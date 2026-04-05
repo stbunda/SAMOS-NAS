@@ -372,7 +372,7 @@ if __name__ == '__main__':
                         choices=['c10mop', 'in1kmop', 'citysegmop'],
                         help='EvoXBench test suite')
     parser.add_argument('--pids', type=int, nargs='+', required=True,
-                        help='Problem ID(s) within the suite (e.g. --pids 1 2 3 or --pids 7)'}
+                        help='Problem ID(s) within the suite (e.g. --pids 1 2 3 or --pids 7)')
     parser.add_argument('--methods', type=str, nargs='+',
                         default=['random', 'nsga2', 'samos-xgb'],
                         help='Methods: random, nsga2, samos-xgb, samos-rfr, samos2, '
