@@ -16,8 +16,8 @@
 #SBATCH -c 2
 # Activate exactly ONE of the three lines below for each submission:
 ##SBATCH --array=0-69               # Batch 1: seeds  0-9  (7 methods × 10 seeds)
-#SBATCH --array=70-139                  # Batch 2: seeds 10-19 (7 methods × 10 seeds)
-##SBATCH --array=140-209                 # Batch 3: seeds 20-29 (7 methods × 10 seeds)
+##SBATCH --array=70-139                  # Batch 2: seeds 10-19 (7 methods × 10 seeds)
+#SBATCH --array=140-209                 # Batch 3: seeds 20-29 (7 methods × 10 seeds)
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
