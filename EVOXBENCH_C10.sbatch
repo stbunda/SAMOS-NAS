@@ -15,8 +15,8 @@
 #SBATCH -J evoxbench_c10
 #SBATCH -c 2
 # Activate exactly ONE of the three lines below for each submission:
-##SBATCH --array=0-99               # Batch 1: seeds  0-9  (7 methods × 10 seeds)
-#SBATCH --array=170-209                  # Batch 2: seeds 10-19 (7 methods × 10 seeds)
+#SBATCH --array=0-99               # Batch 1: seeds  0-9  (7 methods × 10 seeds)
+##SBATCH --array=170-209                  # Batch 2: seeds 10-19 (7 methods × 10 seeds)
 ## --array=140-209                 # Batch 3: seeds 20-29 (7 methods × 10 seeds)
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
@@ -101,8 +101,8 @@ for PID in 1 2 3 4 5 6 7 8 9; do
         --seeds         "$SEED" \
         --pop_size      "$POP_SIZE" \
         --n_gen         "$N_GEN" \
-        --n_gen_inner   "$N_GEN_INNER"
-    #    --overwrite
+        --n_gen_inner   "$N_GEN_INNER" \
+        --overwrite
 
     # ── copy results back ──────────────────────────────────────────────────────
     BUDGET_FOLDER="B$(( N_GEN * POP_SIZE ))_P${POP_SIZE}"
