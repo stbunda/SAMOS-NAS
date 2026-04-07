@@ -217,7 +217,13 @@ class SAMOS2(Algorithm):
         for group in groups:
             if not group:
                 continue
+            if len(group) == 1:
+                selected.append(group[0])
+                continue
             crowd = calc_crowding_distance(F[group])
+            # Replace inf (boundary points) with a finite max to avoid NaN in roulette
+            finite_max = crowd[np.isfinite(crowd)].max() if np.any(np.isfinite(crowd)) else 1.0
+            crowd = np.where(np.isfinite(crowd), crowd, finite_max)
             sel   = RouletteWheelSelection(crowd, larger_is_better=False)
             selected.append(group[sel.next()])
         return cand_pop[selected]
