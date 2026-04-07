@@ -20,6 +20,7 @@ import pickle
 
 import numpy as np
 from pymoo.indicators.hv import HV
+from scipy.stats import ranksums
 
 from analysis.plotter import (
     plot_results,
@@ -74,7 +75,49 @@ def _load_final_indicators(method: str, results_root: str) -> dict:
     }
 
 
+def _load_final_indicators_seeds(method: str, results_root: str) -> dict:
+    """Return {'hv': np.ndarray, 'igd_plus': np.ndarray} of per-seed values."""
+    seed_dir = os.path.join(results_root, method)
+    if not os.path.isdir(seed_dir):
+        return None
+    hvs, igds = [], []
+    for pkl_file in sorted(os.listdir(seed_dir)):
+        if not pkl_file.endswith('.pkl'):
+            continue
+        with open(os.path.join(seed_dir, pkl_file), 'rb') as f:
+            try:
+                data = pickle.load(f)
+            except Exception as e:
+                print(f"  [WARN] Failed to load {pkl_file}: {e}")
+                continue
+        indicators = data.get('indicators', [])
+        if not indicators:
+            continue
+        last = indicators[-1]
+        hvs.append(last.get('hv', float('nan')))
+        igds.append(last.get('igd_plus', float('nan')))
+    if not hvs:
+        return None
+    return {
+        'hv':       np.array(hvs),
+        'igd_plus': np.array(igds),
+    }
+
+
 # ─── LaTeX table ─────────────────────────────────────────────────────────────
+_WILCOXON_REF   = 'samos-xgb-i200-g20'
+_WILCOXON_ALPHA = 0.05
+
+_DEFAULT_METHOD_ORDER = [
+    'random', 'nsga2', 'parego', 'mosmac', 'gpsaf-default',
+    'samos-rfr-i200-g20', 'samos-xgb-i200-g20', 'samos-ssa-i200-g20',
+]
+_METHOD_ALIASES = {
+    'samos-xgb':  'samos-xgb-i200-g20',
+    'samos-rfr':  'samos-rfr-i200-g20',
+    'samos-ssa':  'samos-ssa-i200-g20',
+    'gpsaf':      'gpsaf-default',
+}
 
 _METHOD_LATEX_LABELS = {
     'random':             'Random',
@@ -108,9 +151,38 @@ def _method_latex_label(method: str) -> str:
     return method
 
 
-def _fmt(mean: float, std: float, bold: bool) -> str:
+def _wilcoxon_marker(ref_vals, other_vals, higher_is_better: bool) -> str:
+    """Wilcoxon rank-sum significance marker vs. the reference method.
+
+    Returns ``$(+)$`` when the method is significantly better than the reference,
+    ``$(-)$`` when significantly worse, or ``$(\\approx)$`` when not significant.
+    """
+    if ref_vals is None or other_vals is None:
+        return ''
+    rv = np.asarray(ref_vals)
+    ov = np.asarray(other_vals)
+    rv = rv[np.isfinite(rv)]
+    ov = ov[np.isfinite(ov)]
+    if len(rv) < 3 or len(ov) < 3:
+        return ''
+    try:
+        _, p = ranksums(rv, ov)
+    except Exception:
+        return r'$(\approx)$'
+    if p >= _WILCOXON_ALPHA:
+        return r'$(\approx)$'
+    ref_med   = np.median(rv)
+    other_med = np.median(ov)
+    if higher_is_better:
+        return r'$(+)$' if other_med > ref_med else r'$(-)$'
+    else:
+        return r'$(+)$' if other_med < ref_med else r'$(-)$'
+
+
+def _fmt(mean: float, std: float, bold: bool, marker: str = '') -> str:
     s = f'{mean:.4f}\\,\\textpm\\,{std:.4f}'
-    return f'\\textbf{{{s}}}' if bold else s
+    cell = f'\\textbf{{{s}}}' if bold else s
+    return f'{cell}{marker}'
 
 
 def generate_latex_table(
@@ -120,81 +192,140 @@ def generate_latex_table(
     pop_size: int,
     n_gen: int,
     out_path: str,
-):
-    """Write a single booktabs LaTeX table for all WFG benchmarks.
+    n_obj: int = 2,
+    n_var: int = None,
+) -> None:
+    """Write a booktabs LaTeX table: rows = methods, columns = problems × {HV, IGD+}.
 
-    Layout: outer grouping = benchmark pair, inner rows = methods.
-    Columns: Method | Benchmark | HV | IGD+ | Benchmark | HV | IGD+
-    Problems are split ~evenly into left and right column groups.
-    The tabular is wrapped in \\resizebox{\\linewidth}{!} to fit the page width.
-    The best-performing method per benchmark per metric is \\textbf-wrapped.
+    Problems are displayed as block headers (``\\makecell``) instead of a
+    dedicated Benchmark column.  Wilcoxon rank-sum tests (p<0.05) are computed
+    per problem using ``_WILCOXON_REF`` as the reference method.  Each cell of
+    a non-reference method is annotated with ``$(+)$`` when significantly
+    better, ``$(-)$`` when significantly worse, or ``$(\\approx)$`` when not
+    significant.
+
+    Methods are always displayed in the canonical order defined by
+    ``_DEFAULT_METHOD_ORDER``; any methods not in that list are appended in the
+    order they are received.
     """
-    n_methods      = len(methods)
-    mid            = (len(problems) + 1) // 2
-    left_problems  = problems[:mid]
-    right_problems = problems[mid:]
+    # Resolve n_var default (WFG convention: 2*(n_obj-1)+10)
+    _n_var = n_var if n_var is not None else 2 * (n_obj - 1) + 10
 
-    # pre-compute stats and bests for every problem
-    all_stats        = {}
-    best_hv_by_prob  = {}
-    best_igd_by_prob = {}
+    # Enforce canonical method order
+    order   = {m: i for i, m in enumerate(_DEFAULT_METHOD_ORDER)}
+    methods = sorted(methods, key=lambda m: order.get(m, len(_DEFAULT_METHOD_ORDER)))
+
+    # Collect per-seed data and (mean, std) stats for every problem
+    all_seeds: dict = {}
+    all_stats: dict = {}
+    best_hv:   dict = {}
+    best_igd:  dict = {}
     for problem in problems:
-        root  = _results_root(experiment_name, problem, n_gen, pop_size)
-        stats = {m: _load_final_indicators(m, root) for m in methods}
-        all_stats[problem] = stats
-        valid_hv  = {m: s['hv'][0]      for m, s in stats.items() if s}
-        valid_igd = {m: s['igd_plus'][0] for m, s in stats.items() if s}
-        best_hv_by_prob[problem]  = max(valid_hv,  key=valid_hv.get)  if valid_hv  else None
-        best_igd_by_prob[problem] = min(valid_igd, key=valid_igd.get) if valid_igd else None
-
-    def _metric_cells(method, problem):
-        s       = all_stats[problem].get(method)
-        hv_str  = _fmt(*s['hv'],       method == best_hv_by_prob[problem])  if s else '--'
-        igd_str = _fmt(*s['igd_plus'],  method == best_igd_by_prob[problem]) if s else '--'
-        return hv_str, igd_str
-
-    rows = []
-    for pi, l_prob in enumerate(left_problems):
-        r_prob     = right_problems[pi] if pi < len(right_problems) else None
-        l_label    = l_prob.upper()
-        r_label    = r_prob.upper() if r_prob else ''
-
-        for mi, method in enumerate(methods):
-            mlbl        = _method_latex_label(method)
-            lhv, ligd   = _metric_cells(method, l_prob)
-            if r_prob:
-                rhv, rigd   = _metric_cells(method, r_prob)
-                right_part  = f'\\multirow{{{n_methods}}}{{*}}{{{r_label}}} & {rhv} & {rigd}' if mi == 0 else f' & {rhv} & {rigd}'
-            else:
-                right_part  = ' &  & '
-
-            if mi == 0:
-                bench_cell = f'\\multirow{{{n_methods}}}{{*}}{{{l_label}}}'
-            else:
-                bench_cell = ''
-
-            rows.append(f'{mlbl} & {bench_cell} & {lhv} & {ligd} & {right_part} \\\\')
-
-        if pi < len(left_problems) - 1:
-            rows.append(r'\midrule')
+        root       = _results_root(experiment_name, problem, n_gen, pop_size)
+        prob_seeds, prob_stats = {}, {}
+        for m in methods:
+            s = _load_final_indicators_seeds(m, root)
+            prob_seeds[m] = s
+            prob_stats[m] = {
+                'hv':       (float(np.mean(s['hv'])),       float(np.std(s['hv']))),
+                'igd_plus': (float(np.mean(s['igd_plus'])), float(np.std(s['igd_plus']))),
+            } if s is not None else None
+        all_seeds[problem] = prob_seeds
+        all_stats[problem] = prob_stats
+        valid_hv  = {m: v['hv'][0]      for m, v in prob_stats.items() if v}
+        valid_igd = {m: v['igd_plus'][0] for m, v in prob_stats.items() if v}
+        best_hv[problem]  = max(valid_hv,  key=valid_hv.get)  if valid_hv  else None
+        best_igd[problem] = min(valid_igd, key=valid_igd.get) if valid_igd else None
 
     hv_col  = r'HV\,($\uparrow$)'
     igd_col = r'IGD\textsuperscript{+}\,($\downarrow$)'
-    out = [
+
+    # Two-column layout: split problems left/right
+    mid           = (len(problems) + 1) // 2
+    left_problems = problems[:mid]
+    right_problems = problems[mid:]
+
+    def _prob_header(prob: str) -> str:
+        label = prob.upper()
+        return (
+            r'\makecell[c]{\textbf{' + label + r'}'
+            + r' \\ (' + str(n_obj) + r'\,obj, ' + str(_n_var) + r'\,vars)}'
+        )
+
+    lines = [
         r'\begin{table*}[t]',
         r'\centering',
-        (r'\caption{WFG1\textendash{}9 ($m=2$): final HV and '
-         r'IGD\textsuperscript{+} at $100d$ evaluations '
-         r'(mean\,\textpm\,std over 30 seeds).}'),
+        (r'\caption{WFG1\textendash{}9 ($m=' + str(n_obj) + r'$): final HV and '
+         r'IGD\textsuperscript{+} (mean\,\textpm\,std). '
+         r'\textbf{Bold}: best per problem. '
+         r'Wilcoxon rank-sum vs.\ SAMOS\,(XGBoost) ($p{<}0.05$): '
+         r'$(+)$\,better, $(-)$\,worse, $(\approx)$\,no significant difference.}'),
         r'\label{tab:wfg_convergence}',
         r'\resizebox{\linewidth}{!}{',
-        r'\begin{tabular}{l c r r c r r}',
+        r'\begin{tabular}{l r r r r}',
         r'\toprule',
-        f'Method & Benchmark & {hv_col} & {igd_col} & Benchmark & {hv_col} & {igd_col} \\\\',
-        r'\midrule',
+        f'Method & {hv_col} & {igd_col} & {hv_col} & {igd_col} \\\\',
     ]
-    out += rows
-    out += [
+
+    for li, l_prob in enumerate(left_problems):
+        r_prob = right_problems[li] if li < len(right_problems) else None
+
+        # Block header row
+        l_hdr = _prob_header(l_prob)
+        lines.append(r'\midrule')
+        if r_prob is not None:
+            r_hdr = _prob_header(r_prob)
+            lines.append(
+                f' & \\multicolumn{{2}}{{c}}{{{l_hdr}}}'
+                f' & \\multicolumn{{2}}{{c}}{{{r_hdr}}} \\\\'
+            )
+            lines.append(r'\cmidrule(lr){2-3}\cmidrule(lr){4-5}')
+        else:
+            lines.append(
+                f' & \\multicolumn{{2}}{{c}}{{{l_hdr}}}'
+                r' &  &  \\'
+            )
+            lines.append(r'\cmidrule(lr){2-3}')
+
+        # Pre-fetch reference seed arrays for Wilcoxon comparisons
+        lref      = all_seeds[l_prob].get(_WILCOXON_REF)
+        l_ref_hv  = lref['hv']       if lref else None
+        l_ref_igd = lref['igd_plus'] if lref else None
+        if r_prob is not None:
+            rref      = all_seeds[r_prob].get(_WILCOXON_REF)
+            r_ref_hv  = rref['hv']       if rref else None
+            r_ref_igd = rref['igd_plus'] if rref else None
+
+        for method in methods:
+            mlbl   = _method_latex_label(method)
+            is_ref = (method == _WILCOXON_REF)
+
+            ls = all_stats[l_prob].get(method)
+            if ls and not is_ref:
+                lseed  = all_seeds[l_prob].get(method)
+                lhv_m  = _wilcoxon_marker(l_ref_hv,  lseed['hv']       if lseed else None, True)
+                ligd_m = _wilcoxon_marker(l_ref_igd, lseed['igd_plus'] if lseed else None, False)
+            else:
+                lhv_m = ligd_m = ''
+            lhv  = _fmt(*ls['hv'],       method == best_hv[l_prob],  lhv_m)  if ls else '--'
+            ligd = _fmt(*ls['igd_plus'],  method == best_igd[l_prob], ligd_m) if ls else '--'
+
+            if r_prob is not None:
+                rs = all_stats[r_prob].get(method)
+                if rs and not is_ref:
+                    rseed  = all_seeds[r_prob].get(method)
+                    rhv_m  = _wilcoxon_marker(r_ref_hv,  rseed['hv']       if rseed else None, True)
+                    rigd_m = _wilcoxon_marker(r_ref_igd, rseed['igd_plus'] if rseed else None, False)
+                else:
+                    rhv_m = rigd_m = ''
+                rhv  = _fmt(*rs['hv'],       method == best_hv[r_prob],  rhv_m)  if rs else '--'
+                rigd = _fmt(*rs['igd_plus'],  method == best_igd[r_prob], rigd_m) if rs else '--'
+            else:
+                rhv = rigd = ''
+
+            lines.append(f'{mlbl} & {lhv} & {ligd} & {rhv} & {rigd} \\\\')
+
+    lines += [
         r'\bottomrule',
         r'\end{tabular}',
         r'}',
@@ -203,13 +334,16 @@ def generate_latex_table(
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     with open(out_path, 'w', encoding='utf-8') as fh:
-        fh.write('\n'.join(out) + '\n')
+        fh.write('\n'.join(lines) + '\n')
     print(f'  LaTeX table saved -> {out_path}')
 
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main(args):
+    # Expand short aliases to canonical directory names
+    args.methods = [_METHOD_ALIASES.get(m, m) for m in args.methods]
+
     all_problems = [f'wfg{i}' for i in range(1, 10)]
 
     # ── combined LaTeX table ──────────────────────────────────────────────────
@@ -222,8 +356,12 @@ def main(args):
         pop_size=args.pop_size,
         n_gen=args.n_gen,
         out_path=table_out,
+        n_obj=args.n_obj,
+        n_var=args.n_var,
     )
 
+    if args.table_only:
+        return
 
     for problem in args.problems:
         root = _results_root(args.experiment_name, problem, args.n_gen, args.pop_size)
@@ -316,6 +454,8 @@ if __name__ == '__main__':
                         help='Budget checkpoints as multiples of n_var for Pareto snapshots')
     parser.add_argument('--extended_plot', action='store_true',
                         help='Also produce moo_hv_igd_extended.png with group-column layout')
+    parser.add_argument('--table_only', '--table-only', action='store_true', dest='table_only',
+                        help='Skip convergence plots, generate LaTeX table only')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')
