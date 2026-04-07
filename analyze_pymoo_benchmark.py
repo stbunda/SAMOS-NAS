@@ -246,16 +246,12 @@ def generate_latex_table(
     right_problems = problems[mid:]
 
     def _prob_header(prob: str) -> str:
-        label = prob.upper()
-        return (
-            r'\makecell[c]{\textbf{' + label + r'}'
-            + r' \\ (' + str(n_obj) + r'\,obj, ' + str(_n_var) + r'\,vars)}'
-        )
+        return r'\textbf{' + prob.upper() + r'}'
 
     lines = [
         r'\begin{table*}[t]',
         r'\centering',
-        (r'\caption{WFG1\textendash{}9 ($m=' + str(n_obj) + r'$): final HV and '
+        (r'\caption{WFG1\textendash{}9 ($m=' + str(n_obj) + r'$, $d=' + str(_n_var) + r'$): final HV and '
          r'IGD\textsuperscript{+} (mean\,\textpm\,std). '
          r'\textbf{Bold}: best per problem. '
          r'Wilcoxon rank-sum vs.\ SAMOS\,(XGBoost) ($p{<}0.05$): '
