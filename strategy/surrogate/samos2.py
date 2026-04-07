@@ -221,11 +221,15 @@ class SAMOS2(Algorithm):
                 selected.append(group[0])
                 continue
             crowd = calc_crowding_distance(F[group])
-            # Replace inf (boundary points) with a finite max to avoid NaN in roulette
+            # Clamp inf (boundary points) to avoid NaN in roulette (inf - inf = NaN)
             finite_max = crowd[np.isfinite(crowd)].max() if np.any(np.isfinite(crowd)) else 1.0
             crowd = np.where(np.isfinite(crowd), crowd, finite_max)
-            sel   = RouletteWheelSelection(crowd, larger_is_better=False)
-            selected.append(group[sel.next()])
+            # All values equal → _sum=0 causes divide-by-zero; fall back to uniform pick
+            if np.all(crowd == crowd[0]):
+                selected.append(group[np.random.randint(len(group))])
+            else:
+                sel = RouletteWheelSelection(crowd, larger_is_better=False)
+                selected.append(group[sel.next()])
         return cand_pop[selected]
 
     # ── surrogate problem ─────────────────────────────────────────────────
