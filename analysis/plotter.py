@@ -348,6 +348,117 @@ def plot_results_grid(
     plt.close(fig)
 
 
+# ─── pre-computed trajectory plotting ─────────────────────────────────────────
+
+def plot_results_precomputed(
+    trajectories: dict,
+    n_gen: int,
+    pop_size: int,
+    hv_ceiling: float,
+    out_path: str,
+    n_var: int = None,
+    n_obj: int = None,
+    colours: dict = None,
+    labels: dict = None,
+    title: str = None,
+):
+    """Plot HV and IGD+ convergence from pre-computed trajectory data.
+
+    Equivalent to ``plot_results`` but accepts a pre-computed *trajectories*
+    dict instead of loading raw seed files.  This is used when indicators have
+    been recomputed against a shared combined Pareto approximation so that all
+    methods are evaluated on the same reference.
+
+    Parameters
+    ----------
+    trajectories : dict[str, tuple]
+        Mapping ``method -> (hv_mean, hv_std, igd_mean, igd_std)``, each a
+        1-D ndarray of length == actual number of generations in the data.
+    n_gen : int
+        Expected number of generations (used only for the title).
+    pop_size : int
+        Population size; scales the x-axis to number of evaluations.
+    hv_ceiling : float
+        Reference HV drawn as a dashed horizontal line.
+    out_path : str
+        File path to save the figure (PNG).
+    n_var : int, optional
+        Number of decision variables — appended to the suptitle when provided.
+    n_obj : int, optional
+        Number of objectives — appended to the suptitle when provided.
+    colours, labels : dict, optional
+        Style overrides (merged on top of the module-level dicts).
+    title : str, optional
+        Full suptitle override; if given, *n_var* / *n_obj* are ignored.
+    """
+    _colours = {**COLOURS, **(colours or {})}
+    _labels  = {**LABELS,  **(labels  or {})}
+
+    matplotlib.rcParams.update({
+        'font.size': 11,
+        'axes.titlesize': 12,
+        'axes.labelsize': 11,
+        'legend.fontsize': 10,
+        'figure.dpi': 150,
+    })
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+
+    for method, result in trajectories.items():
+        if result is None:
+            print(f'  [plot] No data for method={method}, skipping.')
+            continue
+        hv_mean, hv_std, igd_mean, igd_std = result
+        x = np.arange(1, len(hv_mean) + 1) * pop_size
+        colour, label = _resolve_style(method, _colours, _labels)
+
+        axes[0].plot(x, hv_mean, label=label, color=colour, linewidth=1.8)
+        axes[0].fill_between(x, hv_mean - hv_std, hv_mean + hv_std,
+                             alpha=0.15, color=colour)
+
+        axes[1].plot(x, igd_mean, label=label, color=colour, linewidth=1.8)
+        axes[1].fill_between(x, np.maximum(0.0, igd_mean - igd_std), igd_mean + igd_std,
+                             alpha=0.15, color=colour)
+
+    axes[0].axhline(hv_ceiling, color='black', linestyle='--', linewidth=1.0,
+                    label=f'Combined PF HV ({hv_ceiling:.4f})')
+
+    axes[0].set_title('Hypervolume (Higher is better)')
+    axes[0].set_xlabel('Evaluations')
+    axes[0].set_ylabel('Hypervolume')
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].set_title('IGD+ (Lower is better)')
+    axes[1].set_xlabel('Evaluations')
+    axes[1].set_ylabel('IGD+')
+    axes[1].grid(True, alpha=0.3)
+
+    handles, leg_labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, leg_labels, loc='lower center',
+               bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
+
+    if title is not None:
+        _title = title
+    else:
+        budget_str = f'pop={pop_size}, {n_gen} gen = {pop_size * n_gen} evals'
+        dim_str    = ''
+        if n_var is not None and n_obj is not None:
+            dim_str = f'  |  {n_var} vars, {n_obj} objs'
+        elif n_var is not None:
+            dim_str = f'  |  {n_var} vars'
+        elif n_obj is not None:
+            dim_str = f'  |  {n_obj} objs'
+        _title = f'{budget_str}{dim_str}  (mean ± std over seeds, shared combined PF)'
+
+    fig.suptitle(_title, y=1.01)
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)
+
+
 # ─── val_acc_12 trajectory helpers ────────────────────────────────────────────
 
 _REF_POINT_VAL = np.array([1.05, 1.05])

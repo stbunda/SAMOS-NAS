@@ -15,31 +15,25 @@ Drop-in pymoo Algorithm with the same interface as SAMOSMinimal:
     )
     results = minimize(real_problem, algorithm, termination=('n_gen', n_gen), ...)
 
-Configuration derived from the SAMOS2 ablation study (WFG 2-obj, B1200_P20):
+Configuration:
 
   Surrogate      : XGBoost(100)          — best mean rank across problems
-  warm_start     : 0.25                  — 75 % fresh random keeps diversity
-  n_gen_inner    : 5                     — fewer gens consistently better
-  pop_schedule   : 500 → 50             — large early exploration, tight late refinement
+  warm_start     : 1.0                   — fully seeded from archive
+  n_gen_inner    : 20                    — inner NSGA-II generations
+  ga_pop_size    : 200                   — fixed surrogate candidate pool size
   selection      : kmeans               — k-means in F-space, best rank across problems
-  use_trace      : True                 — replace-parent semantics keep archive fresh
   doe_strategy   : lhs                  — Latin Hypercube for better initial coverage
-
-  Removed (ablation showed no benefit):
-    alpha=3  — surrogate dominance-tournament rounds: (0,0) ≈ (3,10) in all metrics
-    beta=10  — extra inner gens from filtered pool:    same conclusion
 
 Per-generation flow:
   1. _initialize_infill()   — LHS-based DOE
   2. _infill()
        a. Fit surrogates on archive
-       b. Warm-start inner NSGA-II: 25 % best archive + 75 % fresh random
-       c. Run 5 inner gens (exp-scheduled pop 500→50)
+       b. Warm-start inner NSGA-II from best archive members
+       c. Run 20 inner gens (fixed pop 200)
        d. Deduplicate candidates against archive
        e. k-means cluster in F-space, pick one representative per cluster
        f. Pad with random samples if pool is scarce
-  3. _advance()             — if use_trace, replace each infill's closest archive
-                              parent; merge infills into archive, update dedup keys
+  3. _advance()             — merge infills into archive, update dedup keys
 """
 
 import numpy as np
@@ -65,7 +59,6 @@ class SAMOS2(Algorithm):
     surrogates : list[surrogate]
         One fitted surrogate per predicted objective.
         Each must implement ``fit(X, y)`` and ``predict(X) -> np.ndarray``.
-        For use_trace to be most effective, surrogates should generalise well.
     surrogate_problem_factory : callable or None
         ``factory(surrogates) -> pymoo Problem`` used as the inner NSGA-II
         objective.  If *None*, defaults to ``SurrogateProblemMOO``.
@@ -76,21 +69,12 @@ class SAMOS2(Algorithm):
     n_infill : int
         Real evaluations added per outer generation.
     n_gen_inner : int
-        Inner NSGA-II generations per outer generation (default 5).
+        Inner NSGA-II generations per outer generation (default 20).
     ga_pop_size : int
-        Base inner population size when pop scheduling is disabled.
-        Ignored when pop_start / pop_end are used (exp schedule active).
-    pop_start, pop_end : int
-        Start / end values for exponential pop scheduling.
-        Default 500 → 50 (large early exploration, tight late refinement).
+        Fixed inner population / surrogate candidate pool size (default 200).
     warm_start_ratio : float
-        Fraction of the inner pop seeded from the best archive members;
-        the remainder is fresh random (default 0.25, i.e. 75 % random).
-    use_trace : bool
-        If True (default), each infill candidate is linked to its closest
-        archive member in X-space.  In _advance() the traced parent is
-        removed before adding the infill, so each infill effectively
-        replaces its nearest neighbour — keeps archive diversity high.
+        Fraction of the inner pop seeded from the best archive members
+        (default 1.0 — fully seeded from archive).
     eliminate_duplicates : bool or pymoo DuplicateElimination
         Passed to the inner NSGA-II (default False).
     dedup_key_fn : callable or None
@@ -107,12 +91,9 @@ class SAMOS2(Algorithm):
         mutation=None,
         n_doe=20,
         n_infill=20,
-        n_gen_inner=5,
-        ga_pop_size=100,
-        pop_start=500,
-        pop_end=50,
-        warm_start_ratio=0.25,
-        use_trace=True,
+        n_gen_inner=20,
+        ga_pop_size=200,
+        warm_start_ratio=1.0,
         eliminate_duplicates=False,
         dedup_key_fn=None,
         **kwargs,
@@ -127,10 +108,7 @@ class SAMOS2(Algorithm):
         self.n_infill                   = n_infill
         self.n_gen_inner                = n_gen_inner
         self.ga_pop_size                = ga_pop_size
-        self.pop_start                  = pop_start
-        self.pop_end                    = pop_end
         self.warm_start_ratio           = warm_start_ratio
-        self.use_trace                  = use_trace
         self.eliminate_duplicates       = eliminate_duplicates
         self._dedup_key = dedup_key_fn if dedup_key_fn is not None \
             else lambda x: tuple(np.round(x, decimals=8).tolist())
@@ -138,15 +116,10 @@ class SAMOS2(Algorithm):
         self._archive      = Population()
         self._archive_keys: set = set()
         self._init         = Initialization(sampling)
-        self._n_total_gen  = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     def _setup(self, problem, **kwargs):
-        try:
-            self._n_total_gen = self.termination.n_max_gen
-        except AttributeError:
-            self._n_total_gen = None
         self._doe_seed = getattr(self, 'seed', 0) or 0
 
     def _initialize_infill(self):
@@ -172,8 +145,8 @@ class SAMOS2(Algorithm):
         for s, surrogate in enumerate(self.surrogates):
             surrogate.fit(X_arc, F_arc[:, s])
 
-        # 2. Warm-start inner NSGA-II (warm_start_ratio=0.25 → 75 % fresh random)
-        eff_pop = self._effective_pop_size()
+        # 2. Warm-start inner NSGA-II from best archive members
+        eff_pop = self.ga_pop_size
         n_warm  = max(1, int(eff_pop * self.warm_start_ratio))
         top_pop = RankAndCrowding().do(
             problem=self.problem, pop=self._archive, n_survive=n_warm
@@ -208,46 +181,12 @@ class SAMOS2(Algorithm):
         # 5. k-means select n_infill candidates; pad with random if scarce
         infill_pop = self._select_infill(cand_pop, F_arc)
 
-        # 6. Trace assignment: link each infill to closest archive parent
-        if self.use_trace and len(infill_pop) > 0:
-            infill_X = infill_pop.get('X')
-            dists    = np.sum((infill_X[:, None, :] - X_arc[None, :, :]) ** 2, axis=2)
-            parents  = dists.argmin(axis=1)
-            infill_pop.set('trace_parent', parents)
-
         return Population.new('X', infill_pop.get('X'))
 
     def _advance(self, infills=None, **kwargs):
-        if self.use_trace and infills is not None and len(infills) > 0:
-            trace_parents = infills.get('trace_parent')
-            if trace_parents is not None:
-                valid_parents = [p for p in trace_parents if p is not None]
-                unique_parents = np.unique(valid_parents) if valid_parents else np.array([], dtype=int)
-                n_arc = len(self._archive)
-                keep_mask = np.ones(n_arc, dtype=bool)
-                for pidx in unique_parents:
-                    if 0 <= pidx < n_arc:
-                        keep_mask[pidx] = False
-                self._archive = self._archive[keep_mask]
-                self._archive_keys = {
-                    self._dedup_key(x) for x in self._archive.get('X')
-                }
         self._archive = Population.merge(self._archive, infills)
         self._add_to_archive_keys(infills)
         self.pop = infills
-
-    # ── scheduling ────────────────────────────────────────────────────────
-
-    def _effective_pop_size(self) -> int:
-        """Exponential-decay schedule: pop_start → pop_end over n_total_gen."""
-        if self._n_total_gen is None or self._n_total_gen <= 1:
-            return self.ga_pop_size
-        t    = max(0, self.n_gen - 1)
-        T    = self._n_total_gen - 1
-        lo   = self.pop_end
-        hi   = self.pop_start
-        size = hi * (lo / max(hi, 1)) ** (t / T)
-        return max(2, int(round(size)))
 
     # ── infill selection ──────────────────────────────────────────────────
 
