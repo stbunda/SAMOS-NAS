@@ -72,7 +72,7 @@ _CACHE_ROOT = os.path.join('results', 'cd_analysis')
 
 def _cache_paths(benchmark_name: str, budget: int, pop_size: int) -> tuple[str, str]:
     d = os.path.join(_CACHE_ROOT, benchmark_name, f'B{budget}_P{pop_size}')
-    return os.path.join(d, 'indicators_df.pkl'), os.path.join(d, 'indicators_meta.json')
+    return os.path.join(d, 'indicators_df.csv'), os.path.join(d, 'indicators_meta.json')
 
 
 def _load_cached_df(benchmark_name: str, budget: int, pop_size: int):
@@ -96,8 +96,7 @@ def _load_cached_df(benchmark_name: str, budget: int, pop_size: int):
             return None, None
 
     try:
-        with open(pkl_path, 'rb') as fh:
-            df = pickle.load(fh)
+        df = pd.read_csv(pkl_path)
     except Exception as exc:
         print(f'  [cd_analysis] WARN: could not load cached DataFrame {pkl_path}: {exc}')
         return None, None
@@ -113,15 +112,15 @@ def _save_cached_df(
     budget: int,
     pop_size: int,
 ) -> None:
-    pkl_path, meta_path = _cache_paths(benchmark_name, budget, pop_size)
-    dir_ = os.path.dirname(pkl_path)
+    csv_path, meta_path = _cache_paths(benchmark_name, budget, pop_size)
+    dir_ = os.path.dirname(csv_path)
     os.makedirs(dir_, exist_ok=True)
 
-    # atomic write for the DataFrame pickle
-    fd, tmp_pkl = tempfile.mkstemp(dir=dir_, suffix='.pkl.tmp')
-    with os.fdopen(fd, 'wb') as fh:
-        pickle.dump(df, fh, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp_pkl, pkl_path)
+    # atomic write for the DataFrame CSV
+    fd, tmp_csv = tempfile.mkstemp(dir=dir_, suffix='.csv.tmp')
+    with os.fdopen(fd, 'w', newline='') as fh:
+        df.to_csv(fh, index=False)
+    os.replace(tmp_csv, csv_path)
 
     meta = {'source_mtimes': source_mtimes, 'computed_at': time.time()}
     fd2, tmp_json = tempfile.mkstemp(dir=dir_, suffix='.json.tmp')
@@ -129,7 +128,7 @@ def _save_cached_df(
         json.dump(meta, fh, indent=2)
     os.replace(tmp_json, meta_path)
 
-    print(f'  [cd_analysis] Cache saved -> {pkl_path} ({len(df)} rows)')
+    print(f'  [cd_analysis] Cache saved -> {csv_path} ({len(df)} rows)')
 
 
 # ─── WFG data loading ─────────────────────────────────────────────────────────
