@@ -27,6 +27,7 @@ from pymoo.optimize import minimize
 from problem.evoxbench.utils import get_benchmark
 from problem.evoxbench.baseline_problem import EvoXBenchProblem
 from problem.evoxbench.surrogate_problem import SurrogateProblemEvox
+from problem.evoxbench.benchmark_meta import BENCHMARK_META
 from problem.evoxbench.callbacks import EvoxBenchCallback
 from strategy.algorithm.algorithms import RandomGA
 from strategy.algorithm.gpsaf import GPSAF
@@ -211,6 +212,47 @@ def run_single(
             eliminate_duplicates=elim,
         )
 
+    elif method == 'samos-cheapreal':
+        # SAMOS where params/flops objectives use the real benchmark evaluation
+        # and only val_err (index 0) uses a surrogate model.
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+
+        n_obj = benchmark.evaluator.n_objs
+        meta  = BENCHMARK_META.get(suite, {}).get(pid, {})
+        real_obj_indices    = meta.get('cheap_obj_indices', [])
+        predict_obj_indices = [i for i in range(n_obj) if i not in set(real_obj_indices)]
+
+        rng = np.random.RandomState(seed)
+        surrogates = [
+            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+            for _ in predict_obj_indices
+        ]
+
+        _poi = predict_obj_indices
+        _roi = real_obj_indices
+        _bm  = benchmark
+        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm: (
+            SurrogateProblemEvox(surrs, _p, _r, _b)
+        )
+
+        algorithm = SAMOS(
+            sampling=sampler,
+            surrogates=surrogates,
+            surrogate_problem_factory=factory,
+            crossover=crossover,
+            mutation=mutation,
+            n_doe=n_doe_,
+            n_infill=n_infill_,
+            n_gen_inner=n_gen_inner,
+            ga_pop_size=inner_ps,
+            warm_start_ratio=warm_start_ratio,
+            use_subset_selection=True,
+            eliminate_duplicates=elim,
+            dedup_key_fn=elim.key,
+        )
+
     elif method.startswith('samos-'):
         samos_type = method.split('-')[1]   # 'xgb' or 'rfr'
         if samos_type not in ('xgb', 'rfr'):
@@ -376,6 +418,8 @@ if __name__ == '__main__':
     parser.add_argument('--methods', type=str, nargs='+',
                         default=['random', 'nsga2', 'samos-xgb'],
                         help='Methods: random, nsga2, samos-xgb, samos-rfr, samos2, '
+                             'samos-cheapreal (SAMOS where params/flops use real eval; '
+                             'only val_err uses a surrogate), '
                              'parego, gpsaf-default, mosmac')
     parser.add_argument('--seeds',          type=int, nargs='+', default=list(range(10)))
     parser.add_argument('--pop_size',       type=int, default=20)
