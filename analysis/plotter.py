@@ -1094,3 +1094,258 @@ def plot_pareto_snapshots(
     fig.savefig(out_path, bbox_inches='tight')
     print(f'  Plot saved -> {out_path}')
     plt.close(fig)
+
+
+# ─── evoxbench 50 % attainment surfaces ──────────────────────────────────────
+
+def _load_nd_fronts_evoxbench_at_gen(method: str, gen_idx: int,
+                                     results_root: str) -> list:
+    """Return per-seed 2-D fronts from evoxbench pkl files at a given generation.
+
+    Reads ``test_obj_archive[gen_idx]`` from each ``seed_*.pkl`` in
+    ``results_root/method/``.  That field is already non-dominated and
+    normalised by the callback, so it is used as-is.
+
+    Returns a list of (n_nd, 2) np.ndarray — one per seed, first two
+    objectives only.  Seeds with missing or empty archives are skipped.
+    """
+    seed_dir = os.path.join(results_root, method)
+    if not os.path.isdir(seed_dir):
+        return []
+    fronts = []
+    for pkl_file in sorted(os.listdir(seed_dir)):
+        if not pkl_file.endswith('.pkl'):
+            continue
+        with open(os.path.join(seed_dir, pkl_file), 'rb') as fh:
+            try:
+                data = pickle.load(fh)
+            except Exception as e:
+                print(f'  [WARN] Failed to load {pkl_file}: {e}')
+                continue
+        archive = data.get('test_obj_archive', [])
+        if not archive:
+            continue
+        idx = min(gen_idx, len(archive) - 1)
+        F = np.asarray(archive[idx])
+        if F.ndim != 2 or F.shape[0] == 0 or F.shape[1] < 2:
+            continue
+        fronts.append(F[:, :2])
+    return fronts
+
+
+def plot_pareto_snapshots_evoxbench_overlay(
+    methods: list,
+    n_gen: int,
+    pop_size: int,
+    pf_norm: np.ndarray,
+    out_path: str,
+    results_root: str,
+    checkpoints_gen: list = None,
+    colours: dict = None,
+    labels: dict = None,
+    title: str = None,
+    xlabel: str = '$f_1$',
+    ylabel: str = '$f_2$',
+    font_scale: float = 1.0,
+):
+    """Single-axes 50 % attainment surface overlay for evoxbench 2-obj problems.
+
+    One curve per method at the **final** generation in *checkpoints_gen*.
+    The reference Pareto front is drawn as a dashed black scatter.
+
+    Parameters
+    ----------
+    methods         : method keys (sub-directories inside *results_root*)
+    n_gen           : total outer generations
+    pop_size        : evaluations per generation
+    pf_norm         : reference Pareto front (N, ≥2), normalised objective space
+    out_path        : output PNG path
+    results_root    : root directory containing per-method result folders
+    checkpoints_gen : generation numbers (1-based); the **last** entry is used
+                      (default: [15, 30, 45, 60])
+    xlabel          : x-axis label (default: '$f_1$')
+    ylabel          : y-axis label (default: '$f_2$')
+    font_scale      : multiplier applied to all font sizes (default: 1.0)
+    """
+    if checkpoints_gen is None:
+        checkpoints_gen = [15, 30, 45, 60]
+    final_gen = checkpoints_gen[-1]
+    gen_idx   = min(final_gen - 1, n_gen - 1)
+
+    _colours = {**COLOURS, **(colours or {})}
+    _labels  = {**LABELS,  **(labels  or {})}
+
+    matplotlib.rcParams.update({
+        'font.size':        10 * font_scale,
+        'axes.titlesize':   10 * font_scale,
+        'axes.labelsize':    9 * font_scale,
+        'legend.fontsize':   8 * font_scale,
+        'figure.dpi': 150,
+    })
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    if pf_norm is not None and len(pf_norm) > 0:
+        pf_s = pf_norm[np.argsort(pf_norm[:, 0])]
+        ax.scatter(pf_s[:, 0], pf_s[:, 1],
+                   c='black', s=6, marker='.', label='Reference PF',
+                   zorder=6, alpha=0.5)
+
+    for method in methods:
+        colour, label = _resolve_style(method, _colours, _labels)
+        fronts = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root)
+        if not fronts:
+            continue
+        f1_grid, f2_att = compute_attainment_surface(fronts)
+        if len(f1_grid) == 0:
+            continue
+        valid = ~np.isnan(f2_att)
+        ax.plot(f1_grid[valid], f2_att[valid],
+                color=colour, lw=1.5, label=label, zorder=4)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.25)
+    _title = title or (
+        f'50\u202f% attainment surfaces — gen\u202f{final_gen} '
+        f'({final_gen * pop_size}\u202fevals)'
+    )
+    ax.set_title(_title)
+    handles, leg_labels = ax.get_legend_handles_labels()
+    fig.legend(handles, leg_labels,
+               loc='lower center',
+               bbox_to_anchor=(0.5, 0),
+               ncol=len(handles),
+               fontsize=10 * font_scale,
+               frameon=True)
+    fig.tight_layout(rect=[0, 0.1, 1, 1])
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)
+
+
+def plot_pareto_snapshots_evoxbench_subplots(
+    methods: list,
+    n_gen: int,
+    pop_size: int,
+    pf_norm: np.ndarray,
+    out_path: str,
+    results_root: str,
+    checkpoints_gen: list = None,
+    colours: dict = None,
+    labels: dict = None,
+    title: str = None,
+    xlabel: str = '$f_1$',
+    ylabel: str = '$f_2$',
+    font_scale: float = 1.0,
+):
+    """50 % attainment surfaces at several generation checkpoints for evoxbench 2-obj problems.
+
+    One subplot per method (grid layout).  Each subplot shows the reference
+    Pareto front (black scatter) and one attainment surface per checkpoint,
+    coloured light→dark according to the generation budget.
+
+    Parameters
+    ----------
+    methods         : method keys (sub-directories inside *results_root*)
+    n_gen           : total outer generations
+    pop_size        : evaluations per generation
+    pf_norm         : reference Pareto front (N, ≥2), normalised objective space
+    out_path        : output PNG path
+    results_root    : root directory containing per-method result folders
+    checkpoints_gen : list of generation numbers (1-based,
+                      default: [15, 30, 45, 60])
+    xlabel          : x-axis label (default: '$f_1$')
+    ylabel          : y-axis label (default: '$f_2$')
+    font_scale      : multiplier applied to all font sizes (default: 1.0)
+    """
+    if checkpoints_gen is None:
+        checkpoints_gen = [15, 30, 45, 60]
+
+    _colours = {**COLOURS, **(colours or {})}
+    _labels  = {**LABELS,  **(labels  or {})}
+
+    checkpoint_palette = ['#c6dbef', '#6baed6', '#2171b5', '#08306b']
+    while len(checkpoint_palette) < len(checkpoints_gen):
+        checkpoint_palette.append('#08306b')
+
+    n_methods = len(methods)
+    n_cols    = min(3, n_methods)
+    n_rows    = int(np.ceil(n_methods / n_cols))
+
+    matplotlib.rcParams.update({
+        'font.size':        10 * font_scale,
+        'axes.titlesize':   10 * font_scale,
+        'axes.labelsize':    9 * font_scale,
+        'legend.fontsize':   8 * font_scale,
+        'figure.dpi': 150,
+    })
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(5.5 * n_cols, 4.5 * n_rows),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+
+    pf_sorted = (pf_norm[np.argsort(pf_norm[:, 0])]
+                 if pf_norm is not None and len(pf_norm) > 0 else None)
+
+    for idx, method in enumerate(methods):
+        row, col = divmod(idx, n_cols)
+        ax = axes[row][col]
+
+        _, label = _resolve_style(method, _colours, _labels)
+
+        if pf_sorted is not None:
+            ax.scatter(pf_sorted[:, 0], pf_sorted[:, 1],
+                       c='black', s=4, marker='.', label='Reference PF',
+                       zorder=5, alpha=0.5)
+
+        for ci, cgen in enumerate(checkpoints_gen):
+            gen_idx = min(cgen - 1, n_gen - 1)
+            fronts  = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root)
+            if not fronts:
+                continue
+            f1_grid, f2_att = compute_attainment_surface(fronts)
+            if len(f1_grid) == 0:
+                continue
+            valid = ~np.isnan(f2_att)
+            ax.scatter(f1_grid[valid], f2_att[valid],
+                       c=checkpoint_palette[ci], s=3, marker='.',
+                       label=f'gen\u202f{cgen} ({cgen * pop_size}\u202fevals)',
+                       zorder=4 - ci)
+
+        ax.set_title(label)
+        ax.grid(True, alpha=0.25)
+        ax.tick_params(labelbottom=True, labelleft=True)
+
+    for idx in range(n_methods, n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row][col].tick_params(left=False, bottom=False,
+                                   labelleft=False, labelbottom=False)
+
+    fig.supxlabel(xlabel, fontsize=9 * font_scale, y=0.10)
+    fig.supylabel(ylabel, fontsize=9 * font_scale)
+
+    ref_ax = axes[0][0]
+    handles, leg_labels = ref_ax.get_legend_handles_labels()
+    fig.legend(handles, leg_labels,
+               loc='lower center',
+               bbox_to_anchor=(0.5, 0),
+               ncol=min(len(handles), 5),
+               fontsize=10 * font_scale,
+               markerscale=10,
+               frameon=True)
+
+    _title = title or '50\u202f% attainment surfaces — generation checkpoints'
+    fig.suptitle(_title, y=1.01)
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)

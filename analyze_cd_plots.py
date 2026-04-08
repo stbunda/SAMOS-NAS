@@ -120,6 +120,10 @@ def _parse_args(argv=None):
         '--no_grid', action='store_true',
         help='Skip the combined 2×N grid figure.',
     )
+    p.add_argument(
+        '--font_size', type=int, default=12,
+        help='Base font size (pt) for all plot text. Increase when the figure will be scaled down in a paper.',
+    )
     return p.parse_args(argv)
 
 
@@ -192,7 +196,7 @@ def main(argv=None):
                 display = DISPLAY_LABELS.get(algo, algo)
                 print(f'  {display:<20}  {str(group):>5}  {med:>8}  {lb:>10}  {ub:>10}')
 
-        comparisons[_BENCHMARK_TITLES[bench]] = comp
+        comparisons[_BENCHMARK_TITLES[bench]] = df
 
     # ── save plots ────────────────────────────────────────────────────────────
     if not comparisons:
@@ -207,6 +211,7 @@ def main(argv=None):
         comparisons,
         out_dir=args.output_dir,
         labels=DISPLAY_LABELS,
+        font_size=args.font_size,
     )
 
     if not args.no_grid:
@@ -214,6 +219,7 @@ def main(argv=None):
             comparisons,
             out_dir=args.output_dir,
             labels=DISPLAY_LABELS,
+            font_size=args.font_size,
         )
 
 

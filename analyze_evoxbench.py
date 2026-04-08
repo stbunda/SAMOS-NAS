@@ -32,6 +32,8 @@ from analysis.plotter import (
     _resolve_style,
     COLOURS,
     LABELS,
+    plot_pareto_snapshots_evoxbench_overlay,
+    plot_pareto_snapshots_evoxbench_subplots,
 )
 from analysis.convergence import (
     build_pareto_approximation,
@@ -42,7 +44,7 @@ from analysis.convergence import (
     save_approx_cache,
 )
 from problem.evoxbench.utils import get_benchmark
-from problem.evoxbench.benchmark_meta import pid_header
+from problem.evoxbench.benchmark_meta import pid_header, get_obj_labels, BENCHMARK_META
 
 # ─── evoxbench-specific style overrides ───────────────────────────────────────
 
@@ -361,34 +363,36 @@ def main(args) -> None:
 
     suite_root = os.path.join('results', 'evoxbench', suite)
 
-    # ── per-PID convergence plots (HV / IGD+) ─────────────────────────────────
+    # ── per-PID loop ──────────────────────────────────────────────────────────
     all_approx_info: dict[int, dict] = {}
-    if not args.table_only:
-        for pid in pids:
-            root = _results_root(suite, pid, pop_size, n_gen)
+    for pid in pids:
+        root = _results_root(suite, pid, pop_size, n_gen)
 
-            # Build (or load from cache) the combined Pareto approximation
-            approx = build_pareto_approximation(
-                suite, pid, methods, pop_size, n_gen,
-                force_rebuild=args.rebuild_approx,
-            )
-            all_approx_info[pid] = approx
+        # Build (or load from cache) the combined Pareto approximation.
+        # Always run — it is cheap (disk-cached) and needed by both the
+        # convergence plot and the LaTeX table.
+        approx = build_pareto_approximation(
+            suite, pid, methods, pop_size, n_gen,
+            force_rebuild=args.rebuild_approx,
+        )
+        all_approx_info[pid] = approx
 
-            # Read benchmark metadata for the title (n_var, n_obj)
-            try:
-                bm    = get_benchmark(suite, pid)
-                n_var = bm.search_space.n_var
-                n_obj = bm.evaluator.n_objs
-            except Exception as _bm_err:
-                print(f'  [pid{pid}] WARN: could not instantiate benchmark: {_bm_err}')
-                n_var, n_obj = None, None
+        # Read benchmark metadata (lightweight; needed by multiple outputs).
+        try:
+            bm    = get_benchmark(suite, pid)
+            n_var = bm.search_space.n_var
+            n_obj = bm.evaluator.n_objs
+        except Exception as _bm_err:
+            print(f'  [pid{pid}] WARN: could not instantiate benchmark: {_bm_err}')
+            bm, n_var, n_obj = None, None, None
 
+        # ── convergence plot (HV / IGD+) ──────────────────────────────────────
+        if args.convergence_plot:
             dim_str = (
                 f'  |  {n_var} vars, {n_obj} objs'
                 if n_var is not None and n_obj is not None else ''
             )
 
-            # Derive HV ceiling
             if approx is not None:
                 ceiling = float(HV(ref_point=approx['ref_point'])(approx['pareto_approx']))
                 print(f'  [pid{pid}] Combined PF HV ceiling = {ceiling:.6f}')
@@ -408,9 +412,6 @@ def main(args) -> None:
             conv_out = os.path.join(root, f'{suite}_pid{pid}_hv_igd.png')
 
             if approx is not None:
-                # Recompute indicators against the shared combined Pareto approximation.
-                # get_or_recompute_trajectories serves from the in-memory traj cache
-                # on repeated calls (e.g. when re-running with only some PIDs changed).
                 trajectories = {}
                 for method in methods:
                     traj = get_or_recompute_trajectories(method, n_gen, root, approx)
@@ -418,7 +419,6 @@ def main(args) -> None:
                         print(f'  [pid{pid}] No data for method={method}, skipping.')
                     trajectories[method] = traj
 
-                # Persist the updated trajectory cache so the next run is instant
                 save_approx_cache(root, approx)
 
                 plot_results_precomputed(
@@ -432,13 +432,12 @@ def main(args) -> None:
                     colours=_EVOX_COLOURS,
                     labels=_EVOX_LABELS,
                     title=(
-                        f'{suite.upper()} PID {pid}{dim_str}  '
+                        f'{suite.upper()} - {pid}{dim_str}  '
                         f'(pop={pop_size}, {n_gen} gen = {pop_size * n_gen} evals, '
                         f'mean \u00b1 std over seeds, shared combined PF)'
                     ),
                 )
             else:
-                # Fall back to stored indicators when no combined PF is available
                 plot_results(
                     methods=methods,
                     n_gen=n_gen,
@@ -449,47 +448,94 @@ def main(args) -> None:
                     colours=_EVOX_COLOURS,
                     labels=_EVOX_LABELS,
                     title=(
-                        f'{suite.upper()} PID {pid}{dim_str}  '
+                        f'{suite.upper()} - {pid}{dim_str}  '
                         f'(pop={pop_size}, {n_gen} gen = {pop_size * n_gen} evals, '
                         f'mean \u00b1 std over seeds)'
                     ),
                 )
 
-        # ── across-PIDs grid plot ─────────────────────────────────────────────────
-        if len(pids) > 1:
-            # One column per PID would be too many; use the grid for grouped methods
-            grid_out = os.path.join(suite_root,
-                                    f'B{n_gen * pop_size}_P{pop_size}',
-                                    f'{suite}_all_pids_grid.png')
-            # Merge all roots; plot_results_grid expects a single results_root so
-            # we produce one combined plot per PID instead, using the per-PID outs.
-            # (A true cross-PID grid would require a custom plotter; save for later.)
-            print(f'  [grid] Per-PID convergence plots saved; grid across PIDs not yet implemented.')
-    else:
-        # Still need to build all_approx_info for the table
-        for pid in pids:
-            root = _results_root(suite, pid, pop_size, n_gen)
-            approx = build_pareto_approximation(
-                suite, pid, methods, pop_size, n_gen,
-                force_rebuild=args.rebuild_approx,
-            )
-            all_approx_info[pid] = approx
+        # ── attainment surface plots ───────────────────────────────────────────
+        if args.attainment:
+            if n_obj != 2:
+                print(f'  [pid{pid}] Skipping attainment plot (n_obj={n_obj}, only 2-obj supported)')
+            else:
+                if approx is not None:
+                    pf_norm = approx['pareto_approx']
+                elif bm is not None and getattr(bm, 'pareto_front', None) is not None:
+                    pf_norm = bm.normalize(bm.pareto_front)
+                    pf_norm = np.where(np.isfinite(pf_norm), pf_norm, 1.0)
+                else:
+                    pf_norm = None
+
+                _meta = BENCHMARK_META.get(suite, {}).get(pid, {})
+                _ss   = _meta.get('search_space', '')
+                pid_label = f'{suite.upper()} - {pid}'
+                if _ss:
+                    pid_label += f'\n{_ss} Search Space'
+                if n_var is not None:
+                    pid_label += f'  |  {n_var} vars'
+
+                overlay_out  = os.path.join(root, f'{suite}_pid{pid}_attainment_overlay.png')
+                subplots_out = os.path.join(root, f'{suite}_pid{pid}_attainment_subplots.png')
+
+                _xlabel, _ylabel = get_obj_labels(suite, pid)
+
+                plot_pareto_snapshots_evoxbench_overlay(
+                    methods=methods,
+                    n_gen=n_gen,
+                    pop_size=pop_size,
+                    pf_norm=pf_norm,
+                    out_path=overlay_out,
+                    results_root=root,
+                    checkpoints_gen=args.checkpoints_gen,
+                    colours=_EVOX_COLOURS,
+                    labels=_EVOX_LABELS,
+                    title=(
+                        f'{pid_label}  \n  50\u202f% attainment surfaces'
+                        f' (gen\u202f{args.checkpoints_gen[-1]},'
+                        f' {args.checkpoints_gen[-1] * pop_size}\u202fevals)'
+                    ),
+                    xlabel=_xlabel,
+                    ylabel=_ylabel,
+                    font_scale=args.font_scale,
+                )
+
+                plot_pareto_snapshots_evoxbench_subplots(
+                    methods=methods,
+                    n_gen=n_gen,
+                    pop_size=pop_size,
+                    pf_norm=pf_norm,
+                    out_path=subplots_out,
+                    results_root=root,
+                    checkpoints_gen=args.checkpoints_gen,
+                    colours=_EVOX_COLOURS,
+                    labels=_EVOX_LABELS,
+                    title=(
+                        f'{pid_label}  \n  50\u202f% attainment surfaces'
+                        f' (pop={pop_size}, checkpoints:'
+                        f' {", ".join(str(g) for g in args.checkpoints_gen)} gen)'
+                    ),
+                    xlabel=_xlabel,
+                    ylabel=_ylabel,
+                    font_scale=args.font_scale,
+                )
 
     # ── LaTeX table ───────────────────────────────────────────────────────────
-    table_out = os.path.join(
-        suite_root,
-        f'B{n_gen * pop_size}_P{pop_size}',
-        f'{suite}_convergence_table.tex',
-    )
-    generate_latex_table(
-        suite=suite,
-        pids=pids,
-        methods=methods,
-        pop_size=pop_size,
-        n_gen=n_gen,
-        out_path=table_out,
-        approx_info=all_approx_info,
-    )
+    if args.latex_table:
+        table_out = os.path.join(
+            suite_root,
+            f'B{n_gen * pop_size}_P{pop_size}',
+            f'{suite}_convergence_table.tex',
+        )
+        generate_latex_table(
+            suite=suite,
+            pids=pids,
+            methods=methods,
+            pop_size=pop_size,
+            n_gen=n_gen,
+            out_path=table_out,
+            approx_info=all_approx_info,
+        )
 
     print('\nDone.')
 
@@ -505,11 +551,23 @@ if __name__ == '__main__':
     parser.add_argument('--methods',  type=str, nargs='+', default=_DEFAULT_METHODS,
                         help='Methods to include (default: all 7 benchmark methods)')
     parser.add_argument('--pop_size',       type=int,  default=20)
-    parser.add_argument('--n_gen',           type=int,  default=50)
+    parser.add_argument('--n_gen',           type=int,  default=60)
     parser.add_argument('--rebuild-approx', '--rebuild_approx', action='store_true', dest='rebuild_approx',
                         help='Force rebuild of the combined Pareto approximation cache')
-    parser.add_argument('--table_only', '--table_only', action='store_true', dest='table_only',
-                        help='Skip convergence plots, generate LaTeX table only')
+    parser.add_argument('--convergence_plot', '--convergence-plot', action='store_true',
+                        dest='convergence_plot',
+                        help='Generate per-PID HV / IGD+ convergence plots')
+    parser.add_argument('--latex_table', '--latex-table', action='store_true',
+                        dest='latex_table',
+                        help='Generate the LaTeX summary table')
+    parser.add_argument('--attainment', action='store_true',
+                        help='Generate 50%% attainment surface plots (2-obj PIDs only)')
+    parser.add_argument('--checkpoints_gen', '--checkpoints-gen', type=int, nargs='+',
+                        default=[15, 30, 45, 60], dest='checkpoints_gen',
+                        help='Generation checkpoints for attainment surface plots (default: 15 30 45 60)')
+    parser.add_argument('--font_scale', '--font-scale', type=float, default=1.0,
+                        dest='font_scale',
+                        help='Font size multiplier for all output plots (default: 1.0)')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')

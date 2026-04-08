@@ -441,98 +441,200 @@ def _apply_labels(ax, labels: dict | None) -> None:
 
 
 def plot_cd_panels(
-    comparisons_dict: dict,
+    benchmarks_dict: dict,
     out_dir: str,
     labels: dict | None = None,
     dpi: int = 150,
+    font_size: int = 12,
 ) -> None:
     """Save one figure per metric (HV, IGD+), with one subplot per benchmark.
 
     Parameters
     ----------
-    comparisons_dict
-        ``{title: BootstrapComparison}``, ordered left-to-right.
+    benchmarks_dict
+        ``{title: pd.DataFrame}``, ordered left-to-right.  Each DataFrame must
+        have columns ``['algorithm', 'instance', 'hv', 'igd_plus']``.
     out_dir
         Directory where output PDF files are written.
     labels
         Optional ``{canonical_name: display_name}`` map for y-tick relabelling.
     dpi
         Resolution for rasterised elements.
+    font_size
+        Base font size in points (applies to all text including robustranking
+        internals).  Increase if the figure will be scaled down in the paper.
     """
     import matplotlib.pyplot as plt
-    from robustranking.utils.plots import plot_ci_list
+    from robustranking.benchmark import Benchmark
+    from robustranking.comparison.ranked_comparison import RankedComparison
+    from robustranking.utils.plots import plot_critical_difference
 
     os.makedirs(out_dir, exist_ok=True)
-    benchmarks = list(comparisons_dict.items())
+    benchmarks = list(benchmarks_dict.items())
     n = len(benchmarks)
 
-    for metric, metric_label in [('hv', 'HV'), ('igd_plus', 'IGD+')]:
-        fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
-        if n == 1:
-            axes = [axes]
-        for ax, (title, comp) in zip(axes, benchmarks):
-            plot_ci_list(comp, objective=metric, ax=ax)
-            ax.set_title(title)
-            _apply_labels(ax, labels)
-        fig.suptitle(
-            f'Algorithm ranking by {metric_label}  '
-            f'(bootstrap 95\u202f% CI, Holm\u2013Bonferroni corrected)',
-        )
-        plt.tight_layout()
-        out_path = os.path.join(out_dir, f'cd_ranking_{metric}.pdf')
-        plt.savefig(out_path, bbox_inches='tight', dpi=dpi)
-        plt.close(fig)
+    rc = {
+        'font.size':        font_size,
+        'axes.titlesize':   font_size + 2,
+        'axes.labelsize':   font_size,
+        'xtick.labelsize':  font_size - 1,
+        'ytick.labelsize':  font_size - 1,
+        'figure.titlesize': font_size + 4,
+    }
+
+    for metric, metric_label, minimise in [
+        ('hv',       'HV',   False),
+        ('igd_plus', 'IGD+', True),
+    ]:
+        metric_full = 'Hypervolume (HV)' if metric == 'hv' else 'IGD+  (Inverted Generational Distance+)'
+        direction   = 'higher is better' if not minimise else 'lower is better'
+        with plt.rc_context(rc):
+            cd_width     = 6.0
+            cd_textspace = 1.5
+            fig, axes = plt.subplots(1, n, figsize=(cd_width * n, 2.5))
+            if n == 1:
+                axes = [axes]
+            fig.subplots_adjust(wspace=0.0, left=0.02, right=0.98)
+            for ax, (title, df) in zip(axes, benchmarks):
+                bm = Benchmark()
+                bm.from_pandas(
+                    df,
+                    algorithm_key='algorithm',
+                    instance_key='instance',
+                    objective_keys=[metric],
+                )
+                comp = RankedComparison(bm, minimise=minimise, aggregation_method=np.mean)
+                comp.compute()
+                plot_critical_difference(
+                    comp, ax=ax,
+                    width=cd_width, textspace=cd_textspace,
+                )
+                ax.set_title(title)
+                _apply_labels(ax, labels)
+            fig.suptitle(
+                f'Critical Difference Diagram  --  {metric_full}  ({direction})\n'
+                f'Mean rank over instances  |  Holm\u2013Bonferroni corrected',
+                fontsize=font_size + 1,
+                fontweight='bold',
+            )
+            plt.tight_layout()
+            out_path = os.path.join(out_dir, f'cd_ranking_{metric}.pdf')
+            plt.savefig(out_path, bbox_inches='tight', dpi=dpi)
+            plt.close(fig)
         print(f'  Saved -> {out_path}')
 
 
 def plot_cd_grid(
-    comparisons_dict: dict,
+    benchmarks_dict: dict,
     out_dir: str,
     labels: dict | None = None,
     dpi: int = 150,
+    font_size: int = 12,
 ) -> None:
     """Save a single 2 × N grid figure (rows = metrics, cols = benchmarks).
 
     Parameters
     ----------
-    comparisons_dict
-        ``{title: BootstrapComparison}``, ordered left-to-right.
+    benchmarks_dict
+        ``{title: pd.DataFrame}``, ordered left-to-right.  Each DataFrame must
+        have columns ``['algorithm', 'instance', 'hv', 'igd_plus']``.
     out_dir
         Directory for the output PDF file.
     labels
         Optional ``{canonical_name: display_name}`` map for y-tick relabelling.
     dpi
         Resolution for rasterised elements.
+    font_size
+        Base font size in points (applies to all text including robustranking
+        internals).  Increase if the figure will be scaled down in the paper.
     """
     import matplotlib.pyplot as plt
-    from robustranking.utils.plots import plot_ci_list
+    from robustranking.benchmark import Benchmark
+    from robustranking.comparison.ranked_comparison import RankedComparison
+    from robustranking.utils.plots import plot_critical_difference
 
     os.makedirs(out_dir, exist_ok=True)
-    benchmarks = list(comparisons_dict.items())
+    benchmarks = list(benchmarks_dict.items())
     n = len(benchmarks)
-    metrics = [('hv', 'HV'), ('igd_plus', 'IGD+')]
+    metrics = [
+        ('hv',       'HV',   False),
+        ('igd_plus', 'IGD+', True),
+    ]
 
-    fig, axes = plt.subplots(
-        len(metrics), n,
-        figsize=(5 * n, 5 * len(metrics)),
-        squeeze=False,
-    )
-    for row, (metric, metric_label) in enumerate(metrics):
-        for col, (title, comp) in enumerate(benchmarks):
-            ax = axes[row][col]
-            plot_ci_list(comp, objective=metric, ax=ax)
-            if row == 0:
-                ax.set_title(title)
-            if col == 0:
-                ax.set_ylabel(metric_label)
-            _apply_labels(ax, labels)
+    rc = {
+        'font.size':        font_size,
+        'axes.titlesize':   font_size,
+        'axes.labelsize':   font_size,
+        'xtick.labelsize':  font_size - 1,
+        'ytick.labelsize':  font_size - 1,
+        'figure.titlesize': font_size + 1,
+    }
 
-    fig.suptitle(
-        'Algorithm rankings  (bootstrap 95\u202f% CI, Holm\u2013Bonferroni corrected)',
-        y=1.01,
-    )
-    plt.tight_layout()
-    out_path = os.path.join(out_dir, 'cd_ranking_grid.pdf')
-    plt.savefig(out_path, bbox_inches='tight', dpi=dpi)
-    plt.close(fig)
+    # Layout: rows = benchmarks, cols = metrics (HV | IGD+)
+    n_metrics = len(metrics)
+
+    with plt.rc_context(rc):
+        # CD diagram internal geometry (in inches):
+        #   width=6, textspace=1.5 → scalewidth=3, text extends ~0.6 beyond
+        #   the scale on each side → total overflow ≈ 1.1 in from each edge.
+        # Each subplot is sized to exactly match these internal dimensions so
+        # no overflow occurs.  Figure width = n_metrics * cd_width (exact).
+        cd_width     = 6.0   # passed to __graph_ranks as `width`
+        cd_textspace = 2  # passed to __graph_ranks as `textspace`
+        subplot_w    = cd_width*2         # one subplot per metric column
+        subplot_h    = 6.5               # compact height per row
+        fig_w        = subplot_w * n_metrics
+        fig_h        = subplot_h * n * 0.7
+
+        fig, axes = plt.subplots(
+            n, n_metrics,
+            figsize=(fig_w, fig_h),
+            squeeze=False,
+        )
+        # No wspace needed when subplot width == cd_width: text fills axes exactly.
+        fig.subplots_adjust(hspace=0.05, wspace=0.0, left=0.1, right=0.95)
+
+        for row, (title, df) in enumerate(benchmarks):
+            for col, (metric, metric_label, minimise) in enumerate(metrics):
+                ax = axes[row][col]
+                bm = Benchmark()
+                bm.from_pandas(
+                    df,
+                    algorithm_key='algorithm',
+                    instance_key='instance',
+                    objective_keys=[metric],
+                )
+                comp = RankedComparison(bm, minimise=minimise, aggregation_method=np.mean)
+                comp.compute()
+                plot_critical_difference(
+                    comp, ax=ax,
+                    width=cd_width, textspace=cd_textspace,
+                )
+                # Column headers: metric name (top row only)
+                if row == 0:
+                    metric_full = ('Hypervolume (HV)  [higher is better]'
+                                   if metric == 'hv'
+                                   else 'IGD\u207a  [lower is better]')
+                    ax.set_title(metric_full)
+                _apply_labels(ax, labels)
+
+            # Bold benchmark title rotated on the left of each row
+            ax_left = axes[row][0]
+            ax_left.text(
+                -0.08, 0.5, title,
+                transform=ax_left.transAxes,
+                ha='right', va='center',
+                fontsize=font_size, fontweight='bold',
+                rotation=90, clip_on=False,
+            )
+
+        fig.suptitle(
+            'Critical Difference Diagrams  --  Mean rank over instances  |  Holm\u2013Bonferroni corrected',
+            y=1.02,
+            fontweight='bold',
+            fontsize=font_size + 1,
+        )
+        out_path = os.path.join(out_dir, 'cd_ranking_grid.pdf')
+        plt.savefig(out_path, bbox_inches='tight', dpi=dpi)
+        plt.close(fig)
     print(f'  Saved -> {out_path}')
