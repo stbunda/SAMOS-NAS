@@ -31,6 +31,7 @@ from problem.evoxbench.benchmark_meta import BENCHMARK_META
 from problem.evoxbench.callbacks import EvoxBenchCallback
 from strategy.algorithm.algorithms import RandomGA
 from strategy.algorithm.gpsaf import GPSAF
+from strategy.algorithm.ssansga2 import SSANSGA2
 from strategy.algorithm.parego import run_parego_evoxbench
 from strategy.sampler import EvoxBenchSampler
 from strategy.operations.crossover import IntegerUniformCrossover
@@ -329,6 +330,18 @@ def run_single(
             dedup_key_fn=elim.key,
         )
 
+    elif method == 'ssa-nsga2':
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+        algorithm = SSANSGA2(
+            sampling=sampler,
+            n_infills=n_infill_,
+            surr_pop_size=inner_ps,
+            surr_n_gen=n_gen_inner,
+            n_initial_doe=n_doe_,
+        )
+
     elif method == 'gpsaf-default':
         n_doe_    = n_doe    if n_doe    is not None else pop_size
         n_infill_ = n_infill if n_infill is not None else pop_size
@@ -420,6 +433,7 @@ if __name__ == '__main__':
                         help='Methods: random, nsga2, samos-xgb, samos-rfr, samos2, '
                              'samos-cheapreal (SAMOS where params/flops use real eval; '
                              'only val_err uses a surrogate), '
+                             'ssa-nsga2 (pysamoo SSA-NSGA-II with default surrogates), '
                              'parego, gpsaf-default, mosmac')
     parser.add_argument('--seeds',          type=int, nargs='+', default=list(range(10)))
     parser.add_argument('--pop_size',       type=int, default=20)
