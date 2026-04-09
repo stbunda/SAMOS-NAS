@@ -50,7 +50,7 @@ from analysis.cd_analysis import (
 
 # ─── defaults ─────────────────────────────────────────────────────────────────
 
-_DEFAULT_METHODS = ['random', 'nsga2', 'parego', 'mosmac', 'gpsaf', 'samos-xgb']
+_DEFAULT_METHODS = ['random', 'nsga2', 'parego', 'mosmac', 'gpsaf', 'samos-xgb', 'samos2', 'samos-cheapreal']
 _DEFAULT_BENCHMARKS = ['wfg', 'c10mop', 'in1kmop']
 
 # Human-readable benchmark titles used in plot headers
