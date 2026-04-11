@@ -192,4 +192,88 @@ class IntegerVectorDuplicateElimination(DuplicateElimination):
 
         return is_duplicate
 
+
+# ─── EvoXBench NASBench-101 arch-str duplicate elimination ───────────────────
+
+
+class EvoxNASBench101DuplicateElimination(DuplicateElimination):
+    """Arch-str duplicate elimination for the evoxbench NASBench-101 search space.
+
+    EvoXBench encodes NASBench-101 architectures as a 26-dimensional integer
+    vector with **edges first, then ops**:
+        x[:21]  — 21 binary edge values (upper-triangular adjacency)
+        x[21:]  — 5 op indices (0=conv3x3, 1=conv1x1, 2=maxpool)
+
+    This is the reverse of our internal ``NASBench101DuplicateElimination``
+    which uses ``[ops(5), edges(21)]``.  Before hashing, vectors are reordered
+    to ops-first so that the existing ``_fast_canonical_bytes`` / LUT logic can
+    be reused without modification.
+
+    Two vectors that differ only in edges connected to pruned-away nodes will
+    hash to the same arch_str and are treated as duplicates, preventing
+    redundant real evaluations.
+
+    Parameters
+    ----------
+    bench_db : dict or None
+        NASBench-101 lookup table.  Only used as a fallback when the
+        precomputed LUT is unavailable.  Pass ``None`` to skip (LUT path
+        is tried first).
+    """
+
+    def __init__(self, bench_db: 'dict | None' = None, **kwargs):
+        from problem.nasbench101.utils import (
+            _vec_to_arch_str, _fast_canonical_bytes, load_nasbench101_lut,
+        )
+        super().__init__(**kwargs)
+        self.bench_db = bench_db or {}
+        self._cache: dict = {}
+        self._lut: 'dict | None' = load_nasbench101_lut()
+        self._vec_to_arch_str = _vec_to_arch_str
+        self._fast_canonical_bytes = _fast_canonical_bytes
+
+    @staticmethod
+    def _reorder(vec_int: np.ndarray) -> np.ndarray:
+        """Convert evoxbench edges-first vector to the ops-first internal format."""
+        edges = vec_int[:21]
+        ops   = vec_int[21:]
+        return np.concatenate([ops, edges])
+
+    def _resolve(self, vec_int: np.ndarray) -> 'str | None':
+        """Map a rounded edges-first integer vector to its canonical arch_str."""
+        internal = self._reorder(vec_int.astype(int))
+        if self._lut is not None:
+            cb = self._fast_canonical_bytes(internal)
+            return self._lut.get(cb) if cb is not None else None
+        return self._vec_to_arch_str(internal, self.bench_db)
+
+    def key(self, x: np.ndarray) -> 'str | None':
+        """Return the canonical arch_str for an evoxbench-encoded vector x."""
+        k = np.round(x).astype(np.int8).tobytes()
+        if k not in self._cache:
+            self._cache[k] = self._resolve(np.frombuffer(k, dtype=np.int8))
+        return self._cache[k]
+
+    def _do(self, pop, other, is_duplicate):
+        seen = {}
+
+        if other is not None:
+            for row in np.round(self.func(other)).astype(np.int8):
+                k = row.tobytes()
+                if k not in self._cache:
+                    self._cache[k] = self._resolve(row)
+                arch = self._cache[k]
+                if arch is not None:
+                    seen[arch] = True
+
+        for i, row in enumerate(np.round(self.func(pop)).astype(np.int8)):
+            k = row.tobytes()
+            if k not in self._cache:
+                self._cache[k] = self._resolve(row)
+            arch = self._cache[k]
+            if arch is None or arch in seen:
+                is_duplicate[i] = True
+            else:
+                seen[arch] = True
+
         return is_duplicate

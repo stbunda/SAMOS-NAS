@@ -1,523 +1,475 @@
-"""
-NASBench-101 baseline search: Random and NSGA-II.
+"""main_nasbench101.py — Run SAMOS and baselines on NASBench-101 via the evoxbench c10mop wrapper.
+
+Supported pids (NASBench-101 search space only):
+  c10mop pid=1 — err & params   (2 objectives)
+  c10mop pid=2 — err & params & flops  (3 objectives)
+
+The key difference vs. main_evoxbench.py is duplicate elimination:
+  EvoxNASBench101DuplicateElimination identifies phenotypically identical
+  architectures via their canonical arch_str (ModelSpec hash), so two vectors
+  that differ only in pruned-away edges are treated as duplicates.
+  All other settings (problem, normalization, fidelity, HV ref point, callbacks)
+  are byte-for-byte identical to the evoxbench runner.
 
 Results are saved to:
-  results/nasbench101_baseline/<method>/seed_<seed>.pkl
+  results/nasbench101/<suite>/pid<pid>/<budget_folder>/<method>/seed_<seed>.pkl
 
-The pkl format matches the PDNS result format so that
-plot_nasbench101_comparison.py can consume them directly.
+Run examples:
+  python main_nasbench101.py --suite c10mop --pids 1 2 --methods random nsga2 samos-xgb
+  python main_nasbench101.py --suite c10mop --pids 1 --methods samos-xgb --seeds 0 1 2
 """
 
 import argparse
-import copy
 import os
 import pickle
 import random
-from pathlib import Path
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
 
 import numpy as np
-import pymoo.util.nds.non_dominated_sorting
 from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.indicators.hv import HV
-from pymoo.indicators.igd_plus import IGDPlus
 from pymoo.optimize import minimize
 
+from problem.evoxbench.utils import get_benchmark
+from problem.evoxbench.baseline_problem import EvoXBenchProblem
+from problem.evoxbench.surrogate_problem import SurrogateProblemEvox
+from problem.evoxbench.benchmark_meta import BENCHMARK_META
+from problem.evoxbench.callbacks import EvoxBenchCallback
 from strategy.algorithm.algorithms import RandomGA
-from strategy.algorithm.gpsaf import GPSAF, SklearnGPSAF
-from strategy.algorithm.ssansga2 import SSANSGA2, SklearnSSANSGA2
-from strategy.algorithm.parego import run_parego_nasbench
+from strategy.algorithm.gpsaf import GPSAF
+from strategy.algorithm.ssansga2 import SSANSGA2
+from strategy.algorithm.parego import run_parego_evoxbench
+from strategy.sampler import EvoxBenchSampler
+from strategy.operations.crossover import IntegerUniformCrossover
+from strategy.operations.mutation import IntegerPointMutation
+from strategy.genetics.duplicate import EvoxNASBench101DuplicateElimination
 from strategy.surrogate.models import RFR, XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
-from strategy.surrogate.samos_ssa import SAMOSSA
-
-from problem.nasbench101.utils import N_VAR, MIN_PARAMS, MAX_PARAMS, _CANONICAL_OPS_101
-from strategy.genetics.duplicate import NASBench101DuplicateElimination
-from problem.nasbench101.baseline_problem import NASBench101Problem
-from strategy.genetics.nasbench101_lib.model_spec import ModelSpec as _ModelSpec101
-from problem.nasbench101.surrogate_problem import SurrogateProblem101
-from strategy.callbacks import NASArchiveCallback
-from problem.nasbench101.utils import _update_archive, _test_archive as _test_archive_101
-from strategy.sampler import ValidRandomSampling101
-from strategy.operations.crossover import TwoPointCrossover101
-from strategy.operations.mutation import SinglePointMutation101
-from analysis.plotter import plot_results, plot_exploration_coverage
-from analysis.latex_table_generator import generate_latex_table_nasbench101
-
-# ─── file-level constants ─────────────────────────────────────────────────────
-
-DATA_FILE = 'problem/data/data_nasbench101.pkl'
+from strategy.surrogate.samos2 import SAMOS2
 
 
-# ─── main run logic ───────────────────────────────────────────────────────────
+# ─── NASBench-101 pids (only these may be passed to this script) ──────────────
 
-def _load_bench_db() -> dict:
-    with open(DATA_FILE, 'rb') as f:
-        raw = pickle.load(f)
-
-    # data_nasbench101.pkl stores entries keyed by arch_str with val_acc_12, etc.
-    return raw
+NB101_PIDS = [1, 2]   # c10mop pid=1: err&params, pid=2: err&params&flops
 
 
-def _load_test_pareto_ref() -> np.ndarray:
-    """
-    Load the cached test-acc Pareto front (42 points, 2-column: test_err, params_norm).
-    Falls back to computing it if not cached.
-    """
-    cache = 'results/nasbench101_cgp_p_val_acc_12_r_n_params/G150_I20_C200_D20/cache/nasbench101_test_acc_pareto_v1.pkl'
-    if os.path.exists(cache):
-        with open(cache, 'rb') as f:
-            c = pickle.load(f)
-        return np.array(c['pareto_front'])
+# ─── mosmac standalone runner ────────────────────────────────────────────────
 
-    # build from scratch
-    print('  Building test-acc Pareto front from scratch ...')
-    db = _load_bench_db()
-    F_all = np.array([
-        [1.0 - v['test_acc_108'],
-         (v['n_params'] - MIN_PARAMS) / (MAX_PARAMS - MIN_PARAMS)]
-        for v in db.values()
-        if 'test_acc_108' in v
-    ])
-    # 2-objective Pareto front: sort by obj0, sweep for decreasing obj1.
-    # O(n log n) time, O(n) memory — avoids the O(n²).
-    order = np.argsort(F_all[:, 0], kind='stable')
-    F_sorted = F_all[order]
-    nd_mask = np.zeros(len(F_sorted), dtype=bool)
-    best_obj1 = np.inf
-    for i in range(len(F_sorted)):
-        if F_sorted[i, 1] < best_obj1:
-            nd_mask[i] = True
-            best_obj1 = F_sorted[i, 1]
-    return F_sorted[nd_mask]
+def _run_mosmac(
+    benchmark,
+    callback: EvoxBenchCallback,
+    seed: int,
+    pop_size: int,
+    n_gen: int,
+) -> dict:
+    """Run SMAC3 MultiObjectiveFacade on an evoxbench integer search space."""
+    from ConfigSpace import ConfigurationSpace, Categorical
+    from smac import Scenario
+    from smac.facade.multi_objective_facade import MultiObjectiveFacade as MOFacade
+    from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
-#TODO imports
-from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+    xl       = np.asarray(benchmark.search_space.lb, dtype=int)
+    xu       = np.asarray(benchmark.search_space.ub, dtype=int)
+    n_var    = len(xl)
+    n_obj    = benchmark.evaluator.n_objs
+    n_trials = pop_size * n_gen
+    obj_names = [f'obj{i}' for i in range(n_obj)]
 
-from ConfigSpace import (
-    Categorical,
-    Configuration,
-    ConfigurationSpace,
-)
-
-from smac import HyperparameterOptimizationFacade, Scenario
-from smac.facade.multi_objective_facade import MultiObjectiveFacade as MOFacade
-
-def build_config_space(seed: int = 42) -> ConfigurationSpace:
-    """
-    Encode a NASBench-101 cell as a flat hyperparameter vector.
-
-    Edges (21 binary choices):  edge_i_j ∈ {0, 1}
-    Op nodes (5 interior nodes, nodes 1–5):  op_k ∈ {conv3x3, conv1x1, maxpool}
-
-    Node 0 = input  (fixed)
-    Node 6 = output (fixed)
-    """
-    VERTICES = 7
-    OPS = _CANONICAL_OPS_101
     cs = ConfigurationSpace(seed=seed)
+    cs.add([
+        Categorical(f'x{i}', list(range(int(xl[i]), int(xu[i]) + 1)))
+        for i in range(n_var)
+    ])
 
-    # --- Edge hyperparameters ---
-    edge_hps = []
-    for i in range(VERTICES):
-        for j in range(i + 1, VERTICES):
-            hp = Categorical(f"edge_{i}_{j}", [0, 1], default=0)
-            edge_hps.append(hp)
-    cs.add(edge_hps)
+    def target_fn(config, seed=0):
+        x = np.array([int(config[f'x{i}']) for i in range(n_var)]).reshape(1, -1)
+        F = benchmark.evaluate(x, true_eval=False)
+        if not benchmark.normalized_objectives:
+            F = benchmark.normalize(F)
+        F = np.where(np.isfinite(F), F, 1.0)
+        return {name: float(F[0, j]) for j, name in enumerate(obj_names)}
 
-    # --- Operation hyperparameters (interior nodes 1..5) ---
-    op_hps = []
-    for k in range(1, VERTICES - 1):   # nodes 1, 2, 3, 4, 5
-        hp = Categorical(f"op_{k}", OPS, default=OPS[0])
-        op_hps.append(hp)
-    cs.add(op_hps)
-
-    return cs
-
-def config_to_model_spec(config: Configuration):
-    """Convert a SMAC Configuration into a NASBench-101 ModelSpec."""
-    # Build adjacency matrix
-    VERTICES = 7
-    INPUT_NODE = "input"
-    OUTPUT_NODE = "output"
-
-    adj = np.zeros((VERTICES, VERTICES), dtype=int)
-    for i in range(VERTICES):
-        for j in range(i + 1, VERTICES):
-            adj[i][j] = int(config[f"edge_{i}_{j}"])
-
-    # Build label list: input, op_1..op_5, output
-    labels = [INPUT_NODE]
-    for k in range(1, VERTICES - 1):
-        labels.append(config[f"op_{k}"])
-    labels.append(OUTPUT_NODE)
-
-    return _ModelSpec101(matrix=adj, ops=labels)
-
-def lognorm(x, MIN=1, MAX=10, reverse=False):
-    if not reverse:
-        return (np.log(x) - np.log(MAX)) / (np.log(MIN) - np.log(MAX))
-    else:
-        return np.exp(x * np.log(MAX/MIN) + np.log(MIN))
-
-def make_target_fn(bench_db):
-    """
-    Returns a target function compatible with SMAC's multi-objective interface.
-
-    Returns a dict
-    """
-    def target_fn(config: Configuration, seed: int = 0) -> dict:
-        spec = config_to_model_spec(config)
-
-        # Query the benchmark
-        if not spec.valid_spec or spec.hash_spec(_CANONICAL_OPS_101) not in bench_db:
-            #invalid
-            return {"val_err": 1.5, "n_params": 1.5}
-
-        entry = bench_db[spec.hash_spec(_CANONICAL_OPS_101)]
-        val_err = 1.0 - entry.get('val_acc_12', 0.0)
-        n_params_norm = lognorm(entry['n_params'], MIN_PARAMS, MAX_PARAMS)
-
-        return {"val_err": val_err, "n_params": n_params_norm}
-
-    return target_fn
-
-def mosmac_run(callback, seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
-               n_doe=None, n_infill=None, n_gen_inner=20, inner_pop_size=None,
-               warm_start_ratio=0.75, predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
-
-
-    # MOSMAC compatible configspace
-    cs = build_config_space(seed)
-    # Target algorithm
-    target_fn = make_target_fn(bench_db)
-    # TODO callback to check isvalid
-    # Scenario
     scenario = Scenario(
         configspace=cs,
-        objectives=["val_err", "n_params"],  # multi-objective
-        n_trials=500, #pop_size*n_gen,
+        objectives=obj_names,
+        n_trials=n_trials,
         seed=seed,
-        # output_directory=, TODO Fix
-        deterministic=True,  # NASBench lookups are deterministic
+        deterministic=True,
         n_workers=1,
     )
+    smac = MOFacade(scenario=scenario, target_function=target_fn, overwrite=True)
+    smac.optimize()
 
-    #SMAC
-    smac = MOFacade(
-        scenario=scenario,
-        target_function=target_fn,
-        overwrite=True,
-    )
+    # Reconstruct evaluation order from runhistory
+    rh       = smac.runhistory
+    _data    = getattr(rh, 'data', None) or getattr(rh, '_data', {})
+    _id2cfg  = getattr(rh, 'ids_config', None) or getattr(rh, '_ids_config', {})
+    sorted_trials = sorted(_data.items(), key=lambda kv: kv[1].starttime)
 
-    incumbents = smac.optimize()
+    all_X = np.array([
+        [int(_id2cfg[k.config_id][f'x{i}']) for i in range(n_var)]
+        for k, _ in sorted_trials
+    ])
+    all_F = np.array([
+        list(v.cost) if hasattr(v.cost, '__iter__') else [v.cost]
+        for _, v in sorted_trials
+    ])
 
-    #Logging
-    traj = smac.intensifier.trajectory
-    rh = smac.runhistory
+    # Build per-generation snapshots mirroring EvoxBenchCallback.data format
+    cur_var_arch: list = []
+    cur_obj_arch: list = []
 
-    #Compute costs
-    val_costs = {}
-    test_costs = {}
-    for config_id, config in rh.ids_config.items():
-        spec = config_to_model_spec(config)
-        if not spec.valid_spec or spec.hash_spec(_CANONICAL_OPS_101) not in bench_db:
-            val_err = 1.0
-            test_err = 1.0
-            n_params_norm = 1.0
+    for step in range(n_gen):
+        lo = step * pop_size
+        hi = min((step + 1) * pop_size, len(all_X))
+        if lo >= len(all_X):
+            break
+
+        X_batch = all_X[lo:hi]
+        F_batch = all_F[lo:hi]
+
+        for var_ind, obj_ind in zip(X_batch, F_batch):
+            cur_var_arch, cur_obj_arch = EvoxBenchCallback._update_archive(
+                cur_var_arch, cur_obj_arch, var_ind, obj_ind
+            )
+
+        if cur_var_arch:
+            X_arch   = np.array([np.round(v).astype(int) for v in cur_var_arch])
+            test_obj = benchmark.evaluate(X_arch, true_eval=True)
+            if not benchmark.normalized_objectives:
+                test_obj = benchmark.normalize(test_obj)
+            test_obj    = np.where(np.isfinite(test_obj), test_obj, 1.0)
+            nd_idx      = NonDominatedSorting().do(test_obj, only_non_dominated_front=True)
+            test_obj_nd = test_obj[nd_idx]
         else:
-            entry = bench_db[spec.hash_spec(_CANONICAL_OPS_101)]
-            val_err = 1.0 - entry.get('val_acc_12', 0.0)
-            test_err = 1.0 - entry.get('test_acc_108', 0.0)
-            n_params      = entry['n_params']
-            n_params_norm = (n_params - MIN_PARAMS) / (MAX_PARAMS - MIN_PARAMS)
+            test_obj_nd = np.empty((0, n_obj))
 
-        val_costs[config_id] = [val_err, n_params_norm]
-        test_costs[config_id] = [test_err, n_params_norm]
+        if len(test_obj_nd) > 0:
+            ind = {
+                'hv':       float(callback._hv_ind(test_obj_nd)),
+                'igd_plus': float(callback._igd_ind(test_obj_nd))
+                            if callback._igd_ind is not None else float('nan'),
+            }
+        else:
+            ind = {'hv': 0.0, 'igd_plus': float('nan')}
 
-    def compute_scores(points):
+        callback.data['var_pop'].append(X_batch)
+        callback.data['obj_pop'].append(F_batch)
+        callback.data['var_archive'].append(list(cur_var_arch))
+        callback.data['obj_archive'].append(list(cur_obj_arch))
+        callback.data['test_obj_archive'].append(test_obj_nd)
+        callback.data['indicators'].append(ind)
 
-        if len(points) == 0:
-            return {"hv": 0.0, "igd_plus": 0.0}
+    callback.data['time'] = None
+    return callback.data
 
-        indicators = {
-            'hv': float(callback._hv_ind(points)),
-            'igd_plus': float(callback._igd_ind(points)),
-        }
 
-        return indicators
+# ─── single run ───────────────────────────────────────────────────────────────
 
-    #Compute data
-    data = dict()
-    #Get populations
-    data["var_pop"] = [[rh.ids_config[i] for i in pop.config_ids] for pop in traj] #TODO align with other representation
-    data["obj_pop"] = [[val_costs[i] for i in pop.config_ids] for pop in traj]
+def run_single(
+    suite: str,
+    pid: int,
+    method: str,
+    seed: int,
+    pop_size: int,
+    n_gen: int,
+    n_doe: int = None,
+    n_infill: int = None,
+    n_gen_inner: int = 20,
+    inner_pop_size: int = None,
+    warm_start_ratio: float = 0.75,
+    proxy_obj_indices: list = None,
+) -> dict:
+    if suite != 'c10mop' or pid not in NB101_PIDS:
+        raise ValueError(
+            f'main_nasbench101.py only supports c10mop pid in {NB101_PIDS}; '
+            f'got suite={suite!r} pid={pid}'
+        )
 
-    #Get archive
-    arch = []
-    for config_id in rh.ids_config.keys():
-        next_arch = [config_id] if len(arch) == 0 else copy.copy(arch[-1]) + [config_id] #Add next config to archive
-        ndps = NonDominatedSorting().do(np.array([val_costs[i] for i in next_arch]), only_non_dominated_front=True) #Get non-dominated front
-        arch.append([config_id for i, config_id in enumerate(next_arch) if i in ndps]) #Get first front
-        #TODO check if arch is changed
-    data["var_archive"] = [[rh.ids_config[i] for i in pop] for pop in arch]
-    data["obj_archive"] = [[val_costs[i] for i in pop] for pop in arch]
-
-    data["test_var_archive"] = [[rh.ids_config[i] for i in pop] for pop in arch]
-    data["test_obj_archive"] = [[test_costs[i] for i in pop] for pop in arch]
-
-    data['indicators'] = [compute_scores(np.array(pop)) for pop in data["test_obj_archive"]]
-    data['time'] = list(range(len(data["test_var_archive"]))) #TODO fix
-
-    # data = []
-    # data['time'] = problem.time  # list of timestamps (PDNS-compatible)
-    # data['log_archs'] = problem.log_archs
-    return data
-
-def run_single(method: str, seed: int, pop_size: int, n_gen: int, bench_db: dict, pareto_ref: np.ndarray,
-               n_doe=None, n_infill=None, n_gen_inner=20, inner_pop_size=None,
-               warm_start_ratio=0.75, predict_obj=None, real_obj=None, elim_dupes_mode='arch_str'):
     np.random.seed(seed)
     random.seed(seed)
 
-    problem  = NASBench101Problem(bench_db)
-    callback = NASArchiveCallback(bench_db, pareto_ref, _update_archive, _test_archive_101)
-    sampling = ValidRandomSampling101()
+    # ── benchmark (drives everything) ─────────────────────────────────────────
+    benchmark  = get_benchmark(suite, pid)
+    problem    = EvoXBenchProblem(benchmark)
+    callback   = EvoxBenchCallback(benchmark)
 
-    if elim_dupes_mode == 'arch_str':
-        elim_dupes   = NASBench101DuplicateElimination(bench_db)
-        dedup_key_fn = elim_dupes.key
-    else:
-        elim_dupes   = True
-        dedup_key_fn = None
+    xl = np.asarray(benchmark.search_space.lb, dtype=int)
+    xu = np.asarray(benchmark.search_space.ub, dtype=int)
 
-    # ─── Standalone methods (manage their own loop) ───────────────────────────
+    sampler   = EvoxBenchSampler(xl, xu)
+    crossover = IntegerUniformCrossover(prob=0.9)
+    mutation  = IntegerPointMutation(xl, xu)
+    # ── arch-str dedup (the only difference vs. main_evoxbench.py) ────────────
+    elim      = EvoxNASBench101DuplicateElimination()
+
+    # ── standalone runners (manage their own loop) ─────────────────────────────
     if method == 'mosmac':
-        return mosmac_run(callback, seed, pop_size, n_gen, bench_db, pareto_ref,
-                          n_doe, n_infill, n_gen_inner, inner_pop_size,
-                          warm_start_ratio, predict_obj, real_obj, elim_dupes_mode)
+        return _run_mosmac(benchmark, callback, seed, pop_size, n_gen)
 
     if method == 'parego':
-        return run_parego_nasbench(problem, callback, sampling, seed, pop_size, n_gen,
-                                   n_doe=n_doe)
+        n_doe_ = n_doe if n_doe is not None else pop_size
+        return run_parego_evoxbench(
+            benchmark, problem, callback, sampler,
+            seed=seed, pop_size=pop_size, n_gen=n_gen, n_doe=n_doe_,
+        )
 
-    # ─── pymoo minimize-based methods ─────────────────────────────────────────
-    xover = TwoPointCrossover101(prob=0.9)
-    mut   = SinglePointMutation101()
-
+    # ── algorithm ─────────────────────────────────────────────────────────────
     if method == 'random':
-        algorithm = RandomGA(pop_size=pop_size, sampling=sampling,
-                             eliminate_duplicates=elim_dupes)
+        algorithm = RandomGA(
+            pop_size=pop_size,
+            sampling=sampler,
+            eliminate_duplicates=elim,
+        )
 
     elif method == 'nsga2':
-        algorithm = NSGA2(pop_size=pop_size, sampling=sampling,
-                          crossover=xover, mutation=mut,
-                          eliminate_duplicates=elim_dupes)
-
-    elif method in ('samos-rfr', 'samos-xgb'):
-        samos_type  = 'rfr' if method == 'samos-rfr' else 'xgb'
-        n_doe_      = n_doe    if n_doe    is not None else pop_size
-        n_infill_   = n_infill if n_infill is not None else pop_size
-        inner_ps    = inner_pop_size if inner_pop_size is not None else pop_size * 10
-        predict_obj = predict_obj if predict_obj is not None else ['val_err_12']
-        real_obj    = real_obj    if real_obj    is not None else ['n_params']
-        print(f'  [SAMOS] type={samos_type}  predict={predict_obj}  real={real_obj}  '
-              f'n_infill={n_infill_} (real evals)  inner_pop_size={inner_ps} (surrogate evals)')
-        rng = np.random.RandomState(seed)
-        surrogates = [
-            RFR(20, seed=rng.randint(0, 2**31 - 1)) if samos_type == 'rfr'
-            else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
-            for _ in range(len(predict_obj))
-        ]
-        factory = lambda surrs, _ro=real_obj, _db=bench_db: SurrogateProblem101(surrs, _ro, _db)
-        algorithm = SAMOS(
-            sampling=sampling, surrogates=surrogates,
-            surrogate_problem_factory=factory,
-            crossover=xover, mutation=mut,
-            n_doe=n_doe_, n_infill=n_infill_, n_gen_inner=n_gen_inner,
-            ga_pop_size=inner_ps, warm_start_ratio=warm_start_ratio,
-            use_subset_selection=False,
-            eliminate_duplicates=elim_dupes, dedup_key_fn=dedup_key_fn,
+        algorithm = NSGA2(
+            pop_size=pop_size,
+            sampling=sampler,
+            crossover=crossover,
+            mutation=mutation,
+            eliminate_duplicates=elim,
         )
 
-    elif method == 'samos-ssa':
-        n_doe_   = n_doe    if n_doe    is not None else pop_size
-        n_infill_= n_infill if n_infill is not None else pop_size
-        inner_ps = inner_pop_size if inner_pop_size is not None else pop_size * 10
-        print(f'  [SAMOS-SSA] n_doe={n_doe_}  n_infill={n_infill_}  inner_pop_size={inner_ps}')
-        algorithm = SAMOSSA(
-            sampling=sampling, crossover=xover, mutation=mut,
-            n_doe=n_doe_, n_infill=n_infill_, n_gen_inner=n_gen_inner,
-            ga_pop_size=inner_ps, warm_start_ratio=warm_start_ratio,
-            use_subset_selection=False,
-            eliminate_duplicates=elim_dupes, dedup_key_fn=dedup_key_fn,
-        )
-
-    elif method.startswith('gpsaf-') or method.startswith('ssa-nsga2-'):
-        algo_family    = 'gpsaf' if method.startswith('gpsaf-') else 'ssa-nsga2'
-        surrogate_type = method[len('gpsaf-'):] if algo_family == 'gpsaf' else method[len('ssa-nsga2-'):]
-        if surrogate_type not in ('default', 'rfr', 'xgb'):
-            raise ValueError(f'Unknown surrogate type {surrogate_type!r} in {method!r}')
+    elif method == 'samos-cheapreal':
         n_doe_    = n_doe    if n_doe    is not None else pop_size
         n_infill_ = n_infill if n_infill is not None else pop_size
         inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
-        if surrogate_type in ('rfr', 'xgb'):
-            rng = np.random.RandomState(seed)
-            sklearn_models = [
-                RFR(20, seed=rng.randint(0, 2**31 - 1)) if surrogate_type == 'rfr'
-                else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
-                for _ in range(2)
-            ]
-        if algo_family == 'ssa-nsga2':
-            algorithm = (SSANSGA2 if surrogate_type == 'default' else SklearnSSANSGA2)(
-                **({} if surrogate_type == 'default' else {'sklearn_models': sklearn_models}),
-                sampling=sampling, n_infills=n_infill_,
-                surr_pop_size=inner_ps, surr_n_gen=n_gen_inner, n_initial_doe=n_doe_,
-            )
-        else:
-            base_algo = NSGA2(pop_size=pop_size, sampling=sampling,
-                              crossover=xover, mutation=mut,
-                              eliminate_duplicates=elim_dupes)
-            kw = {} if surrogate_type == 'default' else {'sklearn_models': sklearn_models}
-            algorithm = (GPSAF if surrogate_type == 'default' else SklearnGPSAF)(
-                base_algo, **kw,
-                n_initial_doe=n_doe_, n_max_infills=n_infill_, beta=n_gen_inner,
-            )
+
+        n_obj = benchmark.evaluator.n_objs
+        meta  = BENCHMARK_META.get(suite, {}).get(pid, {})
+        real_obj_indices    = meta.get('cheap_obj_indices', [])
+        predict_obj_indices = [i for i in range(n_obj) if i not in set(real_obj_indices)]
+
+        rng = np.random.RandomState(seed)
+        surrogates = [
+            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+            for _ in predict_obj_indices
+        ]
+
+        _poi = predict_obj_indices
+        _roi = real_obj_indices
+        _bm  = benchmark
+        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm: (
+            SurrogateProblemEvox(surrs, _p, _r, _b)
+        )
+
+        algorithm = SAMOS(
+            sampling=sampler,
+            surrogates=surrogates,
+            surrogate_problem_factory=factory,
+            crossover=crossover,
+            mutation=mutation,
+            n_doe=n_doe_,
+            n_infill=n_infill_,
+            n_gen_inner=n_gen_inner,
+            ga_pop_size=inner_ps,
+            warm_start_ratio=warm_start_ratio,
+            use_subset_selection=True,
+            eliminate_duplicates=elim,
+            dedup_key_fn=elim.key,
+        )
+
+    elif method.startswith('samos-'):
+        samos_type = method.split('-')[1]   # 'xgb' or 'rfr'
+        if samos_type not in ('xgb', 'rfr'):
+            raise ValueError(f'Unknown surrogate type {samos_type!r} in {method!r}')
+
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+
+        n_obj     = benchmark.evaluator.n_objs
+        proxy_set = (
+            set(proxy_obj_indices) if proxy_obj_indices is not None
+            else set(range(n_obj))
+        )
+        real_obj_indices    = [i for i in range(n_obj) if i not in proxy_set]
+        predict_obj_indices = [i for i in range(n_obj) if i in proxy_set]
+
+        rng = np.random.RandomState(seed)
+        surrogates = [
+            RFR(20, seed=rng.randint(0, 2**31 - 1))
+            if samos_type == 'rfr' else
+            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+            for _ in predict_obj_indices
+        ]
+
+        _poi = predict_obj_indices
+        _roi = real_obj_indices
+        _bm  = benchmark
+        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm: (
+            SurrogateProblemEvox(surrs, _p, _r, _b)
+        )
+
+        algorithm = SAMOS(
+            sampling=sampler,
+            surrogates=surrogates,
+            surrogate_problem_factory=factory,
+            crossover=crossover,
+            mutation=mutation,
+            n_doe=n_doe_,
+            n_infill=n_infill_,
+            n_gen_inner=n_gen_inner,
+            ga_pop_size=inner_ps,
+            warm_start_ratio=warm_start_ratio,
+            use_subset_selection=True,
+            eliminate_duplicates=elim,
+            dedup_key_fn=elim.key,
+        )
+
+    elif method == 'samos2':
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+
+        n_obj  = benchmark.evaluator.n_objs
+        rng    = np.random.RandomState(seed)
+        surrogates = [
+            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+            for _ in range(n_obj)
+        ]
+        _poi = list(range(n_obj))
+        _roi: list = []
+        _bm  = benchmark
+        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm: (
+            SurrogateProblemEvox(surrs, _p, _r, _b)
+        )
+        algorithm = SAMOS2(
+            sampling=sampler,
+            surrogates=surrogates,
+            surrogate_problem_factory=factory,
+            crossover=crossover,
+            mutation=mutation,
+            n_doe=n_doe_,
+            n_infill=n_infill_,
+            eliminate_duplicates=elim,
+            dedup_key_fn=elim.key,
+        )
+
+    elif method == 'ssa-nsga2':
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+        algorithm = SSANSGA2(
+            sampling=sampler,
+            n_infills=n_infill_,
+            surr_pop_size=inner_ps,
+            surr_n_gen=n_gen_inner,
+            n_initial_doe=n_doe_,
+        )
+
+    elif method == 'gpsaf-default':
+        n_doe_    = n_doe    if n_doe    is not None else pop_size
+        n_infill_ = n_infill if n_infill is not None else pop_size
+        base_algo = NSGA2(
+            pop_size=pop_size,
+            sampling=sampler,
+            crossover=crossover,
+            mutation=mutation,
+            eliminate_duplicates=elim,
+        )
+        algorithm = GPSAF(
+            base_algo,
+            n_initial_doe=n_doe_,
+            n_max_infills=n_infill_,
+            beta=n_gen_inner,
+        )
 
     else:
         raise ValueError(f'Unknown method: {method!r}')
 
     results = minimize(
-        problem=problem, algorithm=algorithm,
+        problem=problem,
+        algorithm=algorithm,
         termination=('n_gen', n_gen),
-        seed=seed, callback=callback,
-        save_history=False, verbose=True,
+        seed=seed,
+        callback=callback,
+        save_history=False,
+        verbose=True,
     )
+    return results.algorithm.callback.data
 
-    data = results.algorithm.callback.data
-    data['time']      = problem.time
-    data['log_archs'] = problem.log_archs
-    return data
 
+# ─── main ─────────────────────────────────────────────────────────────────────
 
 def main(args):
-    # Build budget folder name: G<n_gen>_GI<n_gen_inner>_P<pop_size>_I<infill>_D<n_doe>_ELIM-<elim_dupes>
-    n_infill = args.n_infill if args.n_infill is not None else args.pop_size
-    n_doe = args.n_doe if args.n_doe is not None else args.pop_size
-    budget_folder = f"G{args.n_gen}_GI{args.n_gen_inner}_P{args.pop_size}_I{n_infill}_D{n_doe}_ELIM-{args.elim_dupes}"
+    budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
+    experiment    = args.experiment_name or 'nasbench101'
 
-    results_root = os.path.join('results', args.experiment_name, budget_folder)
+    for pid in args.pids:
+        results_root = os.path.join(
+            'results', experiment, args.suite, f'pid{pid}', budget_folder
+        )
 
-    print(f'Loading benchmark data from {DATA_FILE} ...')
-    bench_db = _load_bench_db()
-    print(f'  {len(bench_db):,} architectures')
+        for method in args.methods:
+            save_dir = os.path.join(results_root, method)
+            os.makedirs(save_dir, exist_ok=True)
 
-    print('Loading test-acc Pareto reference front ...')
-    pareto_ref = _load_test_pareto_ref()
-    print(f'  {len(pareto_ref)} non-dominated points')
+            for seed in args.seeds:
+                out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
+                if os.path.exists(out_path) and not args.overwrite:
+                    print(f'[SKIP] pid{pid}/{method}/seed_{seed} already exists')
+                    continue
 
-    all_methods = ['random', 'nsga2', 'samos-xgb', 
-                   'ssa-nsga2-default',
-                   'gpsaf-default',
-                   'parego',
-    ]
-    methods = args.methods if args.methods else all_methods
-
-    for method in methods:
-        save_dir = os.path.join(results_root, method)
-        os.makedirs(save_dir, exist_ok=True)
-
-        for seed in args.seeds:
-            out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
-            if os.path.exists(out_path) and not args.overwrite:
-                print(f'[SKIP] {method}/seed_{seed} already exists')
-                continue
-
-            print(f'\n[RUN] method={method}  seed={seed}  pop={args.pop_size}  n_gen={args.n_gen}')
-            data = run_single(
-                method, seed, args.pop_size, args.n_gen, bench_db, pareto_ref,
-                n_doe=args.n_doe, n_infill=args.n_infill, n_gen_inner=args.n_gen_inner,
-                inner_pop_size=args.inner_pop_size,
-                warm_start_ratio=args.warm_start_ratio,
-                predict_obj=args.predict_obj, real_obj=args.real_obj,
-                elim_dupes_mode=args.elim_dupes,
-            )
-
-            with open(out_path, 'wb') as f:
-                pickle.dump(data, f)
-            print(f'  Saved -> {out_path}')
-
-    # ── plot HV and IGD+ trajectories ─────────────────────────────────────────
-    hv_ceiling = float(HV(ref_point=np.array([1.05, 1.05]))(pareto_ref))
-    print(f'  Reference front: {len(pareto_ref)} pts  '
-          f'test_err=[{pareto_ref[:,0].min():.4f}, {pareto_ref[:,0].max():.4f}]  '
-          f'n_params_norm=[{pareto_ref[:,1].min():.4f}, {pareto_ref[:,1].max():.4f}]  '
-          f'hv_ceiling={hv_ceiling:.6f}')
-    plot_out = os.path.join(results_root, 'baseline_hv_igd.png')
-    print(f'\nGenerating HV / IGD+ plot ...')
-    plot_results(methods, args.n_gen, args.pop_size, hv_ceiling, plot_out,
-                 results_root=results_root)
-
-    coverage_out = os.path.join(results_root, 'baseline_coverage.png')
-    print(f'\nGenerating exploration coverage plot ...')
-    plot_exploration_coverage(
-        methods=methods,
-        results_root=results_root,
-        bench_db=bench_db,
-        pareto_ref=pareto_ref,
-        acc_key='test_acc_108',
-        eval_checkpoints=(200, 500, 1000),
-        pop_size=args.pop_size,
-        out_path=coverage_out,
-    )
-
-    generate_latex_table_nasbench101(
-        methods=methods,
-        n_gen=args.n_gen,
-        results_root=results_root,
-        save_dir=Path(results_root),
-    )
+                print(
+                    f'\n[RUN] suite={args.suite}  pid={pid}'
+                    f'  method={method}  seed={seed}'
+                    f'  pop={args.pop_size}  n_gen={args.n_gen}'
+                )
+                data = run_single(
+                    suite=args.suite,
+                    pid=pid,
+                    method=method,
+                    seed=seed,
+                    pop_size=args.pop_size,
+                    n_gen=args.n_gen,
+                    n_doe=args.n_doe,
+                    n_infill=args.n_infill,
+                    n_gen_inner=args.n_gen_inner,
+                    inner_pop_size=args.inner_pop_size,
+                    warm_start_ratio=args.warm_start_ratio,
+                    proxy_obj_indices=args.proxy_obj_indices,
+                )
+                with open(out_path, 'wb') as f:
+                    pickle.dump(data, f)
+                print(f'  Saved -> {out_path}')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='NASBench-101 baselines: Random + NSGA-II + SAMOS (PDNS-style)'
+        description='NASBench-101 search via evoxbench c10mop with arch-str duplicate elimination'
     )
-    # ─── Basic methods ────────────────────────────────────────────────────────
-    parser.add_argument('--methods', type=str, nargs='+', default=None,
-                        help='Methods to run (default: all). Choices: '
-                             'random, nsga2, samos-rfr, samos-xgb, samos-ssa, mosmac, parego, '
-                             'ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb, '
-                             'gpsaf-default, gpsaf-rfr, gpsaf-xgb')
 
-    # ─── Search budget parameters ─────────────────────────────────────────
-    parser.add_argument('--seeds', type=int, nargs='+', default=list(range(10)),
-                        help='Seeds to run (default: 0-9)')
-    parser.add_argument('--pop_size', type=int, default=20,
-                        help='Population size (default: 20, matching PDNS)')
-    parser.add_argument('--n_gen', type=int, default=60,
-                        help='Number of generations (default: 60, -> 1000 evals)')
-    parser.add_argument('--n_doe', type=int, default=None,
+    parser.add_argument('--suite', type=str, default='c10mop',
+                        choices=['c10mop'],
+                        help='EvoXBench test suite (only c10mop supported here)')
+    parser.add_argument('--pids', type=int, nargs='+', default=[1, 2],
+                        help=f'Problem ID(s) — NASBench-101 pids only: {NB101_PIDS}')
+    parser.add_argument('--methods', type=str, nargs='+',
+                        default=['random', 'nsga2', 'samos-xgb', 'gpsaf-default'],
+                        help='Methods: random, nsga2, samos-xgb, samos-rfr, samos2, '
+                             'samos-cheapreal, ssa-nsga2, parego, gpsaf-default, mosmac')
+    parser.add_argument('--seeds',          type=int, nargs='+', default=list(range(10)))
+    parser.add_argument('--pop_size',       type=int, default=20)
+    parser.add_argument('--n_gen',          type=int, default=60,
+                        help='Number of generations (default: 60 → 1200 evals at pop=20)')
+    parser.add_argument('--n_doe',          type=int, default=None,
                         help='SAMOS: initial DOE size (default: pop_size)')
-    parser.add_argument('--n_infill', type=int, default=None,
+    parser.add_argument('--n_infill',       type=int, default=None,
                         help='SAMOS: real evaluations per outer generation (default: pop_size)')
-    parser.add_argument('--n_gen_inner', type=int, default=20,
+    parser.add_argument('--n_gen_inner',    type=int, default=20,
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size', type=int, default=None,
-                        help='SAMOS: inner NSGA-II population size (default: pop_size * 10)')
-    parser.add_argument('--warm_start_ratio', type=float, default=1.0,
-                        help='SAMOS: fraction of inner pop warm-started from best archive (default: 1.0)')
-    parser.add_argument('--predict_obj', type=str, nargs='+', default=['val_err_12'],
-                        help='SAMOS: objectives approximated by surrogates (default: val_err_12)')
-    parser.add_argument('--real_obj', type=str, nargs='*', default=['n_params'],
-                        help='SAMOS: objectives evaluated exactly in inner loop (default: n_params)')
-    parser.add_argument('--elim_dupes', choices=['arch_str', 'pymoo_default'],
-                        default='arch_str',
-                        help='Duplicate elimination strategy: arch_str (canonical ModelSpec hash, '
-                             'catches phenotypically identical architectures) or '
-                             'pymoo_default (raw vector comparison). Default: arch_str')
-    parser.add_argument('--experiment_name', type=str, default='nasbench101_extended',
-                        help='Experiment name; results are saved to results/<experiment_name>/')
-    parser.add_argument('--overwrite', action='store_true',
+                        help='SAMOS: inner NSGA-II population size (default: pop_size × 10)')
+    parser.add_argument('--warm_start_ratio', type=float, default=0.75,
+                        help='SAMOS: warm-start ratio for the inner NSGA-II (default: 0.75)')
+    parser.add_argument('--proxy_obj_indices', type=int, nargs='+', default=None,
+                        help='SAMOS: objective indices to approximate with surrogates '
+                             '(default: all). E.g. --proxy_obj_indices 0')
+    parser.add_argument('--experiment_name', type=str, default=None,
+                        help='Override results root folder (default: nasbench101)')
+    parser.add_argument('--overwrite',      action='store_true',
                         help='Re-run even if result file already exists')
 
     arguments = parser.parse_args()
