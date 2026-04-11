@@ -352,6 +352,296 @@ def generate_latex_table(
     print(f'  LaTeX table saved -> {out_path}')
 
 
+# ─── exploration scatter plot ──────────────────────────────────────────────────
+
+def _pareto_front_2d(pts: np.ndarray) -> np.ndarray:
+    """Return the Pareto front of a 2-objective minimisation problem.
+
+    O(N log N) time, O(N) extra memory — safe for 400k+ points.
+    Sort by f1 ascending; then sweep and keep a point only when its f2 is
+    strictly less than the minimum f2 seen so far (i.e. it is not dominated).
+    """
+    order      = np.argsort(pts[:, 0], kind='stable')
+    sorted_pts = pts[order]
+    pf_rows    = [0]        # index into sorted_pts
+    min_f2     = sorted_pts[0, 1]
+    for i in range(1, len(sorted_pts)):
+        f1, f2 = sorted_pts[i]
+        if f2 < min_f2:     # not dominated: f1 >= prev (sorted), f2 strictly better
+            pf_rows.append(i)
+            min_f2 = f2
+    return sorted_pts[pf_rows]
+
+
+def _load_nb101_background_norm(bm) -> np.ndarray:
+    """Return (N, 2) normalised objective array for all NASBench-101 architectures.
+
+    Values are cached to a .npy file alongside the SQLite database so that
+    subsequent calls are instant.
+    """
+    import sqlite3, json
+
+    # Locate the SQLite file from Django settings
+    from django.conf import settings
+    db_path = settings.DATABASES['default']['NAME']
+    cache_path = os.path.join(os.path.dirname(db_path), '_nb101_all_norm_err_params.npy')
+
+    if os.path.isfile(cache_path):
+        return np.load(cache_path)
+
+    print('  [background] Building NASBench-101 objective cache (one-time, ~7 s)…')
+    conn = sqlite3.connect(db_path)
+    cur  = conn.cursor()
+    cur.execute('SELECT params, final_validation_accuracy FROM nasbench101_nasbench101result')
+    rows = cur.fetchall()
+    conn.close()
+
+    utopian = np.array(bm.utopian_point)
+    nadir   = np.array(bm.nadir_point)
+
+    errs, params = [], []
+    for p, va in rows:
+        acc108 = json.loads(va).get('epoch108', [])
+        if acc108:
+            errs.append(1.0 - float(np.mean(acc108)))
+            params.append(float(p))
+
+    raw  = np.column_stack([errs, params])
+    norm = (raw - utopian) / (nadir - utopian + 1e-12)
+    norm = np.clip(norm, -0.05, 1.5)      # keep outliers visible but bounded
+    np.save(cache_path, norm)
+    print(f'  [background] Cached {len(norm):,} architectures -> {cache_path}')
+    return norm
+
+
+def plot_exploration(
+    suite: str,
+    pid: int,
+    methods: list,
+    pop_size: int,
+    n_gen: int,
+    n_seeds: int | None = None,
+    out_path: str | None = None,
+    font_scale: float = 1.0,
+    approx_info: dict | None = None,
+) -> None:
+    """Scatter plot of all evaluated designs across seeds for each method.
+
+    Each subplot shows:
+    - Grey background: every architecture in the NASBench-101 database.
+    - Coloured dots: every unique design evaluated, coloured by the number of
+      seeds that evaluated that exact architecture (seed-visit count).
+    - Black stars: the true Pareto front computed from the full NASBench-101
+      database (computed once from ``bg`` via non-dominated sorting).
+    - Subplot title: method label, unique arch count (% of total), and HV
+      recomputed against the shared combined Pareto approximation (matching
+      the values in the LaTeX table).
+
+    x-axis = objective 2 (normalised #params), y-axis = objective 1 (norm. err).
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from collections import Counter
+
+    # ── paper-ready typography ────────────────────────────────────────────────
+    BASE_FS = 11 * font_scale
+    plt.rcParams.update({
+        'font.size':         BASE_FS,
+        'axes.titlesize':    BASE_FS,
+        'axes.labelsize':    BASE_FS,
+        'xtick.labelsize':   BASE_FS * 0.9,
+        'ytick.labelsize':   BASE_FS * 0.9,
+        'legend.fontsize':   BASE_FS * 0.9,
+        'figure.titlesize':  BASE_FS * 1.1,
+    })
+
+    results_root = _results_root(suite, pid, pop_size, n_gen)
+
+    # ── benchmark meta ────────────────────────────────────────────────────────
+    bm     = get_benchmark(suite, pid)
+    xlabel, ylabel = get_obj_labels(suite, pid)   # returns (f1_label, f2_label)
+    # plot: x = col-1 (f2/#params), y = col-0 (f1/err)
+    xlabel, ylabel = ylabel, xlabel
+    n_total = 423624   # fixed NASBench-101 unique architecture count
+
+    # ── background: all 423k normalised architectures ─────────────────────────
+    bg = _load_nb101_background_norm(bm)  # (N,2): col0=f1(err), col1=f2(params)
+
+    # ── TRUE Pareto front from the full database ───────────────────────────────
+    # bm.pareto_front is only a pre-computed subset; compute the real front from
+    # bg so that no evaluated design can appear "below" the displayed PF.
+    # _pareto_front_2d is O(N log N) and avoids the O(N²) pymoo NDS memory cost.
+    true_pf = _pareto_front_2d(bg)   # (K,2): col0=f1, col1=f2
+
+    # ── load per-method data ──────────────────────────────────────────────────
+    # For each method: collect the unique architectures each seed evaluated and
+    # count how many seeds share each architecture (seed-visit count).
+    #
+    # We deliberately de-duplicate within each seed first so that an arch
+    # evaluated multiple times in ONE seed still only contributes 1 to the
+    # count — the colour represents "how many seeds explored here", not total
+    # evaluations.
+    method_data: dict = {}
+    for method in methods:
+        seed_dir = os.path.join(results_root, method)
+        if not os.path.isdir(seed_dir):
+            method_data[method] = None
+            continue
+
+        pkl_files = sorted(f for f in os.listdir(seed_dir) if f.endswith('.pkl'))
+        if n_seeds is not None:
+            pkl_files = pkl_files[:n_seeds]
+        n_used = len(pkl_files)
+
+        per_seed_sets: list[set] = []
+        for fn in pkl_files:
+            with open(os.path.join(seed_dir, fn), 'rb') as fh:
+                d = pickle.load(fh)
+
+            seed_pts: set = set()
+            for gen_objs in d.get('obj_pop', []):
+                arr = np.asarray(gen_objs, dtype=float)
+                if arr.ndim == 2 and arr.shape[1] == 2:
+                    valid = arr[np.isfinite(arr[:, 0]) & (arr[:, 0] < 2.0)]
+                    for row in np.round(valid, 6):
+                        seed_pts.add((float(row[0]), float(row[1])))
+            if seed_pts:
+                per_seed_sets.append(seed_pts)
+
+        if not per_seed_sets:
+            method_data[method] = None
+            continue
+
+        # Cross-seed visit count per unique architecture
+        visit_counts: Counter = Counter()
+        for s in per_seed_sets:
+            for pt in s:
+                visit_counts[pt] += 1
+
+        unique_pts = np.array(list(visit_counts.keys()))   # (M,2): col0=f1, col1=f2
+        counts     = np.array(list(visit_counts.values()), dtype=int)  # (M,)
+
+        # HV: recompute against shared combined Pareto approx (matches tables)
+        if approx_info is not None:
+            hv_data = recompute_final_indicators_seeds(
+                method, results_root,
+                approx_info['ref_point'],
+                approx_info['pareto_approx'],
+            )
+            hvs = list(hv_data['hv']) if hv_data is not None else []
+        else:
+            # Fallback: stored indicators (different ref point — may differ from table)
+            hvs = []
+            for fn in pkl_files:
+                with open(os.path.join(seed_dir, fn), 'rb') as fh:
+                    d = pickle.load(fh)
+                inds = d.get('indicators', [])
+                if inds:
+                    v = inds[-1].get('hv', float('nan'))
+                    if np.isfinite(v) and v < _MAX_VALID_HV:
+                        hvs.append(v)
+
+        method_data[method] = {
+            'pts':    unique_pts,
+            'counts': counts,
+            'n_used': n_used,
+            'unique': len(unique_pts),
+            'hvs':    hvs,
+        }
+
+    # ── figure layout ─────────────────────────────────────────────────────────
+    n_methods = len(methods)
+    ncols     = min(n_methods, 3)
+    nrows     = (n_methods + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(5.5 * ncols * font_scale,
+                                      5.0 * nrows * font_scale),
+                             squeeze=False)
+
+    for ax_idx, method in enumerate(methods):
+        row, col = divmod(ax_idx, ncols)
+        ax       = axes[row][col]
+
+        # ── background ────────────────────────────────────────────────────────
+        # ax.scatter(bg[:, 1], bg[:, 0],
+        #            s=2, c='#cccccc', alpha=0.25, linewidths=0, zorder=1,
+        #            rasterized=True)
+
+        # ── true Pareto front ─────────────────────────────────────────────────
+        ax.scatter(true_pf[:, 1], true_pf[:, 0],
+                   s=20 * font_scale, c='black', marker='*', zorder=5,
+                   label='True PF')
+
+        # ── evaluated designs ─────────────────────────────────────────────────
+        dat  = method_data.get(method)
+        mlbl = _EVOX_LABELS.get(method, method)
+
+        if dat is None:
+            ax.set_title(f'{mlbl}\n(no data)')
+        else:
+            pts    = dat['pts']       # (M,2): col0=f1, col1=f2
+            counts = dat['counts']    # (M,)  integers 1..n_used
+            unique = dat['unique']
+            n_used = dat['n_used']
+            hvs    = dat['hvs']
+
+            pct    = 100.0 * unique / n_total
+            hv_str = (f'HV = {np.mean(hvs):.4f} \u00b1 {np.std(hvs):.4f}'
+                      if hvs else 'HV = n/a')
+            title  = f'{mlbl}\n{unique:,} unique ({pct:.1f}% of {n_total:,})\n{hv_str}'
+
+            colour = _EVOX_COLOURS.get(method, '#1f77b4')
+            cmap   = mcolors.LinearSegmentedColormap.from_list(
+                'seeds', ['#e8e8e8', colour], N=max(n_used, 2))
+            norm_c = mcolors.Normalize(vmin=0.5, vmax=n_used + 0.5)
+
+            sc = ax.scatter(pts[:, 1], pts[:, 0],   # x=f2, y=f1
+                            s=20 * font_scale, c=counts, cmap=cmap, norm=norm_c,
+                            alpha=0.8, linewidths=0, zorder=3)
+            # Show at most ~8 labelled ticks on the colorbar regardless of
+            # how many seeds there are or how large font_scale is.
+            _max_ticks = 8
+            _step      = max(1, int(np.ceil(n_used / _max_ticks)))
+            _ticks     = list(range(1, n_used + 1, _step))
+            if _ticks[-1] != n_used:          # always include the maximum
+                _ticks.append(n_used)
+            cb = fig.colorbar(sc, ax=ax, shrink=0.7, ticks=_ticks)
+            cb.set_label(f'# seeds (1\u2013{n_used})', fontsize=BASE_FS * 0.85)
+            cb.ax.tick_params(labelsize=BASE_FS * 0.8)
+            ax.set_title(title)
+
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_xlim(-0.02, 1.1)
+        ax.set_ylim(-0.02, 1.1)
+        ax.tick_params(axis='both', which='major')
+        ax.grid(True, linewidth=0.5, alpha=0.5)
+
+    # hide unused axes
+    for ax_idx in range(len(methods), nrows * ncols):
+        row, col = divmod(ax_idx, ncols)
+        axes[row][col].set_visible(False)
+
+    fig.suptitle(
+        f'{suite.upper()} PID {pid} — evaluated designs '
+        f'(pop={pop_size}, {n_gen} gen, {n_seeds or "all"} seeds)',
+        y=1.01,
+    )
+    fig.tight_layout()
+
+    if out_path is None:
+        out_path = os.path.join(results_root, f'{suite}_pid{pid}_exploration.png')
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Exploration plot saved -> {out_path}')
+
+
+_MAX_VALID_HV = 2.0   # sentinel for NASBench-101 un-normalised HV values
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main(args) -> None:
@@ -537,6 +827,20 @@ def main(args) -> None:
             approx_info=all_approx_info,
         )
 
+    # ── exploration scatter plot ──────────────────────────────────────────
+    if args.exploration:
+        for pid in pids:
+            plot_exploration(
+                suite=suite,
+                pid=pid,
+                methods=methods,
+                pop_size=pop_size,
+                n_gen=n_gen,
+                n_seeds=args.exploration_seeds,
+                font_scale=args.font_scale,
+                approx_info=all_approx_info.get(pid),
+            )
+
     print('\nDone.')
 
 
@@ -568,6 +872,14 @@ if __name__ == '__main__':
     parser.add_argument('--font_scale', '--font-scale', type=float, default=1.0,
                         dest='font_scale',
                         help='Font size multiplier for all output plots (default: 1.0)')
+    parser.add_argument('--exploration', action='store_true',
+                        help='Generate evaluation-exploration scatter plot '
+                             '(NASBench-101 only; shows all evaluated designs '
+                             'heatmap-coloured by density against the full search space)')
+    parser.add_argument('--exploration_seeds', '--exploration-seeds', type=int, default=None,
+                        dest='exploration_seeds',
+                        help='Limit number of seeds used for the exploration plot '
+                             '(default: all available seeds)')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')

@@ -4,3 +4,9 @@ __pycache__/
 
 results/
 problem/data/
+smac3_output/
+.github/
+batchresults/
+.idea/
+.vscode/
+*.log

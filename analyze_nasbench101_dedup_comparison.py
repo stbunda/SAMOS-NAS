@@ -251,7 +251,7 @@ def _parse_args() -> argparse.Namespace:
                    help='C10/MOP pids to include (default: 1 2)')
     p.add_argument('--methods',  type=str,   nargs='+',
                    default=['random', 'nsga2', 'samos-xgb',
-                             'gpsaf-default', 'parego', 'mosmac'],
+                             'gpsaf-default'],
                    help='Methods to include in the table')
     p.add_argument('--pop_size', type=int,   default=20)
     p.add_argument('--n_gen',    type=int,   default=60)
