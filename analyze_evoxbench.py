@@ -70,7 +70,6 @@ _DEFAULT_METHODS = [
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
-
 def _results_root(suite: str, pid: int, pop_size: int, n_gen: int, root: str = 'results/evoxbench') -> str:
     return os.path.join(
         root, suite,

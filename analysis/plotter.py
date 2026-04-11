@@ -1221,9 +1221,11 @@ def plot_pareto_snapshots_evoxbench_overlay(
 
     ax.set_xlabel(ylabel)
     ax.set_ylabel(xlabel)
+   
     if axis_limits is not None:
         ax.set_xlim(axis_limits)
         ax.set_ylim(axis_limits)
+
     ax.grid(True, alpha=0.25)
     _title = title or (
         f'50\u202f% attainment surfaces — gen\u202f{final_gen} '
