@@ -285,13 +285,12 @@ def run_single(
             set(proxy_obj_indices) if proxy_obj_indices is not None
             else set(range(n_obj))
         )
+        print(f' SAMOS proxy objectives: {sorted(proxy_set)}  real objectives: {sorted(set(range(n_obj)) - proxy_set)}')
         real_obj_indices    = [i for i in range(n_obj) if i not in proxy_set]
         predict_obj_indices = [i for i in range(n_obj) if i in proxy_set]
 
         rng = np.random.RandomState(seed)
         surrogates = [
-            RFR(20, seed=rng.randint(0, 2**31 - 1))
-            if samos_type == 'rfr' else
             XGBoost(100, seed=rng.randint(0, 2**31 - 1))
             for _ in predict_obj_indices
         ]
@@ -462,8 +461,8 @@ if __name__ == '__main__':
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size', type=int, default=None,
                         help='SAMOS: inner NSGA-II population size (default: pop_size × 10)')
-    parser.add_argument('--warm_start_ratio', type=float, default=0.75,
-                        help='SAMOS: warm-start ratio for the inner NSGA-II (default: 0.75)')
+    parser.add_argument('--warm_start_ratio', type=float, default=1.0,
+                        help='SAMOS: warm-start ratio for the inner NSGA-II (default: 1.0)')
     parser.add_argument('--proxy_obj_indices', type=int, nargs='+', default=None,
                         help='SAMOS: objective indices to approximate with surrogates '
                              '(default: all). E.g. --proxy_obj_indices 0')

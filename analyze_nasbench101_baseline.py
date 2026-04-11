@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from pymoo.indicators.hv import HV
 
-from problem.nasbench101_utils import MIN_PARAMS, MAX_PARAMS
+from problem.nasbench101 import MIN_PARAMS, MAX_PARAMS
 from analysis.plotter import plot_results, plot_val_results, plot_exploration_coverage
 from analysis.latex_table_generator import generate_latex_table_nasbench101
 
@@ -137,20 +137,23 @@ def get_method_style(method_name: str) -> dict:
 
 
 def main(args):
-    # Build results root with budget folder
-    n_infill = args.n_infill if args.n_infill is not None else args.pop_size
-    n_doe = args.n_doe if args.n_doe is not None else args.pop_size
-    budget_folder = f"G{args.n_gen}_GI{args.n_gen_inner}_P{args.pop_size}_I{n_infill}_D{n_doe}_ELIM-{args.elim_dupes}"
-    
-    results_root = os.path.join('results', args.experiment_name, budget_folder)
-    
+    # Build results root — either directly from --results_root or via budget folder
+    if args.results_root is not None:
+        results_root = args.results_root
+    else:
+        n_infill = args.n_infill if args.n_infill is not None else args.pop_size
+        n_doe = args.n_doe if args.n_doe is not None else args.pop_size
+        budget_folder = f"G{args.n_gen}_GI{args.n_gen_inner}_P{args.pop_size}_I{n_infill}_D{n_doe}_ELIM-{args.elim_dupes}"
+        results_root = os.path.join('results', args.experiment_name, budget_folder)
+
     if not os.path.exists(results_root):
         print(f"Results directory not found: {results_root}")
         return
 
-    # Define all available methods
+    # Define preferred method ordering (used when --results_root is not given)
     all_methods = [
         'random_ga',
+        'random',
         'nsga2-uniform',
         'nsga2-xo-single',
         'nsga2-no-xo-single',
@@ -170,12 +173,24 @@ def main(args):
         'samos-xgb',
     ]
 
-    # Find which methods have results
-    methods = []
-    for method in all_methods:
-        method_dir = os.path.join(results_root, method)
-        if os.path.exists(method_dir) and any(f.startswith('seed_') for f in os.listdir(method_dir)):
-            methods.append(method)
+    # Find which methods have results.
+    # When --results_root is given directly, auto-discover all method directories
+    # rather than filtering against the fixed all_methods list.
+    if args.results_root is not None:
+        discovered = sorted(
+            d for d in os.listdir(results_root)
+            if os.path.isdir(os.path.join(results_root, d))
+            and any(f.startswith('seed_') for f in os.listdir(os.path.join(results_root, d)))
+        )
+        # Preserve preferred ordering for known methods, append unknowns at the end
+        known_order = {m: i for i, m in enumerate(all_methods)}
+        methods = sorted(discovered, key=lambda m: (known_order.get(m, len(all_methods)), m))
+    else:
+        methods = []
+        for method in all_methods:
+            method_dir = os.path.join(results_root, method)
+            if os.path.exists(method_dir) and any(f.startswith('seed_') for f in os.listdir(method_dir)):
+                methods.append(method)
     
     if not methods:
         print(f"No result files found in {results_root}")
@@ -224,7 +239,7 @@ def main(args):
         bench_db=bench_db,
         pareto_ref=pareto_ref,
         acc_key='test_acc_108',
-        eval_checkpoints=(200, 500, 1000),
+        eval_checkpoints=(1200,),
         pop_size=args.pop_size,
         out_path=coverage_out,
         xlim=(75, 100),
@@ -239,7 +254,7 @@ def main(args):
         bench_db=bench_db,
         pareto_ref=val_pareto_ref,
         acc_key='val_acc_12',
-        eval_checkpoints=(200, 500, 1000),
+        eval_checkpoints=(1200,),
         pop_size=args.pop_size,
         out_path=val_coverage_out,
         xlim=(50, 100),
@@ -275,6 +290,8 @@ if __name__ == '__main__':
     parser.add_argument('--elim_dupes', choices=['arch_str', 'pymoo_default'],
                         default='arch_str',
                         help='Duplicate elimination strategy (default: arch_str)')
+    parser.add_argument('--results_root', type=str, default=None,
+                        help='Direct path to results directory (overrides experiment_name + budget_folder construction)')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')

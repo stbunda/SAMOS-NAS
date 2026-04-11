@@ -1194,9 +1194,15 @@ def plot_pareto_snapshots_evoxbench_overlay(
     fig, ax = plt.subplots(figsize=(6, 5 * font_scale ** 0.5))
 
     if pf_norm is not None and len(pf_norm) > 0:
+<<<<<<< HEAD
         pf_s = pf_norm[np.argsort(pf_norm[:, 0])]
         ax.scatter(pf_s[:, 0], pf_s[:, 1],
                    c='black', s=6 * font_scale ** 2, marker='.', label='Reference PF',
+=======
+        pf_s = pf_norm[np.argsort(pf_norm[:, 1])]
+        ax.scatter(pf_s[:, 1], pf_s[:, 0],
+                   c='black', s=6, marker='.', label='Reference PF',
+>>>>>>> b959fe501e13ab89787502ec06a67afcef916429
                    zorder=6, alpha=0.5)
 
     for method in methods:
@@ -1204,18 +1210,23 @@ def plot_pareto_snapshots_evoxbench_overlay(
         fronts = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root)
         if not fronts:
             continue
-        f1_grid, f2_att = compute_attainment_surface(fronts)
+        f1_grid, f2_att = compute_attainment_surface([f[:, [1, 0]] for f in fronts])
         if len(f1_grid) == 0:
             continue
         valid = ~np.isnan(f2_att)
         ax.plot(f1_grid[valid], f2_att[valid],
                 color=colour, lw=1.5 * font_scale, label=label, zorder=4)
 
+<<<<<<< HEAD
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     if axis_limits is not None:
         ax.set_xlim(axis_limits)
         ax.set_ylim(axis_limits)
+=======
+    ax.set_xlabel(ylabel)
+    ax.set_ylabel(xlabel)
+>>>>>>> b959fe501e13ab89787502ec06a67afcef916429
     ax.grid(True, alpha=0.25)
     _title = title or (
         f'50\u202f% attainment surfaces — gen\u202f{final_gen} '
@@ -1303,7 +1314,7 @@ def plot_pareto_snapshots_evoxbench_subplots(
         sharey=True,
     )
 
-    pf_sorted = (pf_norm[np.argsort(pf_norm[:, 0])]
+    pf_sorted = (pf_norm[np.argsort(pf_norm[:, 1])]
                  if pf_norm is not None and len(pf_norm) > 0 else None)
 
     for idx, method in enumerate(methods):
@@ -1313,8 +1324,13 @@ def plot_pareto_snapshots_evoxbench_subplots(
         _, label = _resolve_style(method, _colours, _labels)
 
         if pf_sorted is not None:
+<<<<<<< HEAD
             ax.scatter(pf_sorted[:, 0], pf_sorted[:, 1],
                        c='black', s=4 * font_scale ** 2, marker='.', label='Reference PF',
+=======
+            ax.scatter(pf_sorted[:, 1], pf_sorted[:, 0],
+                       c='black', s=4, marker='.', label='Reference PF',
+>>>>>>> b959fe501e13ab89787502ec06a67afcef916429
                        zorder=5, alpha=0.5)
 
         for ci, cgen in enumerate(checkpoints_gen):
@@ -1322,7 +1338,7 @@ def plot_pareto_snapshots_evoxbench_subplots(
             fronts  = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root)
             if not fronts:
                 continue
-            f1_grid, f2_att = compute_attainment_surface(fronts)
+            f1_grid, f2_att = compute_attainment_surface([f[:, [1, 0]] for f in fronts])
             if len(f1_grid) == 0:
                 continue
             valid = ~np.isnan(f2_att)
@@ -1340,12 +1356,17 @@ def plot_pareto_snapshots_evoxbench_subplots(
         axes[row][col].tick_params(left=False, bottom=False,
                                    labelleft=False, labelbottom=False)
 
+<<<<<<< HEAD
     if axis_limits is not None:
         axes[0][0].set_xlim(axis_limits)
         axes[0][0].set_ylim(axis_limits)
 
     fig.supxlabel(xlabel, fontsize=9 * font_scale, y=0.10)
     fig.supylabel(ylabel, fontsize=9 * font_scale)
+=======
+    fig.supxlabel(ylabel, fontsize=9 * font_scale, y=0.10)
+    fig.supylabel(xlabel, fontsize=9 * font_scale)
+>>>>>>> b959fe501e13ab89787502ec06a67afcef916429
 
     ref_ax = axes[0][0]
     handles, leg_labels = ref_ax.get_legend_handles_labels()

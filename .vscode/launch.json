@@ -1,0 +1,389 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "analyze — EvoXBench c10mop (all PIDs, pop=20, n_gen=60)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/analyze_evoxbench.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--suite", "c10mop",
+                "--pids", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+                "--methods", "random", "nsga2", "parego", "mosmac", "gpsaf-default", "samos-xgb",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--table_only"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+                {
+            "name": "analyze — EvoXBench in1kmop (all PIDs, pop=20, n_gen=60)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/analyze_evoxbench.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--suite", "in1kmop",
+                "--pids", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+                "--methods", "random", "nsga2", "samos-xgb", "parego", "gpsaf-default", "mosmac",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--table_only"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "analyze — EvoXBench c10mop (PID7)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/analyze_evoxbench.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--suite", "c10mop",
+                "--pids", "7", 
+                "--methods", "random", "nsga2", "samos-xgb", "samos2", "parego", "gpsaf-default", "mosmac",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                // "--rebuild-approx"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pymoo benchmark — quick test (wfg1)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg1",
+                "--methods", "random", "nsga2", "samos-xgb",
+                "--seeds", "0",
+                "--pop_size", "20",
+                "--n_gen", "100",
+                "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+                {
+            "name": "pymoo benchmark — parego test (wfg1)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg1",
+                "--methods", "parego",
+                "--seeds", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--experiment_name", "pymoo_benchmark/2_obj",
+                // "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pymoo benchmark — parego test (wfg2-9)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg2", "wfg3", "wfg4", "wfg5", "wfg6", "wfg7", "wfg8", "wfg9",
+                "--methods", "parego",
+                "--seeds", "0", "1",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--experiment_name", "pymoo_benchmark/2_obj",
+                // "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pymoo benchmark — full run (wfg1, 5 seeds)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg1",
+                "--methods", "random", "nsga2", "samos-xgb",
+                "--seeds", "0", "1", "2", "3", "4",
+                "--pop_size", "20",
+                "--n_gen", "500"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "pymoo benchmark — 3-obj wfg2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg2",
+                "--n_obj", "3",
+                "--methods", "random", "nsga2", "samos-xgb",
+                "--seeds", "0",
+                "--pop_size", "20",
+                "--n_gen", "5",
+                "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "RERUN — parego wfg2-6 seeds 0,1,4 (corrupt)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg2", "wfg3", "wfg4", "wfg5", "wfg6",
+                "--methods", "parego",
+                "--seeds", "0", "1", "4",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--experiment_name", "pymoo_benchmark/2_obj",
+                "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "RERUN — gpsaf-default wfg3 seed 0 (corrupt)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg3",
+                "--methods", "gpsaf-default",
+                "--seeds", "0",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--experiment_name", "pymoo_benchmark/2_obj",
+                "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "analyze — pymoo_benchmark/2_obj (all WFG)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/analyze_pymoo_benchmark.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--experiment_name", "pymoo_benchmark/2_obj",
+                "--problems", "wfg1", "wfg2", "wfg3", "wfg4", "wfg5", "wfg6", "wfg7", "wfg8", "wfg9",
+                "--n_obj", "2",
+                "--methods", "random", "nsga2", "parego", "mosmac", "gpsaf-default", "samos-xgb",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--table_only"
+                // "--extended_plot"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "NASBench-101 — quick test (nsga2)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_nasbench101_baseline.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--nsga2",
+                "--seeds", "0",
+                "--pop_size", "20",
+                "--n_gen", "5",
+                "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "NASBench-101 — full run",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_nasbench101_baseline.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--nsga2", "--samos_xgb",
+                "--seeds", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+                "--pop_size", "20",
+                "--n_gen", "50"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "NASBench-201 — quick test (nsga2, cifar10)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_nasbench201_baseline.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--dataset", "cifar10-valid",
+                "--nsga2_uniform",
+                "--seeds", "0",
+                "--pop_size", "20",
+                "--n_gen", "5",
+                "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "NASBench-201 — full run (cifar10)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_nasbench201_baseline.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--dataset", "cifar10-valid",
+                "--nsga2_uniform", "--samos_xgb",
+                "--seeds", "0", "1", "2", "3", "4",
+                "--pop_size", "20",
+                "--n_gen", "50"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "NASBench-101 (main) — all methods, 10 seeds",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_nasbench101.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--seeds", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--n_gen_inner", "20",
+                "--experiment_name", "nasbench101_extended"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "NASBench-101 (main) — all methods, seeds 0-2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_nasbench101.py",
+            "python": "C:\\Users\\Sebastian\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--pids", "1", "2",
+                "--methods", "random", "nsga2", "gpsaf-default", "samos-xgb",
+                "--seeds", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--n_gen_inner", "20",
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "PATH": "C:\\Users\\Sebastian\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\Sebastian\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\Sebastian\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\Sebastian\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "SAMOS Ablation — all on WFG3 seed 0",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_samos_ablation.py",
+            "python": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\python.exe",
+            "args": [
+                "--problem", "wfg3",
+                "--n_obj", "2",
+                "--n_var", "12",
+                "--ablation", "all",
+                "--seeds", "0",
+                "--pop_size", "20",
+                "--n_gen", "60",
+                "--n_gen_inner", "20",
+                "--experiment_name", "samos_ablation/2_obj",
+                "--overwrite"
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "LOKY_MAX_CPU_COUNT": "4",
+                "PATH": "C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Scripts;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\bin;C:\\Users\\BundaST\\AppData\\Local\\anaconda3\\envs\\SAMOS_311\\Library\\mingw-w64\\bin"
+            },
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}
