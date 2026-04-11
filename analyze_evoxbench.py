@@ -70,10 +70,9 @@ _DEFAULT_METHODS = [
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
-
-def _results_root(suite: str, pid: int, pop_size: int, n_gen: int) -> str:
+def _results_root(suite: str, pid: int, pop_size: int, n_gen: int, root: str = 'results/evoxbench') -> str:
     return os.path.join(
-        'results', 'evoxbench', suite,
+        root, suite,
         f'pid{pid}', f'B{n_gen * pop_size}_P{pop_size}',
     )
 
@@ -651,12 +650,12 @@ def main(args) -> None:
     pop_size = args.pop_size
     n_gen    = args.n_gen
 
-    suite_root = os.path.join('results', 'evoxbench', suite)
+    suite_root = os.path.join(args.root, suite)
 
     # ── per-PID loop ──────────────────────────────────────────────────────────
     all_approx_info: dict[int, dict] = {}
     for pid in pids:
-        root = _results_root(suite, pid, pop_size, n_gen)
+        root = _results_root(suite, pid, pop_size, n_gen, args.root)
 
         # Build (or load from cache) the combined Pareto approximation.
         # Always run — it is cheap (disk-cached) and needed by both the
@@ -788,6 +787,8 @@ def main(args) -> None:
                     xlabel=_xlabel,
                     ylabel=_ylabel,
                     font_scale=args.font_scale,
+                    axis_limits=args.attainment_limits,
+                    attainment_type=args.attainment_type,
                 )
 
                 plot_pareto_snapshots_evoxbench_subplots(
@@ -808,6 +809,8 @@ def main(args) -> None:
                     xlabel=_xlabel,
                     ylabel=_ylabel,
                     font_scale=args.font_scale,
+                    axis_limits=args.attainment_limits,
+                    attainment_type=args.attainment_type,
                 )
 
     # ── LaTeX table ───────────────────────────────────────────────────────────
@@ -848,6 +851,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='EvoXBench post-run analysis: convergence plots + LaTeX table'
     )
+    parser.add_argument('--root', type=str, default='results/evoxbench',
+                        help='Root directory for results (default: results/evoxbench)')
     parser.add_argument('--suite',    type=str, required=True,
                         choices=['c10mop', 'in1kmop', 'citysegmop'])
     parser.add_argument('--pids',     type=int, nargs='+', default=list(range(1, 10)),
@@ -880,6 +885,12 @@ if __name__ == '__main__':
                         dest='exploration_seeds',
                         help='Limit number of seeds used for the exploration plot '
                              '(default: all available seeds)')
+    parser.add_argument('--attainment_limits', '--attainment-limits', type=float, nargs=2,
+                        default=None, metavar=('LO', 'HI'), dest='attainment_limits',
+                        help='x- and y-axis limits for attainment plots, e.g. 0 0.5')
+    parser.add_argument('--attainment_type', '--attainment-type', type=str,
+                        default='lines', choices=['lines', 'dots'], dest='attainment_type',
+                        help='Attainment surface style: lines or dots (default: lines)')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')

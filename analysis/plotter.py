@@ -481,7 +481,7 @@ def load_val_indicator_trajectories(
     hv_ind  = HV(ref_point=_REF_POINT_VAL)
     igd_ind = IGDPlus(val_pareto_ref)
 
-    from problem.nasbench101_utils import _vec_to_arch_str, MIN_PARAMS, MAX_PARAMS
+    from problem.nasbench101 import _vec_to_arch_str, MIN_PARAMS, MAX_PARAMS
 
     seed_dir = os.path.join(results_root, method)
     if not os.path.isdir(seed_dir):
@@ -663,7 +663,7 @@ def _arch_counts_across_seeds(entries, bench_db, checkpoint=None):
     checkpoint: If not None, only consider the first *checkpoint* unique
                 architectures per seed.
     """
-    from problem.nasbench101_utils import _vec_to_arch_str
+    from problem.nasbench101 import _vec_to_arch_str
     counts = {}
     for entry in entries:
         log_archs = entry['log_archs']
@@ -720,7 +720,7 @@ def plot_exploration_coverage(
     ylim:             (min, max) for the n_params y-axis (default: (0, 0.25)).
     show:             If True, call plt.show() after saving.
     """
-    from problem.nasbench101_utils import MIN_PARAMS, MAX_PARAMS
+    from problem.nasbench101 import MIN_PARAMS, MAX_PARAMS
 
     # ── load per-seed PKL data ─────────────────────────────────────────────────
     method_entries = {}   # method -> list of {log_archs, hv_x, hv_y}
@@ -736,8 +736,15 @@ def plot_exploration_coverage(
                 indicators = data.get('indicators', [])
                 hv_y = [ind.get('hv', 0.0) for ind in indicators]
                 hv_x = [(g + 1) * pop_size for g in range(len(hv_y))]
+                log_archs = data.get('log_archs', [])
+                if not log_archs and 'var_pop' in data:
+                    # Fallback: reconstruct from per-generation population snapshots.
+                    # Concatenating all generations gives a flat list ordered by
+                    # evaluation time, so log_archs[:checkpoint] correctly covers
+                    # the first `checkpoint` evaluations.
+                    log_archs = [vec for gen_pop in data['var_pop'] for vec in gen_pop]
                 entries.append({
-                    'log_archs': data.get('log_archs', []),
+                    'log_archs': log_archs,
                     'hv_x': hv_x,
                     'hv_y': hv_y,
                 })
@@ -945,6 +952,9 @@ def compute_attainment_surface(fronts_2d: list, q: float = 0.5, n_grid: int = 50
     f2_matrix[np.isinf(f2_matrix)] = np.nan
     with np.errstate(all='ignore'):
         f2_att = np.nanquantile(f2_matrix, q, axis=0)
+    # enforce monotonicity: as F1 increases the attainment surface should be non-increasing
+    finite_mask = ~np.isnan(f2_att)
+    f2_att[finite_mask] = np.minimum.accumulate(f2_att[finite_mask])
     return f1_grid, f2_att
 
 
@@ -1147,6 +1157,8 @@ def plot_pareto_snapshots_evoxbench_overlay(
     xlabel: str = '$f_1$',
     ylabel: str = '$f_2$',
     font_scale: float = 1.0,
+    axis_limits: list = None,
+    attainment_type: str = 'lines',
 ):
     """Single-axes 50 % attainment surface overlay for evoxbench 2-obj problems.
 
@@ -1183,7 +1195,7 @@ def plot_pareto_snapshots_evoxbench_overlay(
         'figure.dpi': 150,
     })
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig, ax = plt.subplots(figsize=(6, 5 * font_scale ** 0.5))
 
     if pf_norm is not None and len(pf_norm) > 0:
         pf_s = pf_norm[np.argsort(pf_norm[:, 1])]
@@ -1200,11 +1212,20 @@ def plot_pareto_snapshots_evoxbench_overlay(
         if len(f1_grid) == 0:
             continue
         valid = ~np.isnan(f2_att)
-        ax.plot(f1_grid[valid], f2_att[valid],
-                color=colour, lw=1.5, label=label, zorder=4)
+        if attainment_type == 'lines':
+            ax.plot(f1_grid[valid], f2_att[valid],
+                    color=colour, lw=1.5 * font_scale, label=label, zorder=4)
+        else:
+            ax.scatter(f1_grid[valid], f2_att[valid],
+                       c=[colour], s=6 * font_scale ** 2, marker='.', label=label, zorder=4)
 
     ax.set_xlabel(ylabel)
     ax.set_ylabel(xlabel)
+   
+    if axis_limits is not None:
+        ax.set_xlim(axis_limits)
+        ax.set_ylim(axis_limits)
+
     ax.grid(True, alpha=0.25)
     _title = title or (
         f'50\u202f% attainment surfaces — gen\u202f{final_gen} '
@@ -1240,6 +1261,8 @@ def plot_pareto_snapshots_evoxbench_subplots(
     xlabel: str = '$f_1$',
     ylabel: str = '$f_2$',
     font_scale: float = 1.0,
+    axis_limits: list = None,
+    attainment_type: str = 'lines',
 ):
     """50 % attainment surfaces at several generation checkpoints for evoxbench 2-obj problems.
 
@@ -1285,7 +1308,7 @@ def plot_pareto_snapshots_evoxbench_subplots(
 
     fig, axes = plt.subplots(
         n_rows, n_cols,
-        figsize=(5.5 * n_cols, 4.5 * n_rows),
+        figsize=(5.5 * n_cols, 4.5 * n_rows * font_scale ** 0.5),
         squeeze=False,
         sharex=True,
         sharey=True,
@@ -1314,10 +1337,16 @@ def plot_pareto_snapshots_evoxbench_subplots(
             if len(f1_grid) == 0:
                 continue
             valid = ~np.isnan(f2_att)
-            ax.scatter(f1_grid[valid], f2_att[valid],
-                       c=checkpoint_palette[ci], s=3, marker='.',
-                       label=f'gen\u202f{cgen} ({cgen * pop_size}\u202fevals)',
-                       zorder=4 - ci)
+            if attainment_type == 'lines':
+                ax.plot(f1_grid[valid], f2_att[valid],
+                        color=checkpoint_palette[ci], lw=1.5 * font_scale,
+                        label=f'gen\u202f{cgen} ({cgen * pop_size}\u202fevals)',
+                        zorder=4 - ci)
+            else:
+                ax.scatter(f1_grid[valid], f2_att[valid],
+                           c=checkpoint_palette[ci], s=3 * font_scale ** 2, marker='.',
+                           label=f'gen\u202f{cgen} ({cgen * pop_size}\u202fevals)',
+                           zorder=4 - ci)
 
         ax.set_title(label)
         ax.grid(True, alpha=0.25)
@@ -1330,6 +1359,12 @@ def plot_pareto_snapshots_evoxbench_subplots(
 
     fig.supxlabel(ylabel, fontsize=9 * font_scale, y=0.10)
     fig.supylabel(xlabel, fontsize=9 * font_scale)
+
+    if axis_limits is not None:
+        for row in axes:
+            for a in row:
+                a.set_xlim(axis_limits)
+                a.set_ylim(axis_limits)
 
     ref_ax = axes[0][0]
     handles, leg_labels = ref_ax.get_legend_handles_labels()
