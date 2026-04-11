@@ -952,6 +952,9 @@ def compute_attainment_surface(fronts_2d: list, q: float = 0.5, n_grid: int = 50
     f2_matrix[np.isinf(f2_matrix)] = np.nan
     with np.errstate(all='ignore'):
         f2_att = np.nanquantile(f2_matrix, q, axis=0)
+    # enforce monotonicity: as F1 increases the attainment surface should be non-increasing
+    finite_mask = ~np.isnan(f2_att)
+    f2_att[finite_mask] = np.minimum.accumulate(f2_att[finite_mask])
     return f1_grid, f2_att
 
 
@@ -1155,6 +1158,7 @@ def plot_pareto_snapshots_evoxbench_overlay(
     ylabel: str = '$f_2$',
     font_scale: float = 1.0,
     axis_limits: list = None,
+    attainment_type: str = 'lines',
 ):
     """Single-axes 50 % attainment surface overlay for evoxbench 2-obj problems.
 
@@ -1194,15 +1198,9 @@ def plot_pareto_snapshots_evoxbench_overlay(
     fig, ax = plt.subplots(figsize=(6, 5 * font_scale ** 0.5))
 
     if pf_norm is not None and len(pf_norm) > 0:
-<<<<<<< HEAD
-        pf_s = pf_norm[np.argsort(pf_norm[:, 0])]
-        ax.scatter(pf_s[:, 0], pf_s[:, 1],
-                   c='black', s=6 * font_scale ** 2, marker='.', label='Reference PF',
-=======
         pf_s = pf_norm[np.argsort(pf_norm[:, 1])]
         ax.scatter(pf_s[:, 1], pf_s[:, 0],
                    c='black', s=6, marker='.', label='Reference PF',
->>>>>>> b959fe501e13ab89787502ec06a67afcef916429
                    zorder=6, alpha=0.5)
 
     for method in methods:
@@ -1214,19 +1212,18 @@ def plot_pareto_snapshots_evoxbench_overlay(
         if len(f1_grid) == 0:
             continue
         valid = ~np.isnan(f2_att)
-        ax.plot(f1_grid[valid], f2_att[valid],
-                color=colour, lw=1.5 * font_scale, label=label, zorder=4)
+        if attainment_type == 'lines':
+            ax.plot(f1_grid[valid], f2_att[valid],
+                    color=colour, lw=1.5 * font_scale, label=label, zorder=4)
+        else:
+            ax.scatter(f1_grid[valid], f2_att[valid],
+                       c=[colour], s=6 * font_scale ** 2, marker='.', label=label, zorder=4)
 
-<<<<<<< HEAD
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+    ax.set_xlabel(ylabel)
+    ax.set_ylabel(xlabel)
     if axis_limits is not None:
         ax.set_xlim(axis_limits)
         ax.set_ylim(axis_limits)
-=======
-    ax.set_xlabel(ylabel)
-    ax.set_ylabel(xlabel)
->>>>>>> b959fe501e13ab89787502ec06a67afcef916429
     ax.grid(True, alpha=0.25)
     _title = title or (
         f'50\u202f% attainment surfaces — gen\u202f{final_gen} '
@@ -1263,6 +1260,7 @@ def plot_pareto_snapshots_evoxbench_subplots(
     ylabel: str = '$f_2$',
     font_scale: float = 1.0,
     axis_limits: list = None,
+    attainment_type: str = 'lines',
 ):
     """50 % attainment surfaces at several generation checkpoints for evoxbench 2-obj problems.
 
@@ -1324,13 +1322,8 @@ def plot_pareto_snapshots_evoxbench_subplots(
         _, label = _resolve_style(method, _colours, _labels)
 
         if pf_sorted is not None:
-<<<<<<< HEAD
-            ax.scatter(pf_sorted[:, 0], pf_sorted[:, 1],
-                       c='black', s=4 * font_scale ** 2, marker='.', label='Reference PF',
-=======
             ax.scatter(pf_sorted[:, 1], pf_sorted[:, 0],
                        c='black', s=4, marker='.', label='Reference PF',
->>>>>>> b959fe501e13ab89787502ec06a67afcef916429
                        zorder=5, alpha=0.5)
 
         for ci, cgen in enumerate(checkpoints_gen):
@@ -1342,10 +1335,16 @@ def plot_pareto_snapshots_evoxbench_subplots(
             if len(f1_grid) == 0:
                 continue
             valid = ~np.isnan(f2_att)
-            ax.scatter(f1_grid[valid], f2_att[valid],
-                       c=checkpoint_palette[ci], s=3 * font_scale ** 2, marker='.',
-                       label=f'gen\u202f{cgen} ({cgen * pop_size}\u202fevals)',
-                       zorder=4 - ci)
+            if attainment_type == 'lines':
+                ax.plot(f1_grid[valid], f2_att[valid],
+                        color=checkpoint_palette[ci], lw=1.5 * font_scale,
+                        label=f'gen\u202f{cgen} ({cgen * pop_size}\u202fevals)',
+                        zorder=4 - ci)
+            else:
+                ax.scatter(f1_grid[valid], f2_att[valid],
+                           c=checkpoint_palette[ci], s=3 * font_scale ** 2, marker='.',
+                           label=f'gen\u202f{cgen} ({cgen * pop_size}\u202fevals)',
+                           zorder=4 - ci)
 
         ax.set_title(label)
         ax.grid(True, alpha=0.25)
@@ -1356,17 +1355,14 @@ def plot_pareto_snapshots_evoxbench_subplots(
         axes[row][col].tick_params(left=False, bottom=False,
                                    labelleft=False, labelbottom=False)
 
-<<<<<<< HEAD
-    if axis_limits is not None:
-        axes[0][0].set_xlim(axis_limits)
-        axes[0][0].set_ylim(axis_limits)
-
-    fig.supxlabel(xlabel, fontsize=9 * font_scale, y=0.10)
-    fig.supylabel(ylabel, fontsize=9 * font_scale)
-=======
     fig.supxlabel(ylabel, fontsize=9 * font_scale, y=0.10)
     fig.supylabel(xlabel, fontsize=9 * font_scale)
->>>>>>> b959fe501e13ab89787502ec06a67afcef916429
+
+    if axis_limits is not None:
+        for row in axes:
+            for a in row:
+                a.set_xlim(axis_limits)
+                a.set_ylim(axis_limits)
 
     ref_ax = axes[0][0]
     handles, leg_labels = ref_ax.get_legend_handles_labels()
