@@ -197,6 +197,67 @@ def _save_cache(results_root: str, approx_info: dict) -> None:
 
 # ─── public API ───────────────────────────────────────────────────────────────
 
+def compute_empirical_norm_bounds(
+    methods: list,
+    results_root: str,
+) -> dict | None:
+    """Derive per-objective normalization bounds from the raw data.
+
+    Pools every finite value in ``test_obj_archive[-1]`` (final cumulative
+    non-dominated archive, ``true_eval=True``) across all methods and seeds
+    under *results_root*, and returns the per-objective min/max.
+
+    Parameters
+    ----------
+    methods :
+        List of method directory names inside *results_root*.
+    results_root :
+        The ``B{budget}_P{pop_size}`` directory containing per-method folders.
+
+    Returns
+    -------
+    ``{'obj_min': (n_obj,) ndarray, 'obj_max': (n_obj,) ndarray}``
+    or ``None`` if no data could be loaded.
+    """
+    all_points: list[np.ndarray] = []
+    for method in methods:
+        seed_dir = os.path.join(results_root, method)
+        for F, _ in _load_final_test_archive(seed_dir):
+            # F may contain non-finite values (raw mode may have NaN for
+            # architectures that could not be evaluated); keep finite rows only.
+            finite = np.isfinite(F).all(axis=1)
+            F = F[finite]
+            if len(F) > 0:
+                all_points.append(F)
+
+    if not all_points:
+        print(
+            f'  [convergence] WARN: no data found in {results_root}; '
+            'cannot compute empirical norm bounds.'
+        )
+        return None
+
+    combined = np.vstack(all_points)
+    obj_min  = combined.min(axis=0)
+    obj_max  = combined.max(axis=0)
+    # Guard against degenerate case where all values are identical
+    flat = (obj_max - obj_min) < 1e-12
+    obj_max[flat] = obj_min[flat] + 1.0
+    print(
+        f'  [convergence] Empirical norm bounds from {results_root}:\n'
+        f'                obj_min = {np.round(obj_min, 4)}\n'
+        f'                obj_max = {np.round(obj_max, 4)}'
+    )
+    return {'obj_min': obj_min, 'obj_max': obj_max}
+
+
+def _apply_norm_bounds(F: np.ndarray, norm_bounds: dict) -> np.ndarray:
+    """Linearly scale *F* into [0, 1] using pre-computed empirical bounds."""
+    obj_min = norm_bounds['obj_min']
+    obj_max = norm_bounds['obj_max']
+    return (F - obj_min) / (obj_max - obj_min)
+
+
 def build_pareto_approximation(
     suite: str,
     pid: int,
@@ -204,37 +265,65 @@ def build_pareto_approximation(
     pop_size: int,
     n_gen: int,
     force_rebuild: bool = False,
+    norm_bounds: dict | None = None,
+    results_root: str | None = None,
 ) -> dict | None:
     """Build (or load from cache) the combined Pareto approximation for one PID.
 
-    Pools ``test_obj_archive[-1]`` (final cumulative ND archive, true-eval,
-    benchmark-normalized) from every seed file of every method, computes the
-    non-dominated front of the union, and derives nadir and reference point.
+    Pools ``test_obj_archive[-1]`` (final cumulative ND archive, true-eval)
+    from every seed file of every method, optionally normalizes with
+    *norm_bounds*, computes the non-dominated front of the union, and derives
+    nadir and reference point.
 
     Parameters
     ----------
     suite, pid, pop_size, n_gen
-        Identify which results folder to use.
+        Identify which results folder to use (ignored when *results_root* is
+        given explicitly).
     methods
         List of method directory names inside the results root.
     force_rebuild
         If ``True``, ignore any on-disk cache and rebuild from scratch.
+    norm_bounds
+        When provided (``{'obj_min': array, 'obj_max': array}`` from
+        :func:`compute_empirical_norm_bounds`), each loaded archive is
+        linearly rescaled into ``[0, 1]`` before the Pareto front is computed.
+        The bounds are stored inside the returned dict and the on-disk cache.
+    results_root
+        Override the folder derived from *suite/pid/pop_size/n_gen*.  Useful
+        when results live under a non-standard root (e.g. ``evoxbench_no_norm``).
 
     Returns
     -------
     dict with keys:
         ``pareto_approx`` — ``(n_pts, n_obj)`` ndarray, the combined ND front.
         ``nadir``         — ``(n_obj,)`` per-objective maximum of the PF.
-        ``ref_point``     — ``(n_obj,)`` reference point = ``max(nadir*1.05, nadir+1e-6)``.
+        ``ref_point``     — ``(n_obj,)`` reference point.
         ``sources``       — list of ``{method, seed_file, mtime}`` dicts.
+        ``norm_bounds``   — the *norm_bounds* dict used (or ``None``).
     Returns ``None`` if no data could be loaded from any method/seed.
     """
-    root = _results_root(suite, pid, pop_size, n_gen)
+    root = results_root if results_root is not None else _results_root(suite, pid, pop_size, n_gen)
 
     if not force_rebuild:
         cached = _load_cache(root)
         if cached is not None:
-            return cached
+            # Invalidate if norm_bounds mode has changed (None ↔ provided)
+            cached_nb = cached.get('norm_bounds')
+            nb_match = (
+                (norm_bounds is None and cached_nb is None)
+                or (
+                    norm_bounds is not None
+                    and cached_nb is not None
+                    and np.allclose(cached_nb['obj_min'], norm_bounds['obj_min'])
+                    and np.allclose(cached_nb['obj_max'], norm_bounds['obj_max'])
+                )
+            )
+            if nb_match:
+                return cached
+            print(
+                '  [convergence] Cache stale: norm_bounds have changed; rebuilding.'
+            )
 
     all_points: list[np.ndarray] = []
     sources: list[dict] = []
@@ -242,6 +331,12 @@ def build_pareto_approximation(
     for method in methods:
         seed_dir = os.path.join(root, method)
         for F, abs_path in _load_final_test_archive(seed_dir):
+            if norm_bounds is not None:
+                finite = np.isfinite(F).all(axis=1)
+                F = F[finite]
+                if len(F) == 0:
+                    continue
+                F = _apply_norm_bounds(F, norm_bounds)
             all_points.append(F)
             sources.append({
                 'method':    method,
@@ -285,6 +380,7 @@ def build_pareto_approximation(
         'nadir':         nadir,
         'ref_point':     ref_point,
         'sources':       sources,
+        'norm_bounds':   norm_bounds,
     }
     _save_cache(root, result)
     return result
@@ -296,6 +392,7 @@ def recompute_indicator_trajectories(
     results_root: str,
     ref_point: np.ndarray,
     pareto_approx: np.ndarray,
+    norm_bounds: dict | None = None,
 ) -> tuple | None:
     """Recompute HV / IGD+ trajectories using the shared reference / PF.
 
@@ -303,6 +400,10 @@ def recompute_indicator_trajectories(
     ``seed_*.pkl`` under ``results_root/method``, recomputes HV and IGD+
     at each generation using *ref_point* and *pareto_approx*, then
     aggregates over seeds.
+
+    When *norm_bounds* is provided, each generation's archive is linearly
+    rescaled into ``[0, 1]`` before computing indicators — use this for
+    runs that stored raw (un-normalized) objectives.
 
     Uses the same downsample / pad logic as
     ``plotter.load_indicator_trajectories`` so the result is directly
@@ -350,7 +451,17 @@ def recompute_indicator_trajectories(
                 prev_key = None
                 continue
             F_gen = np.asarray(F_gen, dtype=float)
-            F_gen = np.where(np.isfinite(F_gen), F_gen, 1.0)
+            if norm_bounds is not None:
+                finite = np.isfinite(F_gen).all(axis=1)
+                F_gen = F_gen[finite]
+                if len(F_gen) == 0:
+                    hv_series.append(0.0)
+                    igd_series.append(np.nan)
+                    prev_key = None
+                    continue
+                F_gen = _apply_norm_bounds(F_gen, norm_bounds)
+            else:
+                F_gen = np.where(np.isfinite(F_gen), F_gen, 1.0)
             if len(F_gen) == 0:
                 hv_series.append(0.0)
                 igd_series.append(np.nan)
@@ -410,15 +521,12 @@ def recompute_final_indicators(
     results_root: str,
     ref_point: np.ndarray,
     pareto_approx: np.ndarray,
+    norm_bounds: dict | None = None,
 ) -> dict | None:
     """Recompute final-generation HV / IGD+ using the shared reference / PF.
 
-    Loads only ``test_obj_archive[-1]`` from each seed (faster than the full
-    trajectory).  Intended for LaTeX table generation.
-
-    Returns
-    -------
-    ``{'hv': (mean, std), 'igd_plus': (mean, std)}`` or ``None`` if no data.
+    When *norm_bounds* is provided, each loaded archive is rescaled before
+    computing indicators (use for raw / un-normalized runs).
     """
     seed_dir = os.path.join(results_root, method)
     if not os.path.isdir(seed_dir):
@@ -429,7 +537,14 @@ def recompute_final_indicators(
 
     hvs, igds = [], []
     for F, _ in _load_final_test_archive(seed_dir):
-        F = np.where(np.isfinite(F), F, 1.0)
+        if norm_bounds is not None:
+            finite = np.isfinite(F).all(axis=1)
+            F = F[finite]
+            if len(F) == 0:
+                continue
+            F = _apply_norm_bounds(F, norm_bounds)
+        else:
+            F = np.where(np.isfinite(F), F, 1.0)
         if len(F) == 0:
             continue
         hvs.append(float(hv_ind(F)))
@@ -448,8 +563,12 @@ def recompute_final_indicators_seeds(
     results_root: str,
     ref_point: np.ndarray,
     pareto_approx: np.ndarray,
+    norm_bounds: dict | None = None,
 ) -> dict | None:
     """Like recompute_final_indicators but returns per-seed raw arrays.
+
+    When *norm_bounds* is provided, each loaded archive is rescaled before
+    computing indicators (use for raw / un-normalized runs).
 
     Returns
     -------
@@ -464,7 +583,14 @@ def recompute_final_indicators_seeds(
 
     hvs, igds = [], []
     for F, _ in _load_final_test_archive(seed_dir):
-        F = np.where(np.isfinite(F), F, 1.0)
+        if norm_bounds is not None:
+            finite = np.isfinite(F).all(axis=1)
+            F = F[finite]
+            if len(F) == 0:
+                continue
+            F = _apply_norm_bounds(F, norm_bounds)
+        else:
+            F = np.where(np.isfinite(F), F, 1.0)
         if len(F) == 0:
             continue
         hvs.append(float(hv_ind(F)))
@@ -485,6 +611,7 @@ def get_or_recompute_trajectories(
     n_gen: int,
     results_root: str,
     approx_info: dict,
+    norm_bounds: dict | None = None,
 ) -> tuple | None:
     """Return trajectory for *method*, serving from / updating the trajectory
     cache embedded in *approx_info*.
@@ -506,6 +633,9 @@ def get_or_recompute_trajectories(
     approx_info : dict
         The dict returned by :func:`build_pareto_approximation`.  Must
         contain ``ref_point`` and ``pareto_approx``.
+    norm_bounds : dict | None
+        When provided, raw objectives are rescaled before computing indicators.
+        See :func:`compute_empirical_norm_bounds`.
 
     Returns
     -------
@@ -519,6 +649,7 @@ def get_or_recompute_trajectories(
         method, n_gen, results_root,
         approx_info['ref_point'],
         approx_info['pareto_approx'],
+        norm_bounds=norm_bounds,
     )
     cache[method] = traj
     return traj

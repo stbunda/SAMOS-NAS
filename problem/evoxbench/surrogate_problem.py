@@ -38,6 +38,7 @@ class SurrogateProblemEvox(Problem):
         predict_obj_indices: list,
         real_obj_indices: list,
         benchmark,
+        no_norm: bool = False,
     ):
         ss = benchmark.search_space
         n_obj = len(predict_obj_indices) + len(real_obj_indices)
@@ -47,10 +48,11 @@ class SurrogateProblemEvox(Problem):
             xl=np.asarray(ss.lb, dtype=float),
             xu=np.asarray(ss.ub, dtype=float),
         )
-        self.surrogates         = surrogates
+        self.surrogates          = surrogates
         self.predict_obj_indices = predict_obj_indices
-        self.real_obj_indices   = real_obj_indices
-        self.benchmark          = benchmark
+        self.real_obj_indices    = real_obj_indices
+        self.benchmark           = benchmark
+        self.no_norm             = no_norm
 
     def _evaluate(self, X, out, *args, **kwargs):
         n     = len(X)
@@ -61,7 +63,7 @@ class SurrogateProblemEvox(Problem):
         if self.real_obj_indices:
             X_int    = np.round(X).astype(int)
             F_real   = self.benchmark.evaluate(X_int, true_eval=False)
-            if not self.benchmark.normalized_objectives:
+            if not self.no_norm and not self.benchmark.normalized_objectives:
                 F_real = self.benchmark.normalize(F_real)
             F_real   = np.where(np.isfinite(F_real), F_real, 1.0)
             for col, orig_idx in enumerate(self.real_obj_indices):

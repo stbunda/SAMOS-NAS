@@ -34,7 +34,7 @@ import numpy as np
 from scipy.stats import ranksums
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
-from analysis.convergence import build_pareto_approximation, recompute_final_indicators_seeds
+from analysis.convergence import build_pareto_approximation, recompute_final_indicators_seeds, compute_empirical_norm_bounds
 from problem.evoxbench.benchmark_meta import BENCHMARK_META
 
 # Search spaces backed by a full tabular database (no surrogate predictor needed).
@@ -43,7 +43,7 @@ _TABULAR_SEARCH_SPACES: frozenset = frozenset({'NB101', 'NATS', 'NB201'})
 
 # ─── canonical method list ────────────────────────────────────────────────────
 
-_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 'samos-xgb']
+_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 'ssa-nsga2', 'samos-xgb']
 
 _COLUMN_LABELS = {
     'random':    'Random',
@@ -51,6 +51,7 @@ _COLUMN_LABELS = {
     'mosmac':    'MO-SMAC',
     'nsga2':     'NSGA-II',
     'gpsaf':     'GPSAF',
+    'ssa-nsga2': 'SSA-NSGA-II',
     'samos-xgb': 'SAMOS',
 }
 
@@ -61,6 +62,7 @@ _WFG_FOLDER = {
     'mosmac':    'mosmac',
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
+    'ssa-nsga2': 'ssa-nsga2',
     'samos-xgb': 'samos-xgb-i200-g20',
 }
 
@@ -71,6 +73,7 @@ _EVOX_FOLDER = {
     'mosmac':    'mosmac',
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
+    'ssa-nsga2': 'ssa-nsga2',
     'samos-xgb': 'samos-xgb',
 }
 
@@ -85,9 +88,34 @@ def _results_root_wfg(problem: str, experiment_name: str, n_gen: int, pop_size: 
                         f'B{n_gen * pop_size}_P{pop_size}')
 
 
-def _results_root_evox(suite: str, pid: int, n_gen: int, pop_size: int) -> str:
-    return os.path.join('results', 'evoxbench', suite,
-                        f'pid{pid}', f'B{n_gen * pop_size}_P{pop_size}')
+def _results_root_evox(suite: str, pid: int, n_gen: int, pop_size: int,
+                       root: str = 'results/evoxbench') -> str:
+    return os.path.join(root, suite, f'pid{pid}', f'B{n_gen * pop_size}_P{pop_size}')
+
+
+def _detect_available_evox_methods(
+    root: str,
+    suites: list,
+    pids: list,
+    n_gen: int,
+    pop_size: int,
+) -> list:
+    """Return the ordered subset of _METHODS that have at least one seed file under *root*."""
+    available: set = set()
+    for suite in suites:
+        for pid in pids:
+            pid_root = _results_root_evox(suite, pid, n_gen, pop_size, root=root)
+            for key in _METHODS:
+                if key in available:
+                    continue
+                seed_dir = os.path.join(pid_root, _EVOX_FOLDER[key])
+                if os.path.isdir(seed_dir) and any(
+                    f.endswith('.pkl') for f in os.listdir(seed_dir)
+                ):
+                    available.add(key)
+    detected = [k for k in _METHODS if k in available]
+    print(f'  [evox_methods] Detected in {root}: {detected}')
+    return detected
 
 
 # ─── EvoXBench HV cache ──────────────────────────────────────────────────────
@@ -269,6 +297,9 @@ def _collect_evox_data(
     n_gen: int,
     pop_size: int,
     force: bool = False,
+    evox_root: str = 'results/evoxbench',
+    no_norm: bool = False,
+    methods: list | None = None,
 ) -> dict:
     """Return ``{pid: {method_key: ndarray | None}}`` for an EvoXBench suite.
 
@@ -291,12 +322,17 @@ def _collect_evox_data(
         Ignore the on-disk cache and recompute everything.
     """
     result: dict = {}
-    evox_folders = [_EVOX_FOLDER[k] for k in _METHODS]
+    methods_list = methods if methods is not None else _METHODS
+    evox_folders = [_EVOX_FOLDER[k] for k in methods_list]
     suite_tag    = suite.upper()
 
     for pid in pids:
-        root   = _results_root_evox(suite, pid, n_gen, pop_size)
-        approx = build_pareto_approximation(suite, pid, evox_folders, pop_size, n_gen)
+        root          = _results_root_evox(suite, pid, n_gen, pop_size, root=evox_root)
+        norm_bounds   = compute_empirical_norm_bounds(evox_folders, root) if no_norm else None
+        approx        = build_pareto_approximation(
+            suite, pid, evox_folders, pop_size, n_gen,
+            norm_bounds=norm_bounds, results_root=root,
+        )
 
         # ── resolve cache ──────────────────────────────────────────────────
         approx_path = os.path.join(root, 'pareto_approx.pkl')
@@ -306,7 +342,7 @@ def _collect_evox_data(
         updated: dict = {}   # accumulates entries to (re)write to cache
 
         pid_data: dict = {}
-        for key in _METHODS:
+        for key in methods_list:
             folder = _EVOX_FOLDER[key]
 
             # ── cache hit ─────────────────────────────────────────────────
@@ -331,6 +367,7 @@ def _collect_evox_data(
                     folder, root,
                     approx['ref_point'],
                     approx['pareto_approx'],
+                    norm_bounds=norm_bounds,
                 )
                 metrics = seeds   # {'hv': arr, 'igd_plus': arr} or None
             else:
@@ -409,6 +446,7 @@ def _render_section(
     row_keys: list,
     metric: str = 'hv',
     higher_is_better: bool = True,
+    methods: list | None = None,
 ) -> None:
     """Append one benchmark section (a header row + data rows) to *lines*.
 
@@ -430,9 +468,11 @@ def _render_section(
     higher_is_better
         ``True`` for HV (bold = max), ``False`` for IGD+ (bold = min).
     """
+    _m = methods if methods is not None else _METHODS
+    n_cols = 1 + len(_m)
     lines.append(r'\midrule')
     lines.append(
-        r'\multicolumn{7}{l}{\small\textit{' + section_header + r'}} \\'
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\small\textit{' + section_header + r'}} \\'
     )
     lines.append(r'\midrule')
 
@@ -448,15 +488,16 @@ def _render_section(
             if len(arr) > 0 and np.isfinite(arr).any():
                 avail[k] = arr
 
-        # Identify best method
+        # Identify best method (only among displayed methods)
+        avail_m = {k: avail[k] for k in _m if k in avail}
         if higher_is_better:
-            best_key = max(avail, key=lambda k: float(np.nanmean(avail[k]))) if avail else None
+            best_key = max(avail_m, key=lambda k: float(np.nanmean(avail_m[k]))) if avail_m else None
         else:
-            best_key = min(avail, key=lambda k: float(np.nanmean(avail[k]))) if avail else None
+            best_key = min(avail_m, key=lambda k: float(np.nanmean(avail_m[k]))) if avail_m else None
         ref_arr = avail.get(_WILCOXON_REF)
 
         cells = [row_label]
-        for key in _METHODS:
+        for key in _m:
             arr = avail.get(key)
             if arr is None:
                 cells.append('--')
@@ -483,6 +524,8 @@ def generate_combined_hv_table(
     n_obj_wfg: int = 2,
     n_var_wfg: int = 12,
     metric: str = 'hv',
+    methods: list | None = None,
+    caption_note: str = '',
 ) -> None:
     """Write a combined HV or IGD+ booktabs LaTeX table to *out_path*.
 
@@ -505,10 +548,13 @@ def generate_combined_hv_table(
         'igd_plus': (r'IGD\textsuperscript{+}',        'tab:combined_igd_plus', False),
     }
     metric_name, label_key, higher_is_better = _METRIC_META[metric]
+    _m       = methods if methods is not None else _METHODS
+    n_cols   = 1 + len(_m)
+    col_spec = 'l @{\\hspace{2em}} ' + ' '.join(['r'] * len(_m))
 
     col_header = ' & '.join(
         [r'\textbf{Problem}']
-        + [r'\textbf{' + _COLUMN_LABELS[k] + r'}' for k in _METHODS]
+        + [r'\textbf{' + _COLUMN_LABELS[k] + r'}' for k in _m]
     )
 
     lines = [
@@ -520,12 +566,14 @@ def generate_combined_hv_table(
             r'WFG\,1\textendash{}9 , C-10\,MOP\,1\textendash{}9, and IN-1K\,MOP\,1\textendash{}9. '
             r'\textbf{Bold}: best per problem. '
             r'Wilcoxon rank-sum vs. SAMOS, $p{<}0.05$: '
-            r'$(+)$\,better, $(-)$\,worse, $(\approx)$\,not significant.}'
+            r'$(+)$\,better, $(-)$\,worse, $(\approx)$\,not significant.'
+            + (' ' + caption_note if caption_note else '')
+            + r'}'
         ),
         r'\label{' + label_key + r'}',
         r'\resizebox{\linewidth}{!}{%',
         r'\setlength\tabcolsep{5pt}%',
-        r'\begin{tabular}{l @{\hspace{2em}} r r r r r r}',
+        r'\begin{tabular}{' + col_spec + r'}',
         r'\toprule',
         col_header + r' \\',
     ]
@@ -539,6 +587,7 @@ def generate_combined_hv_table(
         row_keys=wfg_problems,
         metric=metric,
         higher_is_better=higher_is_better,
+        methods=_m,
     )
 
     # C-10 MOP section
@@ -557,6 +606,7 @@ def generate_combined_hv_table(
         row_keys=pids,
         metric=metric,
         higher_is_better=higher_is_better,
+        methods=_m,
     )
 
     # IN-1K MOP section
@@ -575,14 +625,15 @@ def generate_combined_hv_table(
         row_keys=pids,
         metric=metric,
         higher_is_better=higher_is_better,
+        methods=_m,
     )
 
     # Footnote row (before \bottomrule, inside the tabular body)
     lines += [
         r'\midrule',
-        r'\multicolumn{7}{l}{\footnotesize $(+)$: significantly better than SAMOS} \\',
-        r'\multicolumn{7}{l}{\footnotesize $(\approx)$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
-        r'\multicolumn{7}{l}{\footnotesize $(-)$: significantly worse} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $(+)$: significantly better than SAMOS} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $(\approx)$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $(-)$: significantly worse} \\',
         # r'\bottomrule',
         r'\end{tabular}',
         r'}',
@@ -642,6 +693,7 @@ def _load_final_archives_evox(
     pids: list,
     n_gen: int,
     pop_size: int,
+    root: str = 'results/evoxbench',
 ) -> dict:
     """Load per-seed final test-objective archives for every (pid, method).
 
@@ -658,11 +710,11 @@ def _load_final_archives_evox(
     """
     result: dict = {}
     for pid in pids:
-        root     = _results_root_evox(suite, pid, n_gen, pop_size)
+        pid_root = _results_root_evox(suite, pid, n_gen, pop_size, root=root)
         pid_data: dict = {}
         for key in _METHODS:
             folder   = _EVOX_FOLDER[key]
-            seed_dir = os.path.join(root, folder)
+            seed_dir = os.path.join(pid_root, folder)
             archives: list = []
             if not os.path.isdir(seed_dir):
                 pid_data[key] = archives
@@ -727,6 +779,7 @@ def _compute_rank_pareto_counts(
     pop_size: int,
     n_layers: int = 5,
     reference_fronts: dict | None = None,
+    root: str = 'results/evoxbench',
 ) -> dict:
     """For each (pid, method, seed) count how many points fall in each ND layer.
 
@@ -758,7 +811,7 @@ def _compute_rank_pareto_counts(
         ``counts[s, l]`` = number of points seed *s* contributed to layer *l+1*.
     """
     _REF_TAG = '__ref__'
-    archives = _load_final_archives_evox(suite, pids, n_gen, pop_size)
+    archives = _load_final_archives_evox(suite, pids, n_gen, pop_size, root=root)
     result: dict = {}
 
     for pid in pids:
@@ -1225,6 +1278,18 @@ def main(args) -> None:
         print(f'Skipping EvoXBench PIDs: {sorted(skip_set)}')
     n_var_wfg    = 2 * (args.n_obj_wfg - 1) + 10
 
+    evox_methods = None
+    caption_note = ''
+    if args.evox_no_norm:
+        evox_methods = _detect_available_evox_methods(
+            args.evox_root, ['c10mop', 'in1kmop'], pids, args.evox_n_gen, args.evox_pop,
+        )
+        caption_note = (
+            r'C-10 MOP and IN-1K MOP values use empirically derived normalization bounds '
+            r'(pooled min/max from all runs; evoxbench built-in bounds are inaccurate '
+            r'for DARTS and MobileNetV3 search spaces).'
+        )
+
     print('=' * 60)
     print('  Collecting WFG data ...')
     print('=' * 60)
@@ -1235,12 +1300,16 @@ def main(args) -> None:
     print('\n' + '=' * 60)
     print('  Collecting C-10 MOP data ...')
     print('=' * 60)
-    c10_data = _collect_evox_data('c10mop', pids, args.evox_n_gen, args.evox_pop, force=args.force)
+    c10_data = _collect_evox_data('c10mop', pids, args.evox_n_gen, args.evox_pop,
+                                   force=args.force, evox_root=args.evox_root,
+                                   no_norm=args.evox_no_norm, methods=evox_methods)
 
     print('\n' + '=' * 60)
     print('  Collecting IN-1K MOP data ...')
     print('=' * 60)
-    in1k_data = _collect_evox_data('in1kmop', pids, args.evox_n_gen, args.evox_pop, force=args.force)
+    in1k_data = _collect_evox_data('in1kmop', pids, args.evox_n_gen, args.evox_pop,
+                                    force=args.force, evox_root=args.evox_root,
+                                    no_norm=args.evox_no_norm, methods=evox_methods)
 
     def _out_path_for(m: str) -> str:
         """Derive the output path for a given metric from ``args.out``."""
@@ -1263,6 +1332,8 @@ def main(args) -> None:
             n_obj_wfg=args.n_obj_wfg,
             n_var_wfg=n_var_wfg,
             metric=m,
+            methods=evox_methods,
+            caption_note=caption_note,
         )
 
     # ── optional rank-Pareto analysis ─────────────────────────────────────────
@@ -1279,6 +1350,7 @@ def main(args) -> None:
             n_gen    = args.evox_n_gen,
             pop_size = args.evox_pop,
             n_layers = args.rank_pareto_n_layers,
+            root     = args.evox_root,
         )
         generate_rank_pareto_tables(
             out_path  = args.rank_pareto_out,
@@ -1308,6 +1380,7 @@ def main(args) -> None:
             pop_size         = args.evox_pop,
             n_layers         = args.rank_pareto_n_layers,
             reference_fronts = true_pfs,
+            root             = args.evox_root,
         )
         generate_rank_pareto_tables(
             out_path    = args.rank_pareto_c10_out,
@@ -1337,6 +1410,7 @@ def main(args) -> None:
                 pop_size         = args.evox_pop,
                 n_layers         = args.rank_pareto_n_layers,
                 reference_fronts = true_pfs,
+                root             = args.evox_root,
             )
         # reuse already-computed in1k data; else fetch fresh
         if not args.rank_pareto:
@@ -1346,6 +1420,7 @@ def main(args) -> None:
                 n_gen    = args.evox_n_gen,
                 pop_size = args.evox_pop,
                 n_layers = args.rank_pareto_n_layers,
+                root     = args.evox_root,
             )
         else:
             rank_data_in1k_comb = rank_data
@@ -1413,6 +1488,22 @@ if __name__ == '__main__':
                         help='Number of objectives for WFG (used in caption).')
     parser.add_argument('--force', action='store_true',
                         help='Ignore the indicators cache and recompute all EvoXBench values.')
+    parser.add_argument(
+        '--evox_root', '--evox-root',
+        default='results/evoxbench',
+        dest='evox_root',
+        metavar='PATH',
+        help='Root folder for EvoXBench results (default: results/evoxbench).',
+    )
+    parser.add_argument(
+        '--evox_no_norm', '--evox-no-norm',
+        action='store_true',
+        dest='evox_no_norm',
+        help=(
+            'Treat EvoXBench results as raw (no_norm mode): derive empirical '
+            'normalization bounds post-hoc from the pooled final archives.'
+        ),
+    )
     parser.add_argument(
         '--metric',
         choices=['hv', 'igd_plus', 'both'],

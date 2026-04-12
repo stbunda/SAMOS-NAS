@@ -35,7 +35,7 @@ from problem.pymoo.surrogate_problem import SurrogateProblemMOO
 from strategy.algorithm.algorithms import RandomGA
 from strategy.algorithm.gpsaf import GPSAF, SklearnGPSAF
 from strategy.algorithm.ssansga2 import SSANSGA2, SklearnSSANSGA2
-from strategy.algorithm.cobra import run_cobra
+# from strategy.algorithm.cobra import run_cobra
 from strategy.algorithm.parego import run_parego
 from strategy.callbacks import PymooBenchmarkCallback
 from strategy.surrogate.models import RFR, XGBoost
