@@ -308,7 +308,22 @@ def build_pareto_approximation(
     if not force_rebuild:
         cached = _load_cache(root)
         if cached is not None:
-            return cached
+            # Invalidate if norm_bounds mode has changed (None ↔ provided)
+            cached_nb = cached.get('norm_bounds')
+            nb_match = (
+                (norm_bounds is None and cached_nb is None)
+                or (
+                    norm_bounds is not None
+                    and cached_nb is not None
+                    and np.allclose(cached_nb['obj_min'], norm_bounds['obj_min'])
+                    and np.allclose(cached_nb['obj_max'], norm_bounds['obj_max'])
+                )
+            )
+            if nb_match:
+                return cached
+            print(
+                '  [convergence] Cache stale: norm_bounds have changed; rebuilding.'
+            )
 
     all_points: list[np.ndarray] = []
     sources: list[dict] = []
