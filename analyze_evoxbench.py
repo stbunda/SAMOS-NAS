@@ -759,7 +759,7 @@ def main(args) -> None:
                 )
 
         # ── attainment surface plots ───────────────────────────────────────────
-        if args.attainment:
+        if args.attainment or args.test_attainment:
             if n_obj != 2:
                 print(f'  [pid{pid}] Skipping attainment plot (n_obj={n_obj}, only 2-obj supported)')
             else:
@@ -779,54 +779,108 @@ def main(args) -> None:
                 if n_var is not None:
                     pid_label += f'  |  {n_var} vars'
 
-                overlay_out  = os.path.join(root, f'{suite}_pid{pid}_attainment_overlay.png')
-                subplots_out = os.path.join(root, f'{suite}_pid{pid}_attainment_subplots.png')
-
                 _xlabel, _ylabel = get_obj_labels(suite, pid)
 
-                plot_pareto_snapshots_evoxbench_overlay(
-                    methods=methods,
-                    n_gen=n_gen,
-                    pop_size=pop_size,
-                    pf_norm=pf_norm,
-                    out_path=overlay_out,
-                    results_root=root,
-                    checkpoints_gen=args.checkpoints_gen,
-                    colours=_EVOX_COLOURS,
-                    labels=_EVOX_LABELS,
-                    title=(
-                        f'{pid_label}  \n  50\u202f% attainment surfaces'
-                        f' (gen\u202f{args.checkpoints_gen[-1]},'
-                        f' {args.checkpoints_gen[-1] * pop_size}\u202fevals)'
-                    ),
-                    xlabel=_xlabel,
-                    ylabel=_ylabel,
-                    font_scale=args.font_scale,
-                    axis_limits=args.attainment_limits,
-                    attainment_type=args.attainment_type,
-                )
+                if args.attainment:
+                    overlay_out  = os.path.join(root, f'{suite}_pid{pid}_attainment_overlay.png')
+                    subplots_out = os.path.join(root, f'{suite}_pid{pid}_attainment_subplots.png')
 
-                plot_pareto_snapshots_evoxbench_subplots(
-                    methods=methods,
-                    n_gen=n_gen,
-                    pop_size=pop_size,
-                    pf_norm=pf_norm,
-                    out_path=subplots_out,
-                    results_root=root,
-                    checkpoints_gen=args.checkpoints_gen,
-                    colours=_EVOX_COLOURS,
-                    labels=_EVOX_LABELS,
-                    title=(
-                        f'{pid_label}  \n  50\u202f% attainment surfaces'
-                        f' (pop={pop_size}, checkpoints:'
-                        f' {", ".join(str(g) for g in args.checkpoints_gen)} gen)'
-                    ),
-                    xlabel=_xlabel,
-                    ylabel=_ylabel,
-                    font_scale=args.font_scale,
-                    axis_limits=args.attainment_limits,
-                    attainment_type=args.attainment_type,
-                )
+                    plot_pareto_snapshots_evoxbench_overlay(
+                        methods=methods,
+                        n_gen=n_gen,
+                        pop_size=pop_size,
+                        pf_norm=pf_norm,
+                        out_path=overlay_out,
+                        results_root=root,
+                        checkpoints_gen=args.checkpoints_gen,
+                        colours=_EVOX_COLOURS,
+                        labels=_EVOX_LABELS,
+                        title=(
+                            f'{pid_label}  \n  50\u202f% attainment surfaces'
+                            f' (gen\u202f{args.checkpoints_gen[-1]},'
+                            f' {args.checkpoints_gen[-1] * pop_size}\u202fevals)'
+                        ),
+                        xlabel=_xlabel,
+                        ylabel=_ylabel,
+                        font_scale=args.font_scale,
+                        axis_limits=args.attainment_limits,
+                        attainment_type=args.attainment_type,
+                        use_test_archive=False,
+                    )
+
+                    plot_pareto_snapshots_evoxbench_subplots(
+                        methods=methods,
+                        n_gen=n_gen,
+                        pop_size=pop_size,
+                        pf_norm=pf_norm,
+                        out_path=subplots_out,
+                        results_root=root,
+                        checkpoints_gen=args.checkpoints_gen,
+                        colours=_EVOX_COLOURS,
+                        labels=_EVOX_LABELS,
+                        title=(
+                            f'{pid_label}  \n  50\u202f% attainment surfaces'
+                            f' (pop={pop_size}, checkpoints:'
+                            f' {", ".join(str(g) for g in args.checkpoints_gen)} gen)'
+                        ),
+                        xlabel=_xlabel,
+                        ylabel=_ylabel,
+                        font_scale=args.font_scale,
+                        axis_limits=args.attainment_limits,
+                        attainment_type=args.attainment_type,
+                        use_test_archive=False,
+                    )
+
+                if args.test_attainment:
+                    # Attainment surfaces built from test_obj_archive — the
+                    # cumulative non-dominated archive re-evaluated with
+                    # true_eval=True at each generation checkpoint.
+                    t_overlay_out  = os.path.join(root, f'{suite}_pid{pid}_test_attainment_overlay.png')
+                    t_subplots_out = os.path.join(root, f'{suite}_pid{pid}_test_attainment_subplots.png')
+
+                    plot_pareto_snapshots_evoxbench_overlay(
+                        methods=methods,
+                        n_gen=n_gen,
+                        pop_size=pop_size,
+                        pf_norm=pf_norm,
+                        out_path=t_overlay_out,
+                        results_root=root,
+                        checkpoints_gen=args.checkpoints_gen,
+                        colours=_EVOX_COLOURS,
+                        labels=_EVOX_LABELS,
+                        title=(
+                            f'{pid_label}  \n  50\u202f% attainment surfaces (test objectives)'
+                            f' (gen\u202f{args.checkpoints_gen[-1]},'
+                            f' {args.checkpoints_gen[-1] * pop_size}\u202fevals)'
+                        ),
+                        xlabel=_xlabel,
+                        ylabel=_ylabel,
+                        font_scale=args.font_scale,
+                        axis_limits=args.attainment_limits,
+                        attainment_type=args.attainment_type,
+                    )
+
+                    plot_pareto_snapshots_evoxbench_subplots(
+                        methods=methods,
+                        n_gen=n_gen,
+                        pop_size=pop_size,
+                        pf_norm=pf_norm,
+                        out_path=t_subplots_out,
+                        results_root=root,
+                        checkpoints_gen=args.checkpoints_gen,
+                        colours=_EVOX_COLOURS,
+                        labels=_EVOX_LABELS,
+                        title=(
+                            f'{pid_label}  \n  50\u202f% attainment surfaces (test objectives)'
+                            f' (pop={pop_size}, checkpoints:'
+                            f' {", ".join(str(g) for g in args.checkpoints_gen)} gen)'
+                        ),
+                        xlabel=_xlabel,
+                        ylabel=_ylabel,
+                        font_scale=args.font_scale,
+                        axis_limits=args.attainment_limits,
+                        attainment_type=args.attainment_type,
+                    )
 
     # ── LaTeX table ───────────────────────────────────────────────────────────
     if args.latex_table:
@@ -887,6 +941,12 @@ if __name__ == '__main__':
                         help='Generate the LaTeX summary table')
     parser.add_argument('--attainment', action='store_true',
                         help='Generate 50%% attainment surface plots (2-obj PIDs only)')
+    parser.add_argument('--test_attainment', '--test-attainment', action='store_true',
+                        dest='test_attainment',
+                        help='Generate 50%% attainment surface plots from test_obj_archive '
+                             '(true test-set evaluations; 2-obj PIDs only). '
+                             'Outputs *_test_attainment_overlay.png and '
+                             '*_test_attainment_subplots.png alongside convergence results.')
     parser.add_argument('--checkpoints_gen', '--checkpoints-gen', type=int, nargs='+',
                         default=[15, 30, 45, 60], dest='checkpoints_gen',
                         help='Generation checkpoints for attainment surface plots (default: 15 30 45 60)')

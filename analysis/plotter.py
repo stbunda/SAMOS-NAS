@@ -1109,16 +1109,23 @@ def plot_pareto_snapshots(
 # ─── evoxbench 50 % attainment surfaces ──────────────────────────────────────
 
 def _load_nd_fronts_evoxbench_at_gen(method: str, gen_idx: int,
-                                     results_root: str) -> list:
+                                     results_root: str,
+                                     use_test_archive: bool = True) -> list:
     """Return per-seed 2-D fronts from evoxbench pkl files at a given generation.
 
-    Reads ``test_obj_archive[gen_idx]`` from each ``seed_*.pkl`` in
-    ``results_root/method/``.  That field is already non-dominated and
-    normalised by the callback, so it is used as-is.
+    Parameters
+    ----------
+    use_test_archive : bool
+        If ``True`` (default), reads ``test_obj_archive[gen_idx]`` — the
+        cumulative non-dominated archive re-evaluated with true test
+        objectives.  If ``False``, reads the cumulative non-dominated
+        front of all ``obj_pop[0..gen_idx]`` entries (search-phase
+        population objectives, which may be surrogate estimates for SAMOS).
 
     Returns a list of (n_nd, 2) np.ndarray — one per seed, first two
-    objectives only.  Seeds with missing or empty archives are skipped.
+    objectives only.  Seeds with missing or empty data are skipped.
     """
+    from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
     seed_dir = os.path.join(results_root, method)
     if not os.path.isdir(seed_dir):
         return []
@@ -1132,14 +1139,29 @@ def _load_nd_fronts_evoxbench_at_gen(method: str, gen_idx: int,
             except Exception as e:
                 print(f'  [WARN] Failed to load {pkl_file}: {e}')
                 continue
-        archive = data.get('test_obj_archive', [])
-        if not archive:
-            continue
-        idx = min(gen_idx, len(archive) - 1)
-        F = np.asarray(archive[idx])
-        if F.ndim != 2 or F.shape[0] == 0 or F.shape[1] < 2:
-            continue
-        fronts.append(F[:, :2])
+        if use_test_archive:
+            archive = data.get('test_obj_archive', [])
+            if not archive:
+                continue
+            idx = min(gen_idx, len(archive) - 1)
+            F = np.asarray(archive[idx])
+            if F.ndim != 2 or F.shape[0] == 0 or F.shape[1] < 2:
+                continue
+            fronts.append(F[:, :2])
+        else:
+            obj_pop = data.get('obj_pop', [])
+            if not obj_pop:
+                continue
+            idx = min(gen_idx, len(obj_pop) - 1)
+            chunks = [np.asarray(obj_pop[g]) for g in range(idx + 1)
+                      if len(obj_pop[g]) > 0]
+            if not chunks:
+                continue
+            F = np.vstack(chunks)
+            if F.ndim != 2 or F.shape[0] == 0 or F.shape[1] < 2:
+                continue
+            nd_idx = NonDominatedSorting().do(F, only_non_dominated_front=True)
+            fronts.append(F[nd_idx][:, :2])
     return fronts
 
 
@@ -1159,6 +1181,7 @@ def plot_pareto_snapshots_evoxbench_overlay(
     font_scale: float = 1.0,
     axis_limits: list = None,
     attainment_type: str = 'lines',
+    use_test_archive: bool = True,
 ):
     """Single-axes 50 % attainment surface overlay for evoxbench 2-obj problems.
 
@@ -1178,6 +1201,9 @@ def plot_pareto_snapshots_evoxbench_overlay(
     xlabel          : x-axis label (default: '$f_1$')
     ylabel          : y-axis label (default: '$f_2$')
     font_scale      : multiplier applied to all font sizes (default: 1.0)
+    use_test_archive : if ``True`` (default), reads ``test_obj_archive`` (true
+                       test objectives); if ``False``, reads the cumulative ND
+                       front of ``obj_pop`` (search-phase objectives).
     """
     if checkpoints_gen is None:
         checkpoints_gen = [15, 30, 45, 60]
@@ -1205,7 +1231,8 @@ def plot_pareto_snapshots_evoxbench_overlay(
 
     for method in methods:
         colour, label = _resolve_style(method, _colours, _labels)
-        fronts = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root)
+        fronts = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root,
+                                                   use_test_archive=use_test_archive)
         if not fronts:
             continue
         f1_grid, f2_att = compute_attainment_surface([f[:, [1, 0]] for f in fronts])
@@ -1263,6 +1290,7 @@ def plot_pareto_snapshots_evoxbench_subplots(
     font_scale: float = 1.0,
     axis_limits: list = None,
     attainment_type: str = 'lines',
+    use_test_archive: bool = True,
 ):
     """50 % attainment surfaces at several generation checkpoints for evoxbench 2-obj problems.
 
@@ -1283,6 +1311,9 @@ def plot_pareto_snapshots_evoxbench_subplots(
     xlabel          : x-axis label (default: '$f_1$')
     ylabel          : y-axis label (default: '$f_2$')
     font_scale      : multiplier applied to all font sizes (default: 1.0)
+    use_test_archive : if ``True`` (default), reads ``test_obj_archive`` (true
+                       test objectives); if ``False``, reads the cumulative ND
+                       front of ``obj_pop`` (search-phase objectives).
     """
     if checkpoints_gen is None:
         checkpoints_gen = [15, 30, 45, 60]
@@ -1308,7 +1339,7 @@ def plot_pareto_snapshots_evoxbench_subplots(
 
     fig, axes = plt.subplots(
         n_rows, n_cols,
-        figsize=(5.5 * n_cols, 4.5 * n_rows * font_scale ** 0.5),
+        figsize=(5.5 * n_cols, 3.5 * n_rows * font_scale ** 0.5),
         squeeze=False,
         sharex=True,
         sharey=True,
@@ -1330,7 +1361,8 @@ def plot_pareto_snapshots_evoxbench_subplots(
 
         for ci, cgen in enumerate(checkpoints_gen):
             gen_idx = min(cgen - 1, n_gen - 1)
-            fronts  = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root)
+            fronts  = _load_nd_fronts_evoxbench_at_gen(method, gen_idx, results_root,
+                                                        use_test_archive=use_test_archive)
             if not fronts:
                 continue
             f1_grid, f2_att = compute_attainment_surface([f[:, [1, 0]] for f in fronts])
@@ -1372,7 +1404,7 @@ def plot_pareto_snapshots_evoxbench_subplots(
                loc='lower center',
                bbox_to_anchor=(0.5, 0),
                ncol=min(len(handles), 5),
-               fontsize=10 * font_scale,
+               fontsize=8 * font_scale,
                markerscale=10,
                frameon=True)
 

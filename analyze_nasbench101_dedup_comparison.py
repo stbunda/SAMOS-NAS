@@ -203,9 +203,7 @@ def generate_comparison_table(
         r'\centering',
         (r'\caption{NASBench-101 C10/MOP PID\,1 and 2: effect of duplicate elimination.'
          r' Final HV and IGD\textsuperscript{+} (mean\,\textpm\,std over seeds).'
-         r' \textbf{Bold}: best result per column within each section.'
-         r' Wilcoxon rank-sum vs.\ SAMOS\,(XGBoost) ($p{<}0.05$):'
-         r' $(+)$\,better, $(-)$\,worse, $(\approx)$\,no significant difference.}'),
+         r' \textbf{Bold}: best result per column within each section.}'),
         r'\label{tab:nb101_dedup_comparison}',
         r'\resizebox{\linewidth}{!}{',
         r'\begin{tabular}{l r r r r}',
@@ -215,7 +213,7 @@ def generate_comparison_table(
         r'\cmidrule(lr){2-3}\cmidrule(lr){4-5}',
         f'Method & {hv_col} & {igd_col} & {hv_col} & {igd_col} \\\\',
         r'\midrule',
-        r'\multicolumn{5}{l}{\textit{(a)~Standard duplicate elimination (EvoXBench integer-vector)}} \\',
+        r'\multicolumn{5}{l}{\textit{(a)~Genome duplicate elimination (EvoXBench)}} \\',
         r'\midrule',
     ]
 
@@ -223,13 +221,17 @@ def generate_comparison_table(
 
     lines += [
         r'\midrule',
-        r'\multicolumn{5}{l}{\textit{(b)~Architecture-string duplicate elimination (NASBench-101 canonical)}} \\',
+        r'\multicolumn{5}{l}{\textit{(b)~Architecture-string duplicate elimination}} \\',
         r'\midrule',
     ]
 
     lines += _section_rows(methods, pids, seeds_b, stats_b, besthv_b, bestigd_b)
 
     lines += [
+        r'\midrule',
+        r'\multicolumn{5}{l}{\footnotesize $(+)$: significantly better than SAMOS} \\',
+        r'\multicolumn{5}{l}{\footnotesize $(\approx)$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
+        r'\multicolumn{5}{l}{\footnotesize $(-)$: significantly worse} \\',
         r'\bottomrule',
         r'\end{tabular}',
         r'}',
