@@ -22,6 +22,7 @@ sys.stdout.reconfigure(line_buffering=True)
 
 import numpy as np
 from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.indicators.hv import HV
 from pymoo.optimize import minimize
 
 from problem.evoxbench.utils import get_benchmark
@@ -50,6 +51,7 @@ def _run_mosmac_evoxbench(
     seed: int,
     pop_size: int,
     n_gen: int,
+    no_norm: bool = False,
 ) -> dict:
     """Run SMAC3 MultiObjectiveFacade on an evoxbench integer search space."""
     from ConfigSpace import ConfigurationSpace, Categorical
@@ -73,7 +75,7 @@ def _run_mosmac_evoxbench(
     def target_fn(config, seed=0):
         x = np.array([int(config[f'x{i}']) for i in range(n_var)]).reshape(1, -1)
         F = benchmark.evaluate(x, true_eval=False)
-        if not benchmark.normalized_objectives:
+        if not no_norm and not benchmark.normalized_objectives:
             F = benchmark.normalize(F)
         F = np.where(np.isfinite(F), F, 1.0)
         return {name: float(F[0, j]) for j, name in enumerate(obj_names)}
@@ -125,20 +127,30 @@ def _run_mosmac_evoxbench(
         if cur_var_arch:
             X_arch   = np.array([np.round(v).astype(int) for v in cur_var_arch])
             test_obj = benchmark.evaluate(X_arch, true_eval=True)
-            if not benchmark.normalized_objectives:
+            if not no_norm and not benchmark.normalized_objectives:
                 test_obj = benchmark.normalize(test_obj)
-            test_obj    = np.where(np.isfinite(test_obj), test_obj, 1.0)
-            nd_idx      = NonDominatedSorting().do(test_obj, only_non_dominated_front=True)
-            test_obj_nd = test_obj[nd_idx]
+            test_obj    = np.where(np.isfinite(test_obj), test_obj, np.nan)
+            finite_mask = np.isfinite(test_obj).all(axis=1)
+            test_obj    = test_obj[finite_mask]
+            if len(test_obj) > 0:
+                nd_idx      = NonDominatedSorting().do(test_obj, only_non_dominated_front=True)
+                test_obj_nd = test_obj[nd_idx]
+            else:
+                test_obj_nd = np.empty((0, n_obj))
         else:
             test_obj_nd = np.empty((0, n_obj))
 
         if len(test_obj_nd) > 0:
-            ind = {
-                'hv':       float(callback._hv_ind(test_obj_nd)),
-                'igd_plus': float(callback._igd_ind(test_obj_nd))
-                            if callback._igd_ind is not None else float('nan'),
-            }
+            if no_norm:
+                live_ref = np.max(test_obj_nd, axis=0) * 1.05
+                live_hv_ind = HV(ref_point=live_ref)
+                ind = {'hv': float(live_hv_ind(test_obj_nd)), 'igd_plus': float('nan')}
+            else:
+                ind = {
+                    'hv':       float(callback._hv_ind(test_obj_nd)),
+                    'igd_plus': float(callback._igd_ind(test_obj_nd))
+                                if callback._igd_ind is not None else float('nan'),
+                }
         else:
             ind = {'hv': 0.0, 'igd_plus': float('nan')}
 
@@ -168,14 +180,15 @@ def run_single(
     inner_pop_size: int = None,
     warm_start_ratio: float = 0.75,
     proxy_obj_indices: list = None,
+    no_norm: bool = False,
 ) -> dict:
     np.random.seed(seed)
     random.seed(seed)
 
     # ── benchmark (drives everything) ─────────────────────────────────────────
     benchmark  = get_benchmark(suite, pid)
-    problem    = EvoXBenchProblem(benchmark)
-    callback   = EvoxBenchCallback(benchmark)
+    problem    = EvoXBenchProblem(benchmark, no_norm=no_norm)
+    callback   = EvoxBenchCallback(benchmark, no_norm=no_norm)
 
     xl = np.asarray(benchmark.search_space.lb, dtype=int)
     xu = np.asarray(benchmark.search_space.ub, dtype=int)
@@ -187,7 +200,7 @@ def run_single(
 
     # ── standalone runners (manage their own loop) ─────────────────────────────
     if method == 'mosmac':
-        return _run_mosmac_evoxbench(benchmark, callback, seed, pop_size, n_gen)
+        return _run_mosmac_evoxbench(benchmark, callback, seed, pop_size, n_gen, no_norm=no_norm)
 
     if method == 'parego':
         n_doe_ = n_doe if n_doe is not None else pop_size
@@ -234,8 +247,9 @@ def run_single(
         _poi = predict_obj_indices
         _roi = real_obj_indices
         _bm  = benchmark
-        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm: (
-            SurrogateProblemEvox(surrs, _p, _r, _b)
+        _nn  = no_norm
+        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm, _n=_nn: (
+            SurrogateProblemEvox(surrs, _p, _r, _b, no_norm=_n)
         )
 
         algorithm = SAMOS(
@@ -282,8 +296,9 @@ def run_single(
         _poi = predict_obj_indices
         _roi = real_obj_indices
         _bm  = benchmark
-        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm: (
-            SurrogateProblemEvox(surrs, _p, _r, _b)
+        _nn  = no_norm
+        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm, _n=_nn: (
+            SurrogateProblemEvox(surrs, _p, _r, _b, no_norm=_n)
         )
 
         algorithm = SAMOS(
@@ -315,8 +330,9 @@ def run_single(
         _poi = list(range(n_obj))
         _roi: list = []
         _bm  = benchmark
-        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm: (
-            SurrogateProblemEvox(surrs, _p, _r, _b)
+        _nn  = no_norm
+        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm, _n=_nn: (
+            SurrogateProblemEvox(surrs, _p, _r, _b, no_norm=_n)
         )
         algorithm = SAMOS2(
             sampling=sampler,
@@ -378,10 +394,11 @@ def run_single(
 
 def main(args):
     budget_folder = f"B{args.n_gen * args.pop_size}_P{args.pop_size}"
+    results_folder = 'evoxbench_no_norm' if args.no_norm else 'evoxbench'
 
     for pid in args.pids:
         results_root = os.path.join(
-            'results', 'evoxbench', args.suite, f'pid{pid}', budget_folder
+            'results', results_folder, args.suite, f'pid{pid}', budget_folder
         )
 
         for method in args.methods:
@@ -412,6 +429,7 @@ def main(args):
                     inner_pop_size=args.inner_pop_size,
                     warm_start_ratio=args.warm_start_ratio,
                     proxy_obj_indices=args.proxy_obj_indices,
+                    no_norm=args.no_norm,
                 )
                 with open(out_path, 'wb') as f:
                     pickle.dump(data, f)
@@ -437,7 +455,7 @@ if __name__ == '__main__':
                              'parego, gpsaf-default, mosmac')
     parser.add_argument('--seeds',          type=int, nargs='+', default=list(range(10)))
     parser.add_argument('--pop_size',       type=int, default=20)
-    parser.add_argument('--n_gen',          type=int, default=50)
+    parser.add_argument('--n_gen',          type=int, default=60)
     parser.add_argument('--n_doe',          type=int, default=None,
                         help='SAMOS: initial DOE size (default: pop_size)')
     parser.add_argument('--n_infill',       type=int, default=None,
@@ -446,8 +464,8 @@ if __name__ == '__main__':
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size', type=int, default=None,
                         help='SAMOS: inner NSGA-II population size (default: pop_size × 10)')
-    parser.add_argument('--warm_start_ratio', type=float, default=0.75,
-                        help='SAMOS: warm-start ratio for the inner NSGA-II (default: 0.75)')
+    parser.add_argument('--warm_start_ratio', type=float, default=1.0,
+                        help='SAMOS: warm-start ratio for the inner NSGA-II (default: 1.0)')
     parser.add_argument('--proxy_obj_indices', type=int, nargs='+', default=None,
                         help='SAMOS: objective column indices to approximate with surrogates '
                              '(default: all). E.g. --proxy_obj_indices 0')
@@ -455,6 +473,12 @@ if __name__ == '__main__':
                         help='Override the default budget_folder name in the results path')
     parser.add_argument('--overwrite',      action='store_true',
                         help='Re-run even if result file already exists')
+    parser.add_argument('--no_norm', '--no-norm', action='store_true', dest='no_norm',
+                        help='Disable objective normalization during the search. '
+                             'Raw true-eval objectives are stored in the pkl. '
+                             'Results are saved under results/evoxbench_no_norm/. '
+                             'Post-hoc HV/IGD+ uses empirically derived bounds '
+                             '(see analyze_evoxbench.py --no_norm).')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')

@@ -34,7 +34,7 @@ import numpy as np
 from scipy.stats import ranksums
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
-from analysis.convergence import build_pareto_approximation, recompute_final_indicators_seeds
+from analysis.convergence import build_pareto_approximation, recompute_final_indicators_seeds, compute_empirical_norm_bounds
 from problem.evoxbench.benchmark_meta import BENCHMARK_META
 
 # Search spaces backed by a full tabular database (no surrogate predictor needed).
@@ -85,9 +85,9 @@ def _results_root_wfg(problem: str, experiment_name: str, n_gen: int, pop_size: 
                         f'B{n_gen * pop_size}_P{pop_size}')
 
 
-def _results_root_evox(suite: str, pid: int, n_gen: int, pop_size: int) -> str:
-    return os.path.join('results', 'evoxbench', suite,
-                        f'pid{pid}', f'B{n_gen * pop_size}_P{pop_size}')
+def _results_root_evox(suite: str, pid: int, n_gen: int, pop_size: int,
+                       root: str = 'results/evoxbench') -> str:
+    return os.path.join(root, suite, f'pid{pid}', f'B{n_gen * pop_size}_P{pop_size}')
 
 
 # ─── EvoXBench HV cache ──────────────────────────────────────────────────────
@@ -269,6 +269,8 @@ def _collect_evox_data(
     n_gen: int,
     pop_size: int,
     force: bool = False,
+    evox_root: str = 'results/evoxbench',
+    no_norm: bool = False,
 ) -> dict:
     """Return ``{pid: {method_key: ndarray | None}}`` for an EvoXBench suite.
 
@@ -295,8 +297,12 @@ def _collect_evox_data(
     suite_tag    = suite.upper()
 
     for pid in pids:
-        root   = _results_root_evox(suite, pid, n_gen, pop_size)
-        approx = build_pareto_approximation(suite, pid, evox_folders, pop_size, n_gen)
+        root          = _results_root_evox(suite, pid, n_gen, pop_size, root=evox_root)
+        norm_bounds   = compute_empirical_norm_bounds(evox_folders, root) if no_norm else None
+        approx        = build_pareto_approximation(
+            suite, pid, evox_folders, pop_size, n_gen,
+            norm_bounds=norm_bounds, results_root=evox_root,
+        )
 
         # ── resolve cache ──────────────────────────────────────────────────
         approx_path = os.path.join(root, 'pareto_approx.pkl')
@@ -331,6 +337,7 @@ def _collect_evox_data(
                     folder, root,
                     approx['ref_point'],
                     approx['pareto_approx'],
+                    norm_bounds=norm_bounds,
                 )
                 metrics = seeds   # {'hv': arr, 'igd_plus': arr} or None
             else:
@@ -642,6 +649,7 @@ def _load_final_archives_evox(
     pids: list,
     n_gen: int,
     pop_size: int,
+    root: str = 'results/evoxbench',
 ) -> dict:
     """Load per-seed final test-objective archives for every (pid, method).
 
@@ -658,11 +666,11 @@ def _load_final_archives_evox(
     """
     result: dict = {}
     for pid in pids:
-        root     = _results_root_evox(suite, pid, n_gen, pop_size)
+        pid_root = _results_root_evox(suite, pid, n_gen, pop_size, root=root)
         pid_data: dict = {}
         for key in _METHODS:
             folder   = _EVOX_FOLDER[key]
-            seed_dir = os.path.join(root, folder)
+            seed_dir = os.path.join(pid_root, folder)
             archives: list = []
             if not os.path.isdir(seed_dir):
                 pid_data[key] = archives
@@ -727,6 +735,7 @@ def _compute_rank_pareto_counts(
     pop_size: int,
     n_layers: int = 5,
     reference_fronts: dict | None = None,
+    root: str = 'results/evoxbench',
 ) -> dict:
     """For each (pid, method, seed) count how many points fall in each ND layer.
 
@@ -758,7 +767,7 @@ def _compute_rank_pareto_counts(
         ``counts[s, l]`` = number of points seed *s* contributed to layer *l+1*.
     """
     _REF_TAG = '__ref__'
-    archives = _load_final_archives_evox(suite, pids, n_gen, pop_size)
+    archives = _load_final_archives_evox(suite, pids, n_gen, pop_size, root=root)
     result: dict = {}
 
     for pid in pids:
@@ -1235,12 +1244,14 @@ def main(args) -> None:
     print('\n' + '=' * 60)
     print('  Collecting C-10 MOP data ...')
     print('=' * 60)
-    c10_data = _collect_evox_data('c10mop', pids, args.evox_n_gen, args.evox_pop, force=args.force)
+    c10_data = _collect_evox_data('c10mop', pids, args.evox_n_gen, args.evox_pop,
+                                   force=args.force, evox_root=args.evox_root, no_norm=args.evox_no_norm)
 
     print('\n' + '=' * 60)
     print('  Collecting IN-1K MOP data ...')
     print('=' * 60)
-    in1k_data = _collect_evox_data('in1kmop', pids, args.evox_n_gen, args.evox_pop, force=args.force)
+    in1k_data = _collect_evox_data('in1kmop', pids, args.evox_n_gen, args.evox_pop,
+                                    force=args.force, evox_root=args.evox_root, no_norm=args.evox_no_norm)
 
     def _out_path_for(m: str) -> str:
         """Derive the output path for a given metric from ``args.out``."""
@@ -1279,6 +1290,7 @@ def main(args) -> None:
             n_gen    = args.evox_n_gen,
             pop_size = args.evox_pop,
             n_layers = args.rank_pareto_n_layers,
+            root     = args.evox_root,
         )
         generate_rank_pareto_tables(
             out_path  = args.rank_pareto_out,
@@ -1308,6 +1320,7 @@ def main(args) -> None:
             pop_size         = args.evox_pop,
             n_layers         = args.rank_pareto_n_layers,
             reference_fronts = true_pfs,
+            root             = args.evox_root,
         )
         generate_rank_pareto_tables(
             out_path    = args.rank_pareto_c10_out,
@@ -1337,6 +1350,7 @@ def main(args) -> None:
                 pop_size         = args.evox_pop,
                 n_layers         = args.rank_pareto_n_layers,
                 reference_fronts = true_pfs,
+                root             = args.evox_root,
             )
         # reuse already-computed in1k data; else fetch fresh
         if not args.rank_pareto:
@@ -1346,6 +1360,7 @@ def main(args) -> None:
                 n_gen    = args.evox_n_gen,
                 pop_size = args.evox_pop,
                 n_layers = args.rank_pareto_n_layers,
+                root     = args.evox_root,
             )
         else:
             rank_data_in1k_comb = rank_data
@@ -1413,6 +1428,22 @@ if __name__ == '__main__':
                         help='Number of objectives for WFG (used in caption).')
     parser.add_argument('--force', action='store_true',
                         help='Ignore the indicators cache and recompute all EvoXBench values.')
+    parser.add_argument(
+        '--evox_root', '--evox-root',
+        default='results/evoxbench',
+        dest='evox_root',
+        metavar='PATH',
+        help='Root folder for EvoXBench results (default: results/evoxbench).',
+    )
+    parser.add_argument(
+        '--evox_no_norm', '--evox-no-norm',
+        action='store_true',
+        dest='evox_no_norm',
+        help=(
+            'Treat EvoXBench results as raw (no_norm mode): derive empirical '
+            'normalization bounds post-hoc from the pooled final archives.'
+        ),
+    )
     parser.add_argument(
         '--metric',
         choices=['hv', 'igd_plus', 'both'],

@@ -37,6 +37,7 @@ from analysis.plotter import (
 )
 from analysis.convergence import (
     build_pareto_approximation,
+    compute_empirical_norm_bounds,
     recompute_indicator_trajectories,
     recompute_final_indicators,
     recompute_final_indicators_seeds,
@@ -208,6 +209,7 @@ def generate_latex_table(
     n_gen: int,
     out_path: str,
     approx_info: dict = None,
+    root: str = 'results/evoxbench',
 ) -> None:
     """Write a booktabs LaTeX table: rows = methods, columns = PIDs × {HV, IGD+}.
 
@@ -235,16 +237,17 @@ def generate_latex_table(
     best_hv:   dict[int, str]  = {}
     best_igd:  dict[int, str]  = {}
     for pid in pids:
-        root       = _results_root(suite, pid, pop_size, n_gen)
+        root_pid   = _results_root(suite, pid, pop_size, n_gen, root)
         pid_approx = (approx_info or {}).get(pid)
         pid_seeds, pid_stats = {}, {}
         for m in methods:
             if pid_approx is not None:
                 s = recompute_final_indicators_seeds(
-                    m, root, pid_approx['ref_point'], pid_approx['pareto_approx']
+                    m, root_pid, pid_approx['ref_point'], pid_approx['pareto_approx'],
+                    norm_bounds=pid_approx.get('norm_bounds'),
                 )
             else:
-                s = _load_final_indicators_seeds(m, root)
+                s = _load_final_indicators_seeds(m, root_pid)
             pid_seeds[m] = s
             pid_stats[m] = {
                 'hv':       (float(np.mean(s['hv'])),       float(np.std(s['hv']))),
@@ -657,12 +660,21 @@ def main(args) -> None:
     for pid in pids:
         root = _results_root(suite, pid, pop_size, n_gen, args.root)
 
+        # When --no_norm, derive empirical normalization bounds from the raw
+        # test_obj_archive values pooled across all methods and seeds under root.
+        if getattr(args, 'no_norm', False):
+            norm_bounds = compute_empirical_norm_bounds(methods, root)
+        else:
+            norm_bounds = None
+
         # Build (or load from cache) the combined Pareto approximation.
         # Always run — it is cheap (disk-cached) and needed by both the
         # convergence plot and the LaTeX table.
         approx = build_pareto_approximation(
             suite, pid, methods, pop_size, n_gen,
             force_rebuild=args.rebuild_approx,
+            norm_bounds=norm_bounds,
+            results_root=root,
         )
         all_approx_info[pid] = approx
 
@@ -703,7 +715,10 @@ def main(args) -> None:
             if approx is not None:
                 trajectories = {}
                 for method in methods:
-                    traj = get_or_recompute_trajectories(method, n_gen, root, approx)
+                    traj = get_or_recompute_trajectories(
+                        method, n_gen, root, approx,
+                        norm_bounds=norm_bounds,
+                    )
                     if traj is None:
                         print(f'  [pid{pid}] No data for method={method}, skipping.')
                     trajectories[method] = traj
@@ -828,6 +843,7 @@ def main(args) -> None:
             n_gen=n_gen,
             out_path=table_out,
             approx_info=all_approx_info,
+            root=args.root,
         )
 
     # ── exploration scatter plot ──────────────────────────────────────────
@@ -891,6 +907,11 @@ if __name__ == '__main__':
     parser.add_argument('--attainment_type', '--attainment-type', type=str,
                         default='lines', choices=['lines', 'dots'], dest='attainment_type',
                         help='Attainment surface style: lines or dots (default: lines)')
+    parser.add_argument('--no_norm', '--no-norm', action='store_true', dest='no_norm',
+                        help='Treat stored test_obj_archive as raw (un-normalized) values. '
+                             'Empirical normalization bounds are derived from the data '
+                             'and used to compute HV/IGD+ in a comparable scale. '
+                             'Use together with --root results/evoxbench_no_norm.')
 
     arguments = parser.parse_args()
     print(f'Arguments: {arguments}')
