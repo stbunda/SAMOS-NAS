@@ -57,6 +57,7 @@ from typing import Optional
 
 import numpy as np
 
+from pymoo.indicators.hv import HV
 from .bo.base import BayesianOptimizer, SurrogateModel, InnerSolver
 from .bo.surrogate import GaussianProcessSurrogate
 from .bo.acquisition import expected_improvement
@@ -418,11 +419,17 @@ def run_parego_evoxbench(
             test_obj_nd = np.empty((0, n_obj))
 
         if len(test_obj_nd) > 0:
-            indicators = {
-                'hv':       float(callback._hv_ind(test_obj_nd)),
-                'igd_plus': float(callback._igd_ind(test_obj_nd))
-                            if callback._igd_ind is not None else float('nan'),
-            }
+            if callback._hv_ind is None:
+                # no_norm mode: build an ad-hoc ref-point from the current archive
+                live_ref    = np.max(test_obj_nd, axis=0) * 1.05
+                live_hv_ind = HV(ref_point=live_ref)
+                indicators  = {'hv': float(live_hv_ind(test_obj_nd)), 'igd_plus': float('nan')}
+            else:
+                indicators = {
+                    'hv':       float(callback._hv_ind(test_obj_nd)),
+                    'igd_plus': float(callback._igd_ind(test_obj_nd))
+                                if callback._igd_ind is not None else float('nan'),
+                }
         else:
             indicators = {'hv': 0.0, 'igd_plus': float('nan')}
 
