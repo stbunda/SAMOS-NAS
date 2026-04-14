@@ -56,6 +56,19 @@ class FixedGPSAF(_BaseGPSAF):
             inner.start_time = time.time()
         super()._advance(infills=infills, **kwargs)
 
+    def _infill(self):
+        from numpy.linalg import LinAlgError
+        try:
+            return super()._infill()
+        except LinAlgError:
+            import warnings
+            warnings.warn(
+                'GPSAF: SVD did not converge during surrogate fit; '
+                'falling back to inner NSGA-II offspring for this generation.',
+                RuntimeWarning, stacklevel=2,
+            )
+            return self.algorithm.infill()
+
 
 # Keep GPSAF as a convenience alias pointing to the fixed version
 GPSAF = FixedGPSAF
