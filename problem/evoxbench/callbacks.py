@@ -32,14 +32,15 @@ class EvoxBenchCallback(Callback):
         applied, matching the original behaviour.
     """
 
-    def __init__(self, benchmark, no_norm: bool = False) -> None:
+    def __init__(self, benchmark, no_norm: bool = False, compute_indicators: bool = True) -> None:
         super().__init__()
-        self.benchmark = benchmark
-        self.no_norm   = no_norm
+        self.benchmark          = benchmark
+        self.no_norm            = no_norm
+        self.compute_indicators = compute_indicators
 
         n_obj = benchmark.evaluator.n_objs
 
-        if not no_norm:
+        if compute_indicators and not no_norm:
             pareto_front_raw = benchmark.pareto_front   # (n_pts, n_obj) or None
             if pareto_front_raw is not None and len(pareto_front_raw) > 0:
                 # pareto_front is stored in raw objective space; normalize it to
@@ -56,7 +57,7 @@ class EvoxBenchCallback(Callback):
             self._hv_ind  = HV(ref_point=ref_point)
             self._igd_ind = IGDPlus(self._pareto_front) if self._pareto_front is not None else None
         else:
-            # no_norm mode: indicators are provisional; real indicators are
+            # no_norm mode or indicators disabled: real indicators are
             # computed post-hoc with empirical bounds by the analysis scripts.
             self._pareto_front = None
             self._hv_ind       = None   # rebuilt per-generation from live data
@@ -141,7 +142,9 @@ class EvoxBenchCallback(Callback):
             test_obj_nd = np.empty((0, self.benchmark.evaluator.n_objs))
 
         # Indicators
-        if len(test_obj_nd) > 0:
+        if not self.compute_indicators:
+            indicators = {'hv': float('nan'), 'igd_plus': float('nan')}
+        elif len(test_obj_nd) > 0:
             if self.no_norm:
                 # Provisional: build an ad-hoc ref-point from the current archive.
                 # These values are for live monitoring only; reliable indicators

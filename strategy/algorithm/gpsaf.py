@@ -62,12 +62,17 @@ class FixedGPSAF(_BaseGPSAF):
             return super()._infill()
         except LinAlgError:
             import warnings
+            from pymoo.operators.sampling.rnd import FloatRandomSampling
             warnings.warn(
                 'GPSAF: SVD did not converge during surrogate fit; '
-                'falling back to inner NSGA-II offspring for this generation.',
+                'using random sampling for this generation.',
                 RuntimeWarning, stacklevel=2,
             )
-            return self.algorithm.infill()
+            n = len(self.pop)
+            off = FloatRandomSampling()(self.problem, n)
+            # Set "type" so pysamoo's display (which reads this attribute) doesn't crash
+            off.set("type", np.array(["random"] * n, dtype=object))
+            return off
 
 
 # Keep GPSAF as a convenience alias pointing to the fixed version

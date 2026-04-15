@@ -52,6 +52,7 @@ def _run_mosmac_evoxbench(
     pop_size: int,
     n_gen: int,
     no_norm: bool = False,
+    compute_indicators: bool = True,
 ) -> dict:
     """Run SMAC3 MultiObjectiveFacade on an evoxbench integer search space."""
     from ConfigSpace import ConfigurationSpace, Categorical
@@ -140,7 +141,9 @@ def _run_mosmac_evoxbench(
         else:
             test_obj_nd = np.empty((0, n_obj))
 
-        if len(test_obj_nd) > 0:
+        if not compute_indicators:
+            ind = {'hv': float('nan'), 'igd_plus': float('nan')}
+        elif len(test_obj_nd) > 0:
             if no_norm:
                 live_ref = np.max(test_obj_nd, axis=0) * 1.05
                 live_hv_ind = HV(ref_point=live_ref)
@@ -181,6 +184,7 @@ def run_single(
     warm_start_ratio: float = 0.75,
     proxy_obj_indices: list = None,
     no_norm: bool = False,
+    compute_indicators: bool = True,
 ) -> dict:
     np.random.seed(seed)
     random.seed(seed)
@@ -188,7 +192,7 @@ def run_single(
     # ── benchmark (drives everything) ─────────────────────────────────────────
     benchmark  = get_benchmark(suite, pid)
     problem    = EvoXBenchProblem(benchmark, no_norm=no_norm)
-    callback   = EvoxBenchCallback(benchmark, no_norm=no_norm)
+    callback   = EvoxBenchCallback(benchmark, no_norm=no_norm, compute_indicators=compute_indicators)
 
     xl = np.asarray(benchmark.search_space.lb, dtype=int)
     xu = np.asarray(benchmark.search_space.ub, dtype=int)
@@ -200,7 +204,7 @@ def run_single(
 
     # ── standalone runners (manage their own loop) ─────────────────────────────
     if method == 'mosmac':
-        return _run_mosmac_evoxbench(benchmark, callback, seed, pop_size, n_gen, no_norm=no_norm)
+        return _run_mosmac_evoxbench(benchmark, callback, seed, pop_size, n_gen, no_norm=no_norm, compute_indicators=compute_indicators)
 
     if method == 'parego':
         n_doe_ = n_doe if n_doe is not None else pop_size
@@ -430,6 +434,7 @@ def main(args):
                     warm_start_ratio=args.warm_start_ratio,
                     proxy_obj_indices=args.proxy_obj_indices,
                     no_norm=args.no_norm,
+                    compute_indicators=not args.no_indicators,
                 )
                 with open(out_path, 'wb') as f:
                     pickle.dump(data, f)
@@ -473,6 +478,9 @@ if __name__ == '__main__':
                         help='Override the default budget_folder name in the results path')
     parser.add_argument('--overwrite',      action='store_true',
                         help='Re-run even if result file already exists')
+    parser.add_argument('--no_indicators', '--no-indicators', action='store_true', dest='no_indicators',
+                        help='Skip HV/IGD+ computation during the run. '
+                             'test_obj_archive is still saved; indicators can be computed post-hoc.')
     parser.add_argument('--no_norm', '--no-norm', action='store_true', dest='no_norm',
                         help='Disable objective normalization during the search. '
                              'Raw true-eval objectives are stored in the pkl. '
