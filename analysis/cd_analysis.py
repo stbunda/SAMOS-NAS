@@ -1,14 +1,20 @@
 """analysis/cd_analysis.py — Robust ranking / critical difference analysis.
 
-Collects final per-seed HV and IGD+ values across WFG, C10MOP and IN1KMOP
-benchmarks, caches the resulting DataFrame on disk with mtime-based staleness
-invalidation, and wires the data into robustranking's BootstrapComparison for
+Collects final per-seed HV and IGD+ values across three benchmark groups:
+
+  * Synthetic  — WFG 1–9
+  * Tabular    — C10MOP 1–7
+  * Surrogate  — C10MOP 8–9  +  IN1KMOP 1–9
+
+Caches the resulting DataFrame on disk with mtime-based staleness invalidation
+and wires the data into robustranking's BootstrapComparison for
 confidence-interval ranking plots.
 
 Public API
 ----------
 build_indicators_df(benchmark_name, methods, pop_size, n_gen, force, **kw)
     -> pd.DataFrame  with columns: algorithm, instance, hv, igd_plus
+    benchmark_name: one of 'wfg', 'c10mop', 'in1kmop', 'surrogate'
 
 build_robustranking_benchmark(df)
     -> robustranking.Benchmark
@@ -37,32 +43,35 @@ import pandas as pd
 # WFG results live under results/pymoo_benchmark/2_obj/<problem>/B*_P*/<folder>/
 _WFG_FOLDER_MAP: dict[str, str] = {
     'random':    'random',
-    'nsga2':     'nsga2',
     'parego':    'parego',
     'mosmac':    'mosmac',
+    'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
-    'samos-xgb': 'samos-xgb-i200-g20',
+    'ssa-nsga2': 'ssa-nsga2-default',
+    'samos':     'samos-xgb-i200-g20',
 }
 
 # EvoXBench results live under results/evoxbench/<suite>/pid<p>/B*_P*/<folder>/
 _EVOX_FOLDER_MAP: dict[str, str] = {
     'random':    'random',
-    'nsga2':     'nsga2',
     'parego':    'parego',
     'mosmac':    'mosmac',
+    'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
-    'samos-xgb': 'samos-xgb',
+    'ssa-nsga2': 'ssa-nsga2',
+    'samos':     'samos-cheapreal',
 }
 
 # ─── display labels ───────────────────────────────────────────────────────────
 
 DISPLAY_LABELS: dict[str, str] = {
     'random':    'Random',
-    'nsga2':     'NSGA-II',
     'parego':    'ParEGO',
     'mosmac':    'MO-SMAC',
+    'nsga2':     'NSGA-II',
     'gpsaf':     'GPSAF',
-    'samos-xgb': 'SAMOS-XGB',
+    'ssa-nsga2': 'SSA-NSGA-II',
+    'samos':     'SAMOS',
 }
 
 # ─── on-disk cache helpers ────────────────────────────────────────────────────
@@ -184,6 +193,7 @@ def _load_evox_rows(
     methods: list[str],
     pop_size: int,
     n_gen: int,
+    instance_prefix: str = '',
 ):
     """Yield (algorithm, instance, hv, igd_plus, abs_path) for EvoXBench suites.
 
@@ -203,12 +213,11 @@ def _load_evox_rows(
             print(f'  [cd_analysis] WARN: results dir not found: {root}')
             continue
 
-        # Build shared Pareto approximation from ALL available method folders
-        all_folders = [
-            d for d in os.listdir(root)
-            if os.path.isdir(os.path.join(root, d))
-        ]
-        approx = build_pareto_approximation(suite, pid, all_folders, pop_size, n_gen)
+        # Build shared Pareto approximation from the same canonical method
+        # folders used by analyze_all_benchmarks.py, so the pareto_approx.pkl
+        # cache is shared between both scripts and neither marks the other stale.
+        method_folders = [_EVOX_FOLDER_MAP.get(m, m) for m in methods]
+        approx = build_pareto_approximation(suite, pid, method_folders, pop_size, n_gen)
         if approx is None:
             print(f'  [cd_analysis] WARN: no Pareto approx for {suite}/pid{pid}, skipping.')
             continue
@@ -247,7 +256,7 @@ def _load_evox_rows(
                     continue
                 hv  = float(hv_ind(F))
                 igd = float(igd_ind(F))
-                instance = f'pid{pid}_seed_{seed_id}'
+                instance = f'{instance_prefix}pid{pid}_seed_{seed_id}'
                 yield canonical, instance, hv, igd, abs_path
 
 
@@ -330,10 +339,25 @@ def build_indicators_df(
             rows.append((algo, inst, hv, igd))
             source_mtimes[path] = os.path.getmtime(path)
 
+    elif benchmark_name == 'surrogate':
+        # C10MOP 8–9 (tabular→surrogate transition) + IN1KMOP 1–9
+        # Instance names are prefixed with the suite to avoid collisions.
+        for algo, inst, hv, igd, path in _load_evox_rows(
+            'c10mop', [8, 9], methods, pop_size, n_gen, instance_prefix='c10mop_'
+        ):
+            rows.append((algo, inst, hv, igd))
+            source_mtimes[path] = os.path.getmtime(path)
+        _in1k_pids = pids or list(range(1, 10))
+        for algo, inst, hv, igd, path in _load_evox_rows(
+            'in1kmop', _in1k_pids, methods, pop_size, n_gen, instance_prefix='in1kmop_'
+        ):
+            rows.append((algo, inst, hv, igd))
+            source_mtimes[path] = os.path.getmtime(path)
+
     else:
         raise ValueError(
             f"Unknown benchmark_name {benchmark_name!r}. "
-            "Choose from 'wfg', 'c10mop', 'in1kmop'."
+            "Choose from 'wfg', 'c10mop', 'in1kmop', 'surrogate'."
         )
 
     if not rows:

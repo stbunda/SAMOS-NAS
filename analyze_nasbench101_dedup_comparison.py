@@ -27,9 +27,10 @@ from analyze_evoxbench import (
     _WILCOXON_REF,
     _DEFAULT_METHODS,
     _load_final_indicators_seeds,
-    _wilcoxon_marker,
+)
+from analyze_all_benchmarks import (
     _fmt,
-    _method_latex_label,
+    _wilcoxon_marker,
 )
 
 
@@ -125,46 +126,35 @@ def _section_rows(
     all_stats: dict,
     best_hv: dict,
     best_igd: dict,
+    metrics: list,
 ) -> list[str]:
-    """Return the LaTeX row strings for one table section."""
+    """Return the LaTeX row strings for one table section (rows = pids)."""
     lines = []
-    pid1, pid2 = pids[0], pids[1]
 
-    ref1 = all_seeds[pid1].get(_WILCOXON_REF)
-    ref1_hv  = ref1['hv']       if ref1 else None
-    ref1_igd = ref1['igd_plus'] if ref1 else None
+    for pid in pids:
+        ref = all_seeds[pid].get(_WILCOXON_REF)
+        ref_hv  = ref['hv']       if ref else None
+        ref_igd = ref['igd_plus'] if ref else None
 
-    ref2 = all_seeds[pid2].get(_WILCOXON_REF)
-    ref2_hv  = ref2['hv']       if ref2 else None
-    ref2_igd = ref2['igd_plus'] if ref2 else None
+        cells = [f'C10/MOP~{pid}']
+        for method in methods:
+            is_ref = (method == _WILCOXON_REF)
+            s  = all_stats[pid].get(method)
+            sd = all_seeds[pid].get(method)
+            if s:
+                if not is_ref and sd:
+                    hv_m  = _wilcoxon_marker(ref_hv,  sd['hv'],       True)
+                    igd_m = _wilcoxon_marker(ref_igd, sd['igd_plus'], False)
+                else:
+                    hv_m = igd_m = ''
+                if 'hv' in metrics:
+                    cells.append(_fmt(*s['hv'],       method == best_hv[pid],  hv_m))
+                if 'igd_plus' in metrics:
+                    cells.append(_fmt(*s['igd_plus'], method == best_igd[pid], igd_m))
+            else:
+                cells.extend(['--'] * len(metrics))
 
-    for method in methods:
-        mlbl   = _method_latex_label(method)
-        is_ref = (method == _WILCOXON_REF)
-
-        # ── PID 1 ──
-        s1 = all_stats[pid1].get(method)
-        if s1 and not is_ref:
-            sd1  = all_seeds[pid1].get(method)
-            hv1m = _wilcoxon_marker(ref1_hv,  sd1['hv']       if sd1 else None, True)
-            ig1m = _wilcoxon_marker(ref1_igd, sd1['igd_plus'] if sd1 else None, False)
-        else:
-            hv1m = ig1m = ''
-        cell_hv1  = _fmt(*s1['hv'],       method == best_hv[pid1],  hv1m) if s1 else '--'
-        cell_igd1 = _fmt(*s1['igd_plus'], method == best_igd[pid1], ig1m) if s1 else '--'
-
-        # ── PID 2 ──
-        s2 = all_stats[pid2].get(method)
-        if s2 and not is_ref:
-            sd2  = all_seeds[pid2].get(method)
-            hv2m = _wilcoxon_marker(ref2_hv,  sd2['hv']       if sd2 else None, True)
-            ig2m = _wilcoxon_marker(ref2_igd, sd2['igd_plus'] if sd2 else None, False)
-        else:
-            hv2m = ig2m = ''
-        cell_hv2  = _fmt(*s2['hv'],       method == best_hv[pid2],  hv2m) if s2 else '--'
-        cell_igd2 = _fmt(*s2['igd_plus'], method == best_igd[pid2], ig2m) if s2 else '--'
-
-        lines.append(f'{mlbl} & {cell_hv1} & {cell_igd1} & {cell_hv2} & {cell_igd2} \\\\')
+        lines.append(' & '.join(cells) + r' \\')
 
     return lines
 
@@ -175,14 +165,16 @@ def generate_comparison_table(
     pop_size: int,
     n_gen: int,
     out_path: str,
+    metrics: list | None = None,
 ) -> None:
     """Write the two-section dedup comparison LaTeX table to *out_path*."""
+
+    if metrics is None:
+        metrics = ['hv', 'igd_plus']
 
     # Enforce canonical method order
     order   = {m: i for i, m in enumerate(_DEFAULT_METHODS)}
     methods = sorted(methods, key=lambda m: order.get(m, len(_DEFAULT_METHODS)))
-
-    pid1, pid2 = pids[0], pids[1]
 
     # ── collect data ──────────────────────────────────────────────────────────
     seeds_a, stats_a, besthv_a, bestigd_a = _collect(
@@ -194,48 +186,97 @@ def generate_comparison_table(
         lambda pid: _nb101_root(pid, pop_size, n_gen),
     )
 
-    hv_col  = r'HV\,($\uparrow$)'
-    igd_col = r'IGD\textsuperscript{+}\,($\downarrow$)'
+    hv_col  = r'\textbf{HV\,($\uparrow$)}'
+    igd_col = r'\textbf{IGD\textsuperscript{+}\,($\downarrow$)}'
+
+    # ── column layout ─────────────────────────────────────────────────────────
+    n_methods  = len(methods)
+    n_metric   = len(metrics)
+    n_cols     = 1 + n_metric * n_methods
+    col_r      = ' '.join(['r'] * n_metric)
+    col_spec   = 'l ' + ' '.join([f'@{{\\hspace{{1.5em}}}} {col_r}'] * n_methods)
+
+    # Top header: one \multicolumn{n_metric}{c}{Method} per algorithm (or plain cell if single metric)
+    from analyze_evoxbench import _EVOX_LABELS as _LABELS  # noqa: PLC0415
+    if n_metric == 1:
+        top_cells = [r'\textbf{Problem}'] + [
+            f'\\textbf{{{_LABELS.get(m, m)}}}'
+            for m in methods
+        ]
+    else:
+        top_cells = [r'\textbf{Problem}'] + [
+            f'\\multicolumn{{{n_metric}}}{{c}}{{\\textbf{{{_LABELS.get(m, m)}}}}}'
+            for m in methods
+        ]
+    # \cmidrule under each method group (only needed when sub-header row exists)
+    cmidrules = ''.join(
+        f'\\cmidrule(lr){{{2 + n_metric*i}-{1 + n_metric*(i+1)}}}'
+        for i in range(n_methods)
+    )
+
+    # Caption: name the single metric explicitly when only one is shown
+    if n_metric == 1:
+        metric_label = 'HV' if 'hv' in metrics else r'IGD\textsuperscript{+}'
+        caption = (
+            r'\caption{NASBench-101 C10/MOP PID\,1 and 2: effect of duplicate elimination.'
+            rf' Final {metric_label} (mean\,\textpm\,std over seeds).'
+            r' \textbf{Bold}: best result per row within each section.'
+            r' Wilcoxon rank-sum vs.\ SAMOS, $p{<}0.05$: $^{+}$\,better, $^{-}$\,worse,'
+            r' $^{\approx}$\,not significant.}'
+        )
+    else:
+        caption = (
+            r'\caption{NASBench-101 C10/MOP PID\,1 and 2: effect of duplicate elimination.'
+            r' Final HV and IGD\textsuperscript{+} (mean\,\textpm\,std over seeds).'
+            r' \textbf{Bold}: best result per row within each section.'
+            r' Wilcoxon rank-sum vs.\ SAMOS, $p{<}0.05$: $^{+}$\,better, $^{-}$\,worse,'
+            r' $^{\approx}$\,not significant.}'
+        )
 
     # ── assemble LaTeX ────────────────────────────────────────────────────────
     lines = [
-        r'\begin{table}[t]',
+        r'\begin{table*}[t]',
         r'\centering',
-        (r'\caption{NASBench-101 C10/MOP PID\,1 and 2: effect of duplicate elimination.'
-         r' Final HV and IGD\textsuperscript{+} (mean\,\textpm\,std over seeds).'
-         r' \textbf{Bold}: best result per column within each section.}'),
+        caption,
         r'\label{tab:nb101_dedup_comparison}',
-        r'\resizebox{\linewidth}{!}{',
-        r'\begin{tabular}{l r r r r}',
+        r'\resizebox{\linewidth}{!}{%',
+        r'\setlength\tabcolsep{5pt}%',
+        r'\begin{tabular}{' + col_spec + r'}',
         r'\toprule',
-        (f' & \\multicolumn{{2}}{{c}}{{C10/MOP~{pid1}}}'
-         f' & \\multicolumn{{2}}{{c}}{{C10/MOP~{pid2}}} \\\\'),
-        r'\cmidrule(lr){2-3}\cmidrule(lr){4-5}',
-        f'Method & {hv_col} & {igd_col} & {hv_col} & {igd_col} \\\\',
+        ' & '.join(top_cells) + r' \\',
+    ]
+    if n_metric > 1:
+        lines += [
+            cmidrules,
+            ' & '.join([''] + [' & '.join(
+                ([hv_col] if 'hv' in metrics else []) +
+                ([igd_col] if 'igd_plus' in metrics else [])
+            )] * n_methods) + r' \\',
+        ]
+    lines += [
         r'\midrule',
-        r'\multicolumn{5}{l}{\textit{(a)~Genome duplicate elimination (EvoXBench)}} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\small\textit{(a)~Genome duplicate elimination (EvoXBench)}} \\',
         r'\midrule',
     ]
 
-    lines += _section_rows(methods, pids, seeds_a, stats_a, besthv_a, bestigd_a)
+    lines += _section_rows(methods, pids, seeds_a, stats_a, besthv_a, bestigd_a, metrics)
 
     lines += [
         r'\midrule',
-        r'\multicolumn{5}{l}{\textit{(b)~Architecture-string duplicate elimination}} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\small\textit{(b)~Architecture-string duplicate elimination}} \\',
         r'\midrule',
     ]
 
-    lines += _section_rows(methods, pids, seeds_b, stats_b, besthv_b, bestigd_b)
+    lines += _section_rows(methods, pids, seeds_b, stats_b, besthv_b, bestigd_b, metrics)
 
     lines += [
         r'\midrule',
-        r'\multicolumn{5}{l}{\footnotesize $(+)$: significantly better than SAMOS} \\',
-        r'\multicolumn{5}{l}{\footnotesize $(\approx)$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
-        r'\multicolumn{5}{l}{\footnotesize $(-)$: significantly worse} \\',
-        r'\bottomrule',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS;}\\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{-}$: significantly worse;}\\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
         r'\end{tabular}',
         r'}',
-        r'\end{table}',
+        r'\end{table*}',
     ]
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
@@ -257,6 +298,10 @@ def _parse_args() -> argparse.Namespace:
                    help='Methods to include in the table')
     p.add_argument('--pop_size', type=int,   default=20)
     p.add_argument('--n_gen',    type=int,   default=60)
+    p.add_argument('--metrics',  type=str, nargs='+',
+                   default=['hv'],
+                   choices=['hv', 'igd_plus'],
+                   help='Metrics to include in the table (default: hv igd_plus)')
     p.add_argument('--out',      type=str,
                    default=os.path.join('results', 'nasbench101',
                                         'dedup_comparison_table.tex'),
@@ -273,6 +318,7 @@ def main(args: argparse.Namespace) -> None:
         pop_size=args.pop_size,
         n_gen=args.n_gen,
         out_path=args.out,
+        metrics=args.metrics,
     )
 
 

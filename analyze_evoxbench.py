@@ -45,7 +45,7 @@ from analysis.convergence import (
     save_approx_cache,
 )
 from problem.evoxbench.utils import get_benchmark
-from problem.evoxbench.benchmark_meta import pid_header, get_obj_labels, BENCHMARK_META
+from problem.evoxbench.benchmark_meta import pid_header, get_obj_labels, get_obj_names, BENCHMARK_META
 
 # ─── evoxbench-specific style overrides ───────────────────────────────────────
 
@@ -53,20 +53,18 @@ _EVOX_COLOURS = {
     **COLOURS,
     'gpsaf-default': '#a0cbe8',
     'parego':        '#9c755f',
-    'samos2':        '#8b0000',
 }
 _EVOX_LABELS = {
     **LABELS,
     'nsga2':         'NSGA-II',
     'samos-xgb':     'SAMOS (XGBoost)',
-    'samos2':        'SAMOS2 (XGBoost)',
     'gpsaf-default': 'GPSAF',
     'parego':        'ParEGO',
     'mosmac':        'MO-SMAC',
 }
 
 _DEFAULT_METHODS = [
-    'random', 'nsga2', 'parego', 'mosmac', 'gpsaf-default', 'samos-xgb', 'samos2',
+    'random', 'nsga2', 'parego', 'mosmac', 'gpsaf-default', 'samos-xgb',
 ]
 
 
@@ -659,6 +657,8 @@ def main(args) -> None:
     all_approx_info: dict[int, dict] = {}
     for pid in pids:
         root = _results_root(suite, pid, pop_size, n_gen, args.root)
+        out_dir = args.output_folder if args.output_folder else root
+        os.makedirs(out_dir, exist_ok=True)
 
         # When --no_norm, derive empirical normalization bounds from the raw
         # test_obj_archive values pooled across all methods and seeds under root.
@@ -687,12 +687,24 @@ def main(args) -> None:
             print(f'  [pid{pid}] WARN: could not instantiate benchmark: {_bm_err}')
             bm, n_var, n_obj = None, None, None
 
+        # Build pid_label used by both convergence and attainment plots.
+        _meta = BENCHMARK_META.get(suite, {}).get(pid, {})
+        _ss   = _meta.get('search_space', '')
+        pid_label = f'{suite.upper()} - {pid}'
+        if _ss:
+            pid_label += f'\n{_ss} Search Space'
+        if n_var is not None and n_obj is not None:
+            pid_label += f'  |  {n_var} vars, {n_obj} objs'
+        elif n_var is not None:
+            pid_label += f'  |  {n_var} vars'
+        elif n_obj is not None:
+            pid_label += f'  |  {n_obj} objs'
+        _obj_names = get_obj_names(suite, pid)
+        if _obj_names is not None:
+            pid_label += f'  |  {", ".join(_obj_names)}'
+
         # ── convergence plot (HV / IGD+) ──────────────────────────────────────
         if args.convergence_plot:
-            dim_str = (
-                f'  |  {n_var} vars, {n_obj} objs'
-                if n_var is not None and n_obj is not None else ''
-            )
 
             if approx is not None:
                 ceiling = float(HV(ref_point=approx['ref_point'])(approx['pareto_approx']))
@@ -710,7 +722,7 @@ def main(args) -> None:
                 else:
                     print(f'  [pid{pid}] Benchmark PF HV ceiling = {ceiling:.6f}')
 
-            conv_out = os.path.join(root, f'{suite}_pid{pid}_hv_igd.png')
+            conv_out = os.path.join(out_dir, f'{suite}_pid{pid}_hv_igd.png')
 
             if approx is not None:
                 trajectories = {}
@@ -735,8 +747,9 @@ def main(args) -> None:
                     n_obj=n_obj,
                     colours=_EVOX_COLOURS,
                     labels=_EVOX_LABELS,
+                    font_scale=args.font_scale,
                     title=(
-                        f'{suite.upper()} - {pid}{dim_str}  '
+                        f'{pid_label}  \n  '
                         f'(pop={pop_size}, {n_gen} gen = {pop_size * n_gen} evals, '
                         f'mean \u00b1 std over seeds, shared combined PF)'
                     ),
@@ -751,8 +764,9 @@ def main(args) -> None:
                     results_root=root,
                     colours=_EVOX_COLOURS,
                     labels=_EVOX_LABELS,
+                    font_scale=args.font_scale,
                     title=(
-                        f'{suite.upper()} - {pid}{dim_str}  '
+                        f'{pid_label}  \n  '
                         f'(pop={pop_size}, {n_gen} gen = {pop_size * n_gen} evals, '
                         f'mean \u00b1 std over seeds)'
                     ),
@@ -771,19 +785,11 @@ def main(args) -> None:
                 else:
                     pf_norm = None
 
-                _meta = BENCHMARK_META.get(suite, {}).get(pid, {})
-                _ss   = _meta.get('search_space', '')
-                pid_label = f'{suite.upper()} - {pid}'
-                if _ss:
-                    pid_label += f'\n{_ss} Search Space'
-                if n_var is not None:
-                    pid_label += f'  |  {n_var} vars'
-
                 _xlabel, _ylabel = get_obj_labels(suite, pid)
 
                 if args.attainment:
-                    overlay_out  = os.path.join(root, f'{suite}_pid{pid}_attainment_overlay.png')
-                    subplots_out = os.path.join(root, f'{suite}_pid{pid}_attainment_subplots.png')
+                    overlay_out  = os.path.join(out_dir, f'{suite}_pid{pid}_attainment_overlay.png')
+                    subplots_out = os.path.join(out_dir, f'{suite}_pid{pid}_attainment_subplots.png')
 
                     plot_pareto_snapshots_evoxbench_overlay(
                         methods=methods,
@@ -835,8 +841,8 @@ def main(args) -> None:
                     # Attainment surfaces built from test_obj_archive — the
                     # cumulative non-dominated archive re-evaluated with
                     # true_eval=True at each generation checkpoint.
-                    t_overlay_out  = os.path.join(root, f'{suite}_pid{pid}_test_attainment_overlay.png')
-                    t_subplots_out = os.path.join(root, f'{suite}_pid{pid}_test_attainment_subplots.png')
+                    t_overlay_out  = os.path.join(out_dir, f'{suite}_pid{pid}_test_attainment_overlay.png')
+                    t_subplots_out = os.path.join(out_dir, f'{suite}_pid{pid}_test_attainment_subplots.png')
 
                     plot_pareto_snapshots_evoxbench_overlay(
                         methods=methods,
@@ -923,6 +929,9 @@ if __name__ == '__main__':
     )
     parser.add_argument('--root', type=str, default='results/evoxbench',
                         help='Root directory for results (default: results/evoxbench)')
+    parser.add_argument('--output_folder', '--output-folder', type=str, default=None,
+                        dest='output_folder',
+                        help='Directory to save all plot outputs (default: same as results root per PID)')
     parser.add_argument('--suite',    type=str, required=True,
                         choices=['c10mop', 'in1kmop', 'citysegmop'])
     parser.add_argument('--pids',     type=int, nargs='+', default=list(range(1, 10)),

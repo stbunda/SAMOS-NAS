@@ -43,7 +43,9 @@ _TABULAR_SEARCH_SPACES: frozenset = frozenset({'NB101', 'NATS', 'NB201'})
 
 # ─── canonical method list ────────────────────────────────────────────────────
 
-_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 'ssa-nsga2', 'samos-xgb']
+_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 
+            'ssa-nsga2',
+            'samos']
 
 _COLUMN_LABELS = {
     'random':    'Random',
@@ -52,7 +54,7 @@ _COLUMN_LABELS = {
     'nsga2':     'NSGA-II',
     'gpsaf':     'GPSAF',
     'ssa-nsga2': 'SSA-NSGA-II',
-    'samos-xgb': 'SAMOS',
+    'samos':     'SAMOS',
 }
 
 # Filesystem directory name for WFG results
@@ -62,8 +64,9 @@ _WFG_FOLDER = {
     'mosmac':    'mosmac',
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
-    'ssa-nsga2': 'ssa-nsga2',
-    'samos-xgb': 'samos-xgb-i200-g20',
+    'ssa-nsga2': 'ssa-nsga2-default',
+    # 'samos-xgb': 'samos-xgb-i200-g20',
+    'samos': 'samos-xgb-i200-g20',
 }
 
 # Filesystem directory name for EvoXBench results
@@ -74,11 +77,14 @@ _EVOX_FOLDER = {
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
     'ssa-nsga2': 'ssa-nsga2',
-    'samos-xgb': 'samos-xgb',
+    # 'samos-xgb': 'samos-xgb',
+    'samos': 'samos-cheapreal',
 }
 
-_WILCOXON_REF   = 'samos-xgb'
-_WILCOXON_ALPHA = 0.05
+# _WILCOXON_REF    = 'samos-xgb'
+_WILCOXON_REF    = 'samos'
+_WILCOXON_ALPHA  = 0.05
+_EXPECTED_SEEDS  = 30
 
 
 # ─── path helpers ─────────────────────────────────────────────────────────────
@@ -149,20 +155,30 @@ def _load_indicators_cache(root: str, approx_mtime: float) -> dict:
         return {}
 
     # Level-1: Pareto approximation must not have changed.
-    if abs(cache.get('approx_mtime', -1) - approx_mtime) > 1e-3:
-        print('  [indicators_cache] Stale: Pareto approximation has changed; rebuilding all.')
+    stored_approx_mt = cache.get('approx_mtime', -1)
+    if abs(stored_approx_mt - approx_mtime) > 1e-3:
+        print(f'  [indicators_cache] Stale: Pareto approximation has changed '
+              f'(stored={stored_approx_mt:.6f}, current={approx_mtime:.6f}); '
+              f'rebuilding all.')
         return {}
 
     valid: dict = {}
     for folder, entry in cache.get('methods', {}).items():
         stale = False
-        for fpath, stored_mt in entry.get('source_mtimes', {}).items():
+        stored_mtimes = entry.get('source_mtimes', {})
+        for fpath, stored_mt in stored_mtimes.items():
             if not os.path.isfile(fpath):
                 stale = True
                 break
             if os.path.getmtime(fpath) > stored_mt + 1e-3:
                 stale = True
                 break
+        if not stale:
+            # Also check for new seed files not in the stored snapshot.
+            seed_dir = os.path.join(root, folder)
+            current_files = set(_seed_mtimes(seed_dir).keys())
+            if current_files != set(stored_mtimes.keys()):
+                stale = True
         if stale:
             print(f'  [indicators_cache] Stale entry for {folder}; will recompute.')
             continue
@@ -260,6 +276,7 @@ def _collect_wfg_data(
     experiment_name: str,
     n_gen: int,
     pop_size: int,
+    methods: list | None = None,
 ) -> dict:
     """Return ``{problem: {method_key: ndarray | None}}`` for all WFG problems.
 
@@ -273,10 +290,11 @@ def _collect_wfg_data(
         Budget parameters used to locate the ``B{budget}_P{pop_size}`` folder.
     """
     result: dict = {}
+    _m = methods if methods is not None else _METHODS
     for problem in problems:
         root      = _results_root_wfg(problem, experiment_name, n_gen, pop_size)
         prob_data = {}
-        for key in _METHODS:
+        for key in _m:
             folder  = _WFG_FOLDER[key]
             metrics = _load_seeds_from_indicators(os.path.join(root, folder))
             prob_data[key] = metrics
@@ -289,6 +307,7 @@ def _collect_wfg_data(
                 print(f'  [WFG] {problem}/{key}: no data')
         result[problem] = prob_data
     return result
+
 
 
 def _collect_evox_data(
@@ -420,18 +439,18 @@ def _wilcoxon_marker(ref_vals, other_vals, higher_is_better: bool = True) -> str
     except Exception:
         return r'$(\approx)$'
     if p >= _WILCOXON_ALPHA:
-        return r'$(\approx)$'
+        return r'$^{\approx}$'
     ref_med   = np.mean(rv)
     other_med = np.mean(ov)
     if higher_is_better:
-        return r'$(+)$' if other_med > ref_med else r'$(-)$'
+        return r'$^{+}$' if other_med > ref_med else r'$^{-}$'
     else:
-        return r'$(+)$' if other_med < ref_med else r'$(-)$'
+        return r'$^{+}$' if other_med < ref_med else r'$^{-}$'
 
 
 def _fmt(mean: float, std: float, bold: bool, marker: str = '') -> str:
-    """Format a ``mean ± std`` cell, optionally bolding and appending a marker."""
-    s    = f'{mean:.4f}\\,\\textpm\\,{std:.4f}'
+    """Format a ``mean_{std}`` cell, optionally bolding and appending a marker."""
+    s    = f'{mean:.4f}$_{{\\text{{{std:.4f}}}}}$'
     cell = f'\\textbf{{{s}}}' if bold else s
     return f'{cell}{marker}'
 
@@ -507,6 +526,8 @@ def _render_section(
             std    = float(np.std(arr_f))
             bold   = (key == best_key)
             marker = '' if key == _WILCOXON_REF else _wilcoxon_marker(ref_arr, arr, higher_is_better)
+            if len(arr) < _EXPECTED_SEEDS:
+                marker += r'$^*$'
             cells.append(_fmt(mean, std, bold, marker))
 
         lines.append(' & '.join(cells) + r' \\')
@@ -526,6 +547,8 @@ def generate_combined_hv_table(
     metric: str = 'hv',
     methods: list | None = None,
     caption_note: str = '',
+    include_wfg: bool = True,
+    c10_pids: list | None = None,
 ) -> None:
     """Write a combined HV or IGD+ booktabs LaTeX table to *out_path*.
 
@@ -539,7 +562,11 @@ def generate_combined_hv_table(
     wfg_problems
         WFG problem name list in display order.
     pids
-        EvoXBench problem-ID list in display order.
+        EvoXBench problem-ID list used for IN-1K MOP rows (and C-10 MOP rows
+        when *c10_pids* is not given).
+    c10_pids
+        Override the problem-ID list for the C-10 MOP section.  When ``None``
+        the same *pids* list is used (original behaviour).
     n_obj_wfg, n_var_wfg
         WFG dimensionality metadata used in the caption.
     """
@@ -548,6 +575,7 @@ def generate_combined_hv_table(
         'igd_plus': (r'IGD\textsuperscript{+}',        'tab:combined_igd_plus', False),
     }
     metric_name, label_key, higher_is_better = _METRIC_META[metric]
+    _c10_pids = c10_pids if c10_pids is not None else pids
     _m       = methods if methods is not None else _METHODS
     n_cols   = 1 + len(_m)
     col_spec = 'l @{\\hspace{2em}} ' + ' '.join(['r'] * len(_m))
@@ -563,10 +591,14 @@ def generate_combined_hv_table(
         (
             r'\caption{Final ' + metric_name
             + r' (mean\,\textpm\,std over seeds) after 1200 evaluations on '
-            r'WFG\,1\textendash{}9 , C-10\,MOP\,1\textendash{}9, and IN-1K\,MOP\,1\textendash{}9. '
-            r'\textbf{Bold}: best per problem. '
+            + (
+                r'WFG\,1\textendash{}9 , C-10\,MOP\,1\textendash{}9, and IN-1K\,MOP\,1\textendash{}9. '
+                if include_wfg else
+                r'C-10\,MOP\,8\textendash{}9 and IN-1K\,MOP\,1\textendash{}9. '
+            )
+            + r'\textbf{Bold}: best per problem. '
             r'Wilcoxon rank-sum vs. SAMOS, $p{<}0.05$: '
-            r'$(+)$\,better, $(-)$\,worse, $(\approx)$\,not significant.'
+            r'$^{+}$\,better, $^{-}$\,worse, $^{\approx}$\,not significant.'
             + (' ' + caption_note if caption_note else '')
             + r'}'
         ),
@@ -578,32 +610,46 @@ def generate_combined_hv_table(
         col_header + r' \\',
     ]
 
+    # Problem-type markers appended to row labels
+    _MK_SYNTHETIC  = r'$^{\diamond}$'   # WFG — analytically-defined synthetic
+    _MK_TABULAR    = r'$^{\square}$'    # NB101 / NATS / NB201 — full tabular lookup
+    _MK_SURROGATE  = r'$^{\dagger}$'     # DARTS / ResNet-50D / … — surrogate predictor
+
+    def _evox_marker(suite: str, pid: int) -> str:
+        ss = BENCHMARK_META.get(suite, {}).get(pid, {}).get('search_space', '')
+        return _MK_TABULAR if ss in _TABULAR_SEARCH_SPACES else _MK_SURROGATE
+
     # WFG section
-    _render_section(
-        lines,
-        section_header=f'WFG (${n_obj_wfg}$ objectives, ${n_var_wfg}$ variables)',
-        row_labels=[f'WFG/MOP{i}' for i in range(1, len(wfg_problems) + 1)],
-        suite_data=wfg_data,
-        row_keys=wfg_problems,
-        metric=metric,
-        higher_is_better=higher_is_better,
-        methods=_m,
-    )
+    if include_wfg:
+        _render_section(
+            lines,
+            section_header=f'WFG (${n_obj_wfg}$ objectives, ${n_var_wfg}$ variables)',
+            row_labels=[
+                f'{i}{_MK_SYNTHETIC}'
+                for i in range(1, len(wfg_problems) + 1)
+            ],
+            suite_data=wfg_data,
+            row_keys=wfg_problems,
+            metric=metric,
+            higher_is_better=higher_is_better,
+            methods=_m,
+        )
 
     # C-10 MOP section
     _render_section(
         lines,
         section_header='C-10 MOP (M objectives, D variables)',
         row_labels=[
-            'MOP{} ({}, {})'.format(
+            '{}{} ({}, {})'.format(
                 pid,
+                _evox_marker('c10mop', pid),
                 BENCHMARK_META.get('c10mop', {}).get(pid, {}).get('n_obj', '?'),
                 BENCHMARK_META.get('c10mop', {}).get(pid, {}).get('n_var', '?'),
             )
-            for pid in pids
+            for pid in _c10_pids
         ],
         suite_data=c10_data,
-        row_keys=pids,
+        row_keys=_c10_pids,
         metric=metric,
         higher_is_better=higher_is_better,
         methods=_m,
@@ -614,8 +660,9 @@ def generate_combined_hv_table(
         lines,
         section_header='IN-1K MOP (M objectives, D variables)',
         row_labels=[
-            'MOP{} ({}, {})'.format(
+            '{}{} ({}, {})'.format(
                 pid,
+                _evox_marker('in1kmop', pid),
                 BENCHMARK_META.get('in1kmop', {}).get(pid, {}).get('n_obj', '?'),
                 BENCHMARK_META.get('in1kmop', {}).get(pid, {}).get('n_var', '?'),
             )
@@ -631,9 +678,9 @@ def generate_combined_hv_table(
     # Footnote row (before \bottomrule, inside the tabular body)
     lines += [
         r'\midrule',
-        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $(+)$: significantly better than SAMOS} \\',
-        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $(\approx)$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
-        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $(-)$: significantly worse} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS; $^{-}$: significantly worse; $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^*$: fewer than ' + str(_EXPECTED_SEEDS) + r' seeds evaluated.} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\diamond}$: synthetic benchmark (WFG); $^{\square}$: tabular NAS benchmark (NB101/NATS/NB201); $^{\dagger}$: surrogate NAS benchmark (DARTS/ResNet-50D/\ldots).} \\',
         # r'\bottomrule',
         r'\end{tabular}',
         r'}',
@@ -1270,6 +1317,445 @@ def generate_rank_pareto_combined_table(
         fh.write('\n'.join(lines) + '\n')
     print(f'\nRank-Pareto combined LaTeX table saved -> {out_path}')
 
+
+# ─── cross-benchmark convergence grid ────────────────────────────────────────
+
+# Ordered linestyles: each method gets a unique style so the plot is
+# distinguishable even in greyscale (colourblind-friendly).
+# _LINESTYLES = [
+#     '-',                    # solid
+#     '--',                   # dashed
+#     ':',                    # dotted
+#     '-.',                   # dash-dot
+#     (0, (3, 1, 1, 1)),      # densely dash-dotted
+#     (0, (5, 5)),            # loosely dashed
+#     (0, (1, 1)),            # densely dotted
+#     (0, (5, 1, 1, 1, 1, 1)),  # dash dot dot
+# ]
+
+# Markers for experimentation — all lines are solid, methods distinguished by marker shape.
+_MARKERS = [
+    'o',    # circle
+    's',    # square
+    '^',    # triangle up
+    'D',    # diamond
+    'P',    # plus (filled)
+    '*',    # star
+    'X',    # x (filled)
+    'v',    # triangle down
+]
+
+# Method colours (same palette used in plotter.py / analyze_evoxbench.py)
+_CONV_COLOURS = {
+    'random':    '#4e79a7',
+    'parego':    '#9c755f',
+    'mosmac':    '#76b7b2',
+    'nsga2':     '#f28e2b',
+    'gpsaf':     '#a0cbe8',
+    'ssa-nsga2': '#ff9da7',
+    'samos-xgb': '#b07aa1',
+}
+
+# Display labels for the legend
+_CONV_LABELS = {
+    'random':    'Random',
+    'parego':    'ParEGO',
+    'mosmac':    'MO-SMAC',
+    'nsga2':     'NSGA-II',
+    'gpsaf':     'GPSAF',
+    'ssa-nsga2': 'SSA-NSGA-II',
+    'samos-xgb': 'SAMOS (XGBoost)',
+}
+
+
+def _parse_convergence_spec(spec: str):
+    """Parse a problem specifier such as ``'wfg-1'``, ``'c10-8'``, ``'in1k-4'``.
+
+    Returns ``(suite, pid_or_problem)`` where *suite* is one of
+    ``'wfg'``, ``'c10mop'``, ``'in1kmop'`` and *pid_or_problem* is either
+    a problem-name string (WFG) or an integer PID (EvoXBench).
+    """
+    s = spec.lower().strip()
+    if s.startswith('wfg-'):
+        return ('wfg', f'wfg{s[4:]}')
+    if s.startswith('c10-'):
+        return ('c10mop', int(s[4:]))
+    if s.startswith('in1k-'):
+        return ('in1kmop', int(s[5:]))
+    raise ValueError(
+        f'Unknown convergence spec {spec!r}. '
+        'Expected one of: wfg-N, c10-N, in1k-N'
+    )
+
+
+def _spec_display_label(suite: str, pid_or_problem) -> str:
+    """Human-readable row label, e.g. ``'C-10/MOP1 (2 obj)'``."""
+    if suite == 'wfg':
+        n = pid_or_problem[3:]   # 'wfg1' -> '1'
+        return f'WFG/MOP{n}'
+    meta = BENCHMARK_META.get(suite, {}).get(pid_or_problem, {})
+    label = meta.get('label', f'MOP{pid_or_problem}')
+    n_obj = meta.get('n_obj', '?')
+    return f'{label} ({n_obj} obj)'
+
+
+def _wfg_traj_cache_path(root: str) -> str:
+    return os.path.join(root, '_conv_traj_cache.pkl')
+
+
+def _load_wfg_traj_cache(root: str, methods: list, n_gen: int) -> dict:
+    """Load cached WFG trajectory arrays, validating against seed file mtimes.
+
+    Returns a dict ``{folder: (hv_mean, hv_std, igd_mean, igd_std)}`` for
+    entries that are still fresh.  Missing or stale entries are omitted.
+    """
+    path = _wfg_traj_cache_path(root)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, 'rb') as fh:
+            cache = pickle.load(fh)
+    except Exception as exc:
+        print(f'  [wfg_traj_cache] WARN: could not read {path}: {exc}')
+        return {}
+
+    if cache.get('n_gen') != n_gen:
+        return {}
+
+    valid: dict = {}
+    for folder, entry in cache.get('methods', {}).items():
+        stale = False
+        for fpath, stored_mt in entry.get('source_mtimes', {}).items():
+            if not os.path.isfile(fpath):
+                stale = True
+                break
+            if os.path.getmtime(fpath) > stored_mt + 1e-3:
+                stale = True
+                break
+        if not stale and 'traj' in entry:
+            valid[folder] = entry['traj']
+    if valid:
+        print(f'  [wfg_traj_cache] Cache hit: {path} ({len(valid)} method(s))')
+    return valid
+
+
+def _save_wfg_traj_cache(root: str, n_gen: int, methods_data: dict) -> None:
+    """Atomically write WFG trajectory cache.
+
+    *methods_data* maps ``folder -> {'traj': tuple, 'source_mtimes': dict}``.
+    """
+    path  = _wfg_traj_cache_path(root)
+    cache = {'n_gen': n_gen, 'methods': methods_data}
+    dir_  = os.path.dirname(path) or '.'
+    os.makedirs(dir_, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dir_, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            pickle.dump(cache, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    print(f'  [wfg_traj_cache] Saved -> {path}')
+
+
+def _load_convergence_for_spec(
+    suite: str,
+    pid_or_problem,
+    methods: list,
+    wfg_n_gen: int,
+    wfg_pop: int,
+    evox_n_gen: int,
+    evox_pop: int,
+    experiment_name: str,
+    evox_root: str,
+    n_obj_wfg: int = 2,
+    no_norm: bool = False,
+    evox_approx_cache: dict | None = None,
+):
+    """Load per-method convergence trajectories and HV ceiling for one problem.
+
+    Parameters
+    ----------
+    evox_approx_cache : dict | None
+        Pre-built ``{(suite, pid): approx_info}`` mapping from ``main()``
+        (keyed as returned by :func:`build_pareto_approximation`).  When
+        provided the EvoXBench branch reuses these objects directly, avoiding
+        a full Pareto-approx rebuild and serving trajectories from the
+        ``traj_cache`` already embedded in each approx dict.
+
+    Returns
+    -------
+    trajectories : dict[str, tuple | None]
+        ``{method_key: (hv_mean, hv_std, igd_mean, igd_std)}`` or ``None``
+        when no data exists for that method.
+    hv_ceiling : float
+        Reference HV value (Pareto-front HV) to draw as a horizontal line.
+    pop_size : int
+        Population size used to scale the x-axis to evaluations.
+    """
+    from analysis.plotter import load_indicator_trajectories
+    from pymoo.indicators.hv import HV as _HV
+
+    if suite == 'wfg':
+        from problem.pymoo.benchmark_utils import (
+            get_pareto_front, default_ref_point, build_problem,
+        )
+        problem_name = pid_or_problem           # e.g. 'wfg1'
+        root = _results_root_wfg(problem_name, experiment_name, wfg_n_gen, wfg_pop)
+
+        # HV ceiling from the analytic Pareto front
+        problem_obj = build_problem(problem_name, n_obj_wfg)
+        pf         = get_pareto_front(problem_obj, n_obj_wfg)
+        ref_pt     = default_ref_point(problem_name, n_obj_wfg)
+        hv_ceiling = float(_HV(ref_point=ref_pt)(pf))
+
+        # Load trajectory cache; only recompute stale / missing entries.
+        cache_hit   = _load_wfg_traj_cache(root, methods, wfg_n_gen)
+        updated: dict = {}
+        trajectories: dict = {}
+        for key in methods:
+            folder = _WFG_FOLDER.get(key, key)
+            if folder in cache_hit:
+                trajectories[key] = cache_hit[folder]
+                seed_dir = os.path.join(root, folder)
+                updated[folder] = {
+                    'traj': cache_hit[folder],
+                    'source_mtimes': _seed_mtimes(seed_dir),
+                }
+            else:
+                traj = load_indicator_trajectories(folder, wfg_n_gen, root)
+                trajectories[key] = traj
+                seed_dir = os.path.join(root, folder)
+                if traj is not None:
+                    updated[folder] = {
+                        'traj': traj,
+                        'source_mtimes': _seed_mtimes(seed_dir),
+                    }
+        if updated:
+            _save_wfg_traj_cache(root, wfg_n_gen, updated)
+
+        return trajectories, hv_ceiling, wfg_pop
+
+    else:                                       # c10mop / in1kmop
+        from analysis.convergence import get_or_recompute_trajectories, save_approx_cache
+
+        pid = pid_or_problem
+        root = _results_root_evox(suite, pid, evox_n_gen, evox_pop, root=evox_root)
+        evox_folders = [_EVOX_FOLDER.get(k, k) for k in methods]
+
+        # Reuse pre-built approx from main() when available (avoids rebuild).
+        approx = (
+            evox_approx_cache.get((suite, pid))
+            if evox_approx_cache is not None
+            else None
+        )
+        if approx is None:
+            norm_bounds = compute_empirical_norm_bounds(evox_folders, root) if no_norm else None
+            approx = build_pareto_approximation(
+                suite, pid, evox_folders, evox_pop, evox_n_gen,
+                norm_bounds=norm_bounds,
+                results_root=root,
+            )
+        else:
+            norm_bounds = approx.get('norm_bounds') if no_norm else None
+
+        if approx is not None:
+            hv_ceiling = float(_HV(ref_point=approx['ref_point'])(approx['pareto_approx']))
+        else:
+            hv_ceiling = 1.0    # fallback when no approximation available
+
+        trajectories = {}
+        for key in methods:
+            folder = _EVOX_FOLDER.get(key, key)
+            if approx is not None:
+                # get_or_recompute_trajectories serves from traj_cache when available
+                traj = get_or_recompute_trajectories(
+                    folder, evox_n_gen, root, approx,
+                    norm_bounds=norm_bounds,
+                )
+            else:
+                traj = load_indicator_trajectories(folder, evox_n_gen, root)
+            trajectories[key] = traj
+
+        if approx is not None:
+            save_approx_cache(root, approx)
+
+        return trajectories, hv_ceiling, evox_pop
+
+
+def plot_convergence_grid_combined(
+    specs: list,
+    methods: list,
+    wfg_n_gen: int,
+    wfg_pop: int,
+    evox_n_gen: int,
+    evox_pop: int,
+    experiment_name: str,
+    evox_root: str,
+    out_path: str,
+    n_obj_wfg: int = 2,
+    no_norm: bool = False,
+    font_scale: float = 1.0,
+    evox_approx_cache: dict | None = None,
+) -> None:
+    """Multi-row convergence plot: one row per problem, HV left / IGD+ right.
+
+    Parameters
+    ----------
+    specs : list[str]
+        Problem specifiers, e.g. ``['wfg-1', 'c10-1', 'c10-8', 'in1k-4', 'in1k-9']``.
+        Each element produces one row in the figure.
+    methods : list[str]
+        Canonical method keys (from ``_METHODS``).
+    wfg_n_gen, wfg_pop :
+        Budget params for WFG results.
+    evox_n_gen, evox_pop :
+        Budget params for EvoXBench results.
+    experiment_name :
+        WFG sub-tree under ``results/`` (e.g. ``'pymoo_benchmark/2_obj'``).
+    evox_root :
+        Root folder for EvoXBench results (e.g. ``'results/evoxbench'``).
+    out_path :
+        Where to save the PNG.
+    n_obj_wfg :
+        Number of WFG objectives (used to build the reference point).
+    no_norm :
+        Derive empirical normalization bounds for EvoXBench (no-norm mode).
+    font_scale :
+        Multiplier applied to all font sizes.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.transforms import blended_transform_factory
+
+    n_rows = len(specs)
+
+    plt.rcParams.update({
+        'font.size':        12 * font_scale,
+        'axes.titlesize':   20 * font_scale,
+        'axes.labelsize':   14 * font_scale,
+        'xtick.labelsize':  12 * font_scale,
+        'ytick.labelsize':  12 * font_scale,
+        'legend.fontsize':  12 * font_scale,
+        'figure.dpi':       150,
+    })
+
+    # Assign one marker per method (consistent across all rows)
+    method_mk = {m: _MARKERS[i % len(_MARKERS)] for i, m in enumerate(methods)}
+
+    col_w    = 8 * font_scale**0.5   
+    row_h    = 4.5 * font_scale**0.5
+    legend_h = 0.8 * font_scale   # extra bottom space for shared legend
+
+    fig, axes = plt.subplots(
+        n_rows, 2,
+        figsize=(col_w * 2, row_h * n_rows),
+        squeeze=False,
+    )
+
+    # Accumulate legend handles/labels in first pass (one entry per method)
+    legend_handles: list = []
+    legend_labels:  list = []
+    seen_labels:    set  = set()
+    lw = 1.8 * font_scale
+
+    for row_idx, spec in enumerate(specs):
+        suite, pid_or_problem = _parse_convergence_spec(spec)
+        display_label = _spec_display_label(suite, pid_or_problem)
+
+        print(f'  [convergence_grid] Loading {spec} ({display_label}) ...')
+        trajectories, hv_ceiling, pop_size = _load_convergence_for_spec(
+            suite, pid_or_problem, methods,
+            wfg_n_gen, wfg_pop, evox_n_gen, evox_pop,
+            experiment_name, evox_root, n_obj_wfg, no_norm,
+            evox_approx_cache=evox_approx_cache,
+        )
+
+        ax_hv  = axes[row_idx, 0]
+        ax_igd = axes[row_idx, 1]
+
+        for key in methods:
+            traj = trajectories.get(key)
+            if traj is None:
+                continue
+            hv_mean, hv_std, igd_mean, igd_std = traj
+            x      = np.arange(1, len(hv_mean) + 1) * pop_size
+            colour = _CONV_COLOURS.get(key, '#555555')
+            label  = _CONV_LABELS.get(key, key)
+            mk     = method_mk[key]
+
+            line, = ax_hv.plot(x, hv_mean, label=label,
+                               color=colour, linestyle='-', linewidth=lw,
+                               marker=mk, markevery=0.15, markersize=5 * font_scale)
+            ax_hv.fill_between(x, hv_mean - hv_std, hv_mean + hv_std,
+                               alpha=0.12, color=colour)
+
+            ax_igd.plot(x, igd_mean, label=label,
+                        color=colour, linestyle='-', linewidth=lw,
+                        marker=mk, markevery=0.15, markersize=5 * font_scale)
+            ax_igd.fill_between(x, np.maximum(0.0, igd_mean - igd_std),
+                                igd_mean + igd_std, alpha=0.12, color=colour)
+
+            if label not in seen_labels:
+                legend_handles.append(line)
+                legend_labels.append(label)
+                seen_labels.add(label)
+
+        # HV ceiling: dashed line + inline annotation (per-row, not in legend)
+        ax_hv.axhline(hv_ceiling, color='#333333', linestyle='--',
+                      linewidth=0.9 * font_scale, alpha=0.85, zorder=1)
+        trans = blended_transform_factory(ax_hv.transAxes, ax_hv.transData)
+        ax_hv.text(0.99, hv_ceiling, f' PF HV={hv_ceiling:.4f}',
+                   transform=trans, ha='right', va='bottom', color='#333333',
+                   fontsize=12 * font_scale)
+        ylo, _ = ax_hv.get_ylim()
+        ax_hv.set_ylim(ylo, hv_ceiling + (hv_ceiling - ylo) * 0.06 * font_scale)
+
+        # Row label on left y-axis of HV subplot
+        ax_hv.set_ylabel(display_label, fontweight='bold')
+        ax_igd.set_ylabel('')
+
+        # Column headers on first row only
+        if row_idx == 0:
+            ax_hv.set_title('Hypervolume  ↑')
+            ax_igd.set_title('IGD\u207a  ↓')
+
+        # X-axis label on last row only
+        if row_idx == n_rows - 1:
+            ax_hv.set_xlabel('Evaluations')
+            ax_igd.set_xlabel('Evaluations')
+
+        ax_hv.tick_params(axis='both')
+        ax_igd.tick_params(axis='both')
+        ax_hv.grid(True, alpha=0.3)
+        ax_igd.grid(True, alpha=0.3)
+
+    # Shared legend: all methods on one row below the figure
+    fig.legend(
+        legend_handles, legend_labels,
+        loc='lower center',
+        bbox_to_anchor=(0.5, 0.0),
+        ncol=len(legend_labels),
+        frameon=True,
+        fontsize=10 * font_scale,
+    )
+
+    fig.tight_layout()
+    # Reserve room for the legend at the bottom
+    bottom_frac = legend_h / (row_h * n_rows + legend_h)
+    fig.subplots_adjust(bottom=bottom_frac + 0.01)
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Convergence grid saved -> {out_path}')
+
+
 def main(args) -> None:
     wfg_problems = args.wfg_problems
     skip_set     = set(args.skip_pids or [])
@@ -1278,23 +1764,37 @@ def main(args) -> None:
         print(f'Skipping EvoXBench PIDs: {sorted(skip_set)}')
     n_var_wfg    = 2 * (args.n_obj_wfg - 1) + 10
 
-    evox_methods = None
     caption_note = ''
     if args.evox_no_norm:
-        evox_methods = _detect_available_evox_methods(
+        # Log which methods have result files (informational only — all _METHODS
+        # are always loaded and shown; missing ones render as '--').
+        _detect_available_evox_methods(
             args.evox_root, ['c10mop', 'in1kmop'], pids, args.evox_n_gen, args.evox_pop,
         )
         caption_note = (
             r'C-10 MOP and IN-1K MOP values use empirically derived normalization bounds '
             r'(pooled min/max from all runs; evoxbench built-in bounds are inaccurate '
-            r'for DARTS and MobileNetV3 search spaces).'
+            r'for surrogate-assisted NAS problems). \textbf{Still under construction, not all seeds are in the table}}'
         )
+
+    # ── resolve method filter ──────────────────────────────────────────────────
+    active_methods = (
+        [k for k in _METHODS if k in set(args.methods)]
+        if args.methods
+        else _METHODS
+    )
+    if args.methods:
+        excluded = [k for k in _METHODS if k not in active_methods]
+        print(f'Active methods: {active_methods}')
+        if excluded:
+            print(f'Excluded methods: {excluded}')
 
     print('=' * 60)
     print('  Collecting WFG data ...')
     print('=' * 60)
     wfg_data = _collect_wfg_data(
-        wfg_problems, args.experiment_name, args.wfg_n_gen, args.wfg_pop
+        wfg_problems, args.experiment_name, args.wfg_n_gen, args.wfg_pop,
+        methods=active_methods,
     )
 
     print('\n' + '=' * 60)
@@ -1302,14 +1802,16 @@ def main(args) -> None:
     print('=' * 60)
     c10_data = _collect_evox_data('c10mop', pids, args.evox_n_gen, args.evox_pop,
                                    force=args.force, evox_root=args.evox_root,
-                                   no_norm=args.evox_no_norm, methods=evox_methods)
+                                   no_norm=args.evox_no_norm,
+                                   methods=active_methods)
 
     print('\n' + '=' * 60)
     print('  Collecting IN-1K MOP data ...')
     print('=' * 60)
     in1k_data = _collect_evox_data('in1kmop', pids, args.evox_n_gen, args.evox_pop,
                                     force=args.force, evox_root=args.evox_root,
-                                    no_norm=args.evox_no_norm, methods=evox_methods)
+                                    no_norm=args.evox_no_norm,
+                                    methods=active_methods)
 
     def _out_path_for(m: str) -> str:
         """Derive the output path for a given metric from ``args.out``."""
@@ -1332,8 +1834,10 @@ def main(args) -> None:
             n_obj_wfg=args.n_obj_wfg,
             n_var_wfg=n_var_wfg,
             metric=m,
-            methods=evox_methods,
+            methods=active_methods,
             caption_note=caption_note,
+            include_wfg=not args.evox_no_norm,
+            c10_pids=[8, 9] if args.evox_no_norm else None,
         )
 
     # ── optional rank-Pareto analysis ─────────────────────────────────────────
@@ -1434,6 +1938,53 @@ def main(args) -> None:
             extended       = args.rank_pareto_extended,
         )
 
+    # ── cross-benchmark convergence grid ──────────────────────────────────────
+    if args.convergence_plot_content:
+        specs = args.convergence_plot_content
+        conv_out = getattr(args, 'convergence_plot_out',
+                           os.path.join('results', 'figures', 'convergence_grid.png'))
+        print('\n' + '=' * 60)
+        print(f'  Convergence grid: {specs}')
+        print('=' * 60)
+
+        # Build a combined approx cache keyed by (suite, pid) from the data
+        # already loaded above, so EvoXBench trajectories are served from the
+        # traj_cache embedded in each approx_info dict (no rebuild needed).
+        _evox_approx_cache: dict = {}
+        for _pid in pids:
+            for _suite, _data_var in [('c10mop', c10_data), ('in1kmop', in1k_data)]:
+                # Retrieve the approx_info objects that were built during data
+                # collection.  They are stored inside _collect_evox_data →
+                # build_pareto_approximation; we need to reconstruct the cache
+                # key from the results root actually used.
+                _root = _results_root_evox(_suite, _pid, args.evox_n_gen, args.evox_pop,
+                                           root=args.evox_root)
+                _approx = build_pareto_approximation(
+                    _suite, _pid,
+                    [_EVOX_FOLDER.get(k, k) for k in active_methods],
+                    args.evox_pop, args.evox_n_gen,
+                    results_root=_root,
+                    # load from cache only (force_rebuild=False is the default)
+                )
+                if _approx is not None:
+                    _evox_approx_cache[(_suite, _pid)] = _approx
+
+        plot_convergence_grid_combined(
+            specs              = specs,
+            methods            = active_methods,
+            wfg_n_gen          = args.wfg_n_gen,
+            wfg_pop            = args.wfg_pop,
+            evox_n_gen         = args.evox_n_gen,
+            evox_pop           = args.evox_pop,
+            experiment_name    = args.experiment_name,
+            evox_root          = args.evox_root,
+            out_path           = conv_out,
+            n_obj_wfg          = args.n_obj_wfg,
+            no_norm            = args.evox_no_norm,
+            font_scale         = getattr(args, 'font_scale', 1.0),
+            evox_approx_cache  = _evox_approx_cache,
+        )
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -1507,8 +2058,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '--metric',
         choices=['hv', 'igd_plus', 'both'],
-        default='hv',
-        help='Indicator(s) to tabulate (default: hv).',
+        default='both',
+        help='Indicator(s) to tabulate (default: both).',
     )
 
     # ── rank-Pareto options ────────────────────────────────────────────────────
@@ -1576,6 +2127,45 @@ if __name__ == '__main__':
         default=os.path.join('results', 'rank_pareto_combined.tex'),
         metavar='PATH',
         help='Output path for the combined C-10 + IN-1K rank-Pareto LaTeX table.',
+    )
+    parser.add_argument(
+        '--methods',
+        nargs='+',
+        default=None,
+        metavar='METHOD',
+        choices=list(_METHODS),
+        help=(
+            'Restrict output to these method keys (e.g. random mosmac nsga2 gpsaf samos-xgb). '
+            'Default: all methods in _METHODS. Useful to exclude methods whose '
+            'result files are not yet available (e.g. --methods random mosmac nsga2 gpsaf samos-xgb).'
+        ),
+    )
+    parser.add_argument(
+        '--convergence_plot_content', '--convergence-plot-content',
+        nargs='+',
+        default=None,
+        dest='convergence_plot_content',
+        metavar='SPEC',
+        help=(
+            'Generate a combined convergence grid (HV left, IGD+ right, one row per problem). '
+            'Each SPEC is one of: wfg-N, c10-N, in1k-N  '
+            '(e.g. --convergence_plot_content wfg-1 c10-1 c10-8 in1k-4 in1k-9). '
+            'The number of rows equals the number of specs provided.'
+        ),
+    )
+    parser.add_argument(
+        '--convergence_plot_out', '--convergence-plot-out',
+        default=os.path.join('results', 'figures', 'convergence_grid.png'),
+        dest='convergence_plot_out',
+        metavar='PATH',
+        help='Output path for the convergence grid PNG (default: results/figures/convergence_grid.png).',
+    )
+    parser.add_argument(
+        '--font_scale', '--font-scale',
+        type=float,
+        default=1.0,
+        dest='font_scale',
+        help='Font size multiplier for convergence plot outputs (default: 1.0).',
     )
 
     arguments = parser.parse_args()

@@ -9,12 +9,22 @@ Answers four questions about the 26-variable integer encoding
   3. How many 'valid' options lead to duplicate architectures?
   4. What is the probability of encountering duplicates?
 
+Also produces a density heatmap of test error vs. #params for all
+423,624 unique NASBench-101 architectures (C-10/MOP1 objective space).
+
 Run directly:  python analyze_nasbench101_searchspace.py
 """
 
+import os
+import pickle
 import sys
 import io
 from math import comb, exp
+
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import LogNorm
 
 # Ensure Unicode output works on Windows terminals
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf-8-sig"):
@@ -168,5 +178,64 @@ def main() -> None:
     print(f"\n{sep}")
 
 
+def plot_density_heatmap() -> None:
+    """Density heatmap: #params vs. test accuracy for all unique NASBench-101 archs."""
+    db_path = os.path.join(os.path.dirname(__file__), 'problem', 'data', 'data_nasbench101.pkl')
+    with open(db_path, 'rb') as f:
+        db: dict = pickle.load(f)
+
+    n_params   = np.array([v['n_params']     for v in db.values()], dtype=np.float64)
+    test_acc   = np.array([v['test_acc_108'] * 100 for v in db.values()], dtype=np.float64)
+
+    N_BINS = 100
+    x_edges = np.linspace(test_acc.min(), test_acc.max(), N_BINS + 1)
+    y_edges = np.logspace(np.log10(n_params.min()), np.log10(n_params.max()), N_BINS + 1)
+
+    H, xedges, yedges = np.histogram2d(test_acc, n_params, bins=[x_edges, y_edges])
+
+    matplotlib.rcParams.update({'font.size': 15})
+
+    fig, ax = plt.subplots(figsize=(5, 7), dpi=150)
+
+    H_masked = np.ma.masked_where(H == 0, H)
+    mesh = ax.pcolormesh(
+        xedges, yedges, H_masked.T,
+        norm=LogNorm(vmin=1, vmax=H.max()),
+        cmap='plasma',
+        shading='auto',
+        rasterized=True,
+    )
+
+    cbar = fig.colorbar(mesh, ax=ax, pad=0.02)
+    cbar.set_label('# Architectures', fontsize=15)
+
+    ax.set_yscale('log')
+    ax.set_xlabel('Test Accuracy (%)', fontsize=15)
+    ax.set_xlim(0, 100)
+    ax.set_ylabel('Number of Parameters', fontsize=15)
+    ax.set_title('C-10/MOP1\nSearch Space Density', fontsize=15)
+
+    ax.text(
+        0.02, 0.97,
+        f'N = {len(db):,} unique architectures',
+        transform=ax.transAxes,
+        fontsize=9, va='top', ha='left',
+        color='white',
+        bbox=dict(boxstyle='round,pad=0.3', fc='#333333', alpha=0.7),
+    )
+
+    fig.tight_layout()
+
+    out_dir = os.path.join(os.path.dirname(__file__), 'results', 'figures')
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, 'c10mop1_density_heatmap.png')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    print(f'Saved → {out_path}')
+
+    plt.show()
+
+
 if __name__ == "__main__":
     main()
+    print()
+    plot_density_heatmap()

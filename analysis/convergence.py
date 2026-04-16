@@ -166,6 +166,21 @@ def _load_cache(results_root: str) -> dict | None:
             print(f'  [convergence] Cache stale: {seed_file} has been modified.')
             return None
 
+    # Also check for new seed files not recorded in sources.
+    known_files = {e['seed_file'] for e in cache.get('sources', [])}
+    for method in cache.get('methods', []):
+        seed_dir = os.path.join(results_root, method)
+        if not os.path.isdir(seed_dir):
+            continue
+        for fname in sorted(os.listdir(seed_dir)):
+            if not fname.endswith('.pkl'):
+                continue
+            fpath = os.path.abspath(os.path.join(seed_dir, fname))
+            if fpath not in known_files:
+                print(f'  [convergence] Cache stale: new file found: '
+                      f'{method}/{fname}.')
+                return None
+
     n_methods = len({e['method'] for e in cache.get('sources', [])})
     n_seeds   = len(cache.get('sources', []))
     print(
@@ -201,11 +216,22 @@ def compute_empirical_norm_bounds(
     methods: list,
     results_root: str,
 ) -> dict | None:
-    """Derive per-objective normalization bounds from the raw data.
+    """Derive per-objective normalization bounds from the combined Pareto front.
 
     Pools every finite value in ``test_obj_archive[-1]`` (final cumulative
     non-dominated archive, ``true_eval=True``) across all methods and seeds
-    under *results_root*, and returns the per-objective min/max.
+    under *results_root*, computes the non-dominated front of their union,
+    and returns the per-objective **ideal** (min) and **nadir** (max) of
+    that combined front.
+
+    Using the combined front's ideal/nadir — rather than the global min/max
+    over all archive points — ensures that after normalization the combined
+    Pareto approximation spans approximately ``[0, 1]^d``, so the nadir maps
+    to ``[1, 1]`` and the HV reference point is set to roughly ``[1.05, 1.05]``.
+    This avoids the degenerate situation where objectives with vastly different
+    scales (e.g. FLOPS ranging from 0.016 to 1.3M) collapse the entire Pareto
+    front to a tiny corner of normalized space, causing most methods to
+    register zero HV.
 
     Parameters
     ----------
@@ -217,7 +243,8 @@ def compute_empirical_norm_bounds(
     Returns
     -------
     ``{'obj_min': (n_obj,) ndarray, 'obj_max': (n_obj,) ndarray}``
-    or ``None`` if no data could be loaded.
+        Ideal and nadir of the combined Pareto front, or ``None`` if no data
+        could be loaded.
     """
     all_points: list[np.ndarray] = []
     for method in methods:
@@ -238,15 +265,23 @@ def compute_empirical_norm_bounds(
         return None
 
     combined = np.vstack(all_points)
-    obj_min  = combined.min(axis=0)
-    obj_max  = combined.max(axis=0)
+    combined = np.unique(combined, axis=0)
+
+    # Compute the combined non-dominated front; use its ideal and nadir as
+    # normalization bounds so that the normalized front spans [0, 1]^d.
+    nd_idx  = _nd_filter(combined)
+    pf      = combined[nd_idx]
+    obj_min = pf.min(axis=0)   # ideal point  (best per objective on the ND front)
+    obj_max = pf.max(axis=0)   # nadir point  (worst per objective on the ND front)
+
     # Guard against degenerate case where all values are identical
     flat = (obj_max - obj_min) < 1e-12
     obj_max[flat] = obj_min[flat] + 1.0
     print(
-        f'  [convergence] Empirical norm bounds from {results_root}:\n'
-        f'                obj_min = {np.round(obj_min, 4)}\n'
-        f'                obj_max = {np.round(obj_max, 4)}'
+        f'  [convergence] Empirical norm bounds (Pareto-front ideal/nadir) '
+        f'from {results_root}:\n'
+        f'                ideal (obj_min) = {np.round(obj_min, 6)}\n'
+        f'                nadir (obj_max) = {np.round(obj_max, 6)}'
     )
     return {'obj_min': obj_min, 'obj_max': obj_max}
 
@@ -319,11 +354,19 @@ def build_pareto_approximation(
                     and np.allclose(cached_nb['obj_max'], norm_bounds['obj_max'])
                 )
             )
-            if nb_match:
+            # Invalidate if the set of methods has changed
+            cached_methods = set(cached.get('methods', []))
+            methods_match = cached_methods == set(methods)
+            if nb_match and methods_match:
                 return cached
-            print(
-                '  [convergence] Cache stale: norm_bounds have changed; rebuilding.'
-            )
+            if not methods_match:
+                print(
+                    '  [convergence] Cache stale: methods have changed; rebuilding.'
+                )
+            if not nb_match:
+                print(
+                    '  [convergence] Cache stale: norm_bounds have changed; rebuilding.'
+                )
 
     all_points: list[np.ndarray] = []
     sources: list[dict] = []
@@ -381,6 +424,7 @@ def build_pareto_approximation(
         'ref_point':     ref_point,
         'sources':       sources,
         'norm_bounds':   norm_bounds,
+        'methods':       sorted(methods),
     }
     _save_cache(root, result)
     return result

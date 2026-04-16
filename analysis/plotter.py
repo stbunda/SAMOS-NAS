@@ -158,6 +158,7 @@ def plot_results(
     colours: dict = None,
     labels: dict = None,
     title: str = None,
+    font_scale: float = 1.0,
 ):
     """Plot HV and IGD+ trajectories (mean ± std over seeds) for each method.
 
@@ -177,10 +178,13 @@ def plot_results(
     _labels  = {**LABELS,  **(labels  or {})}
 
     matplotlib.rcParams.update({
-        'font.size': 11,
-        'axes.titlesize': 12,
-        'axes.labelsize': 11,
-        'legend.fontsize': 10,
+        'font.size':         11 * font_scale,
+        'axes.titlesize':    12 * font_scale,
+        'axes.labelsize':    11 * font_scale,
+        'xtick.labelsize':   10 * font_scale,
+        'ytick.labelsize':   10 * font_scale,
+        'legend.fontsize':   10 * font_scale,
+        'figure.titlesize':  12 * font_scale,
         'figure.dpi': 150,
     })
 
@@ -206,25 +210,28 @@ def plot_results(
     axes[0].axhline(hv_ceiling, color='black', linestyle='--', linewidth=1.0,
                     label=f'Optimal HV ({hv_ceiling:.4f})')
 
-    axes[0].set_title('Hypervolume (Higher is better)')
-    axes[0].set_xlabel('Evaluations')
-    axes[0].set_ylabel('Hypervolume')
+    axes[0].set_title('Hypervolume (Higher is better)', fontsize=12 * font_scale)
+    axes[0].set_xlabel('Evaluations', fontsize=11 * font_scale)
+    axes[0].set_ylabel('Hypervolume', fontsize=11 * font_scale)
+    axes[0].tick_params(axis='both', labelsize=10 * font_scale)
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].set_title('IGD+ (Lower is better)')
-    axes[1].set_xlabel('Evaluations')
-    axes[1].set_ylabel('IGD+')
+    axes[1].set_title('IGD+ (Lower is better)', fontsize=12 * font_scale)
+    axes[1].set_xlabel('Evaluations', fontsize=11 * font_scale)
+    axes[1].set_ylabel('IGD+', fontsize=11 * font_scale)
+    axes[1].tick_params(axis='both', labelsize=10 * font_scale)
     axes[1].grid(True, alpha=0.3)
 
     # Create shared legend below both plots
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True,
+               fontsize=10 * font_scale)
 
     _title = title if title is not None else (
         f'NASBench-101  --  test_acc@108  x  n_params\n'
         f'(pop={pop_size}, {n_gen} generations = {pop_size * n_gen} evals, mean ± std over seeds)'
     )
-    fig.suptitle(_title, y=1.01)
+    fig.suptitle(_title, y=1.01, fontsize=12 * font_scale)
     fig.tight_layout()
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
@@ -361,6 +368,7 @@ def plot_results_precomputed(
     colours: dict = None,
     labels: dict = None,
     title: str = None,
+    font_scale: float = 1.0,
 ):
     """Plot HV and IGD+ convergence from pre-computed trajectory data.
 
@@ -395,10 +403,13 @@ def plot_results_precomputed(
     _labels  = {**LABELS,  **(labels  or {})}
 
     matplotlib.rcParams.update({
-        'font.size': 11,
-        'axes.titlesize': 12,
-        'axes.labelsize': 11,
-        'legend.fontsize': 10,
+        'font.size':         11 * font_scale,
+        'axes.titlesize':    12 * font_scale,
+        'axes.labelsize':    11 * font_scale,
+        'xtick.labelsize':   10 * font_scale,
+        'ytick.labelsize':   10 * font_scale,
+        'legend.fontsize':   10 * font_scale,
+        'figure.titlesize':  12 * font_scale,
         'figure.dpi': 150,
     })
 
@@ -423,19 +434,22 @@ def plot_results_precomputed(
     axes[0].axhline(hv_ceiling, color='black', linestyle='--', linewidth=1.0,
                     label=f'Combined PF HV ({hv_ceiling:.4f})')
 
-    axes[0].set_title('Hypervolume (Higher is better)')
-    axes[0].set_xlabel('Evaluations')
-    axes[0].set_ylabel('Hypervolume')
+    axes[0].set_title('Hypervolume (Higher is better)', fontsize=12 * font_scale)
+    axes[0].set_xlabel('Evaluations', fontsize=11 * font_scale)
+    axes[0].set_ylabel('Hypervolume', fontsize=11 * font_scale)
+    axes[0].tick_params(axis='both', labelsize=10 * font_scale)
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].set_title('IGD+ (Lower is better)')
-    axes[1].set_xlabel('Evaluations')
-    axes[1].set_ylabel('IGD+')
+    axes[1].set_title('IGD+ (Lower is better)', fontsize=12 * font_scale)
+    axes[1].set_xlabel('Evaluations', fontsize=11 * font_scale)
+    axes[1].set_ylabel('IGD+', fontsize=11 * font_scale)
+    axes[1].tick_params(axis='both', labelsize=10 * font_scale)
     axes[1].grid(True, alpha=0.3)
 
     handles, leg_labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, leg_labels, loc='lower center',
-               bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True)
+               bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=True,
+               fontsize=10 * font_scale)
 
     if title is not None:
         _title = title
@@ -450,7 +464,7 @@ def plot_results_precomputed(
             dim_str = f'  |  {n_obj} objs'
         _title = f'{budget_str}{dim_str}  (mean ± std over seeds, shared combined PF)'
 
-    fig.suptitle(_title, y=1.01)
+    fig.suptitle(_title, y=1.01, fontsize=12 * font_scale)
     fig.tight_layout()
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)

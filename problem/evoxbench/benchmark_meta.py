@@ -29,45 +29,54 @@ _SS_ABBREV = {
 BENCHMARK_META: dict[str, dict[int, dict]] = {
     'c10mop': {
         # Objectives: err & params
-        1: {'label': 'C-10/MOP1',  'search_space': 'NB101',  'n_var': 26, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'cheap_obj_indices': [1]},
+        1: {'label': 'C-10/MOP1',  'search_space': 'NB101',  'n_var': 26, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'obj_names': ('Err.', '#Params'),                                                              'cheap_obj_indices': [1]},
         # Objectives: err & params & flops
-        2: {'label': 'C-10/MOP2',  'search_space': 'NB101',  'n_var': 26, 'n_obj': 3,                                                           'cheap_obj_indices': [1, 2]},
+        2: {'label': 'C-10/MOP2',  'search_space': 'NB101',  'n_var': 26, 'n_obj': 3,                                                           'obj_names': ('Err.', '#Params', 'FLOPs'),                                                     'cheap_obj_indices': [1, 2]},
         # Objectives: err & params & flops
-        3: {'label': 'C-10/MOP3',  'search_space': 'NATS',   'n_var':  5, 'n_obj': 3,                                                           'cheap_obj_indices': [1, 2]},
+        3: {'label': 'C-10/MOP3',  'search_space': 'NATS',   'n_var':  5, 'n_obj': 3,                                                           'obj_names': ('Err.', '#Params', 'FLOPs'),                                                     'cheap_obj_indices': [1, 2]},
         # Objectives: err & params & flops & latency
-        4: {'label': 'C-10/MOP4',  'search_space': 'NATS',   'n_var':  5, 'n_obj': 4,                                                           'cheap_obj_indices': [1, 2]},
+        4: {'label': 'C-10/MOP4',  'search_space': 'NATS',   'n_var':  5, 'n_obj': 4,                                                           'obj_names': ('Err.', '#Params', 'FLOPs', 'Latency'),                                         'cheap_obj_indices': [1, 2]},
         # Objectives: err & params & flops & edgegpu_lat & edgegpu_en
-        5: {'label': 'C-10/MOP5',  'search_space': 'NB201',  'n_var':  6, 'n_obj': 5,                                                           'cheap_obj_indices': [1, 2]},
+        5: {'label': 'C-10/MOP5',  'search_space': 'NB201',  'n_var':  6, 'n_obj': 5,                                                           'obj_names': ('Err.', '#Params', 'FLOPs', 'EdgeGPU Lat.', 'EdgeGPU En.'),                     'cheap_obj_indices': [1, 2]},
         # Objectives: err & params & flops & eyeriss_lat & eyeriss_en & ai
-        6: {'label': 'C-10/MOP6',  'search_space': 'NB201',  'n_var':  6, 'n_obj': 6,                                                           'cheap_obj_indices': [1, 2]},
-        # Objectives: err & params & flops & 5×hardware
-        7: {'label': 'C-10/MOP7',  'search_space': 'NB201',  'n_var':  6, 'n_obj': 8,                                                           'cheap_obj_indices': [1, 2]},
+        6: {'label': 'C-10/MOP6',  'search_space': 'NB201',  'n_var':  6, 'n_obj': 6,                                                           'obj_names': ('Err.', '#Params', 'FLOPs', 'Eyeriss Lat.', 'Eyeriss En.', 'AI score'),        'cheap_obj_indices': [1, 2]},
+        # Objectives: err & params & flops & edgegpu_lat & edgegpu_en & fpga_lat & fpga_en & eyeriss
+        7: {'label': 'C-10/MOP7',  'search_space': 'NB201',  'n_var':  6, 'n_obj': 8,                                                           'obj_names': ('Err.', '#Params', 'FLOPs', 'EdgeGPU Lat.', 'EdgeGPU En.', 'FPGA Lat.', 'FPGA En.', 'Eyeriss'), 'cheap_obj_indices': [1, 2]},
         # Objectives: err & params
-        8: {'label': 'C-10/MOP8',  'search_space': 'DARTS',  'n_var': 32, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'cheap_obj_indices': [1]},
+        8: {'label': 'C-10/MOP8',  'search_space': 'DARTS',  'n_var': 32, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'obj_names': ('Err.', '#Params'),                                                              'cheap_obj_indices': [1]},
         # Objectives: err & params & flops
-        9: {'label': 'C-10/MOP9',  'search_space': 'DARTS',  'n_var': 32, 'n_obj': 3,                                                           'cheap_obj_indices': [1, 2]},
+        9: {'label': 'C-10/MOP9',  'search_space': 'DARTS',  'n_var': 32, 'n_obj': 3,                                                           'obj_names': ('Err.', '#Params', 'FLOPs'),                                                     'cheap_obj_indices': [1, 2]},
     },
     'in1kmop': {
         # Objectives: err & params
-        1: {'label': 'IN-1k/MOP1', 'search_space': 'ResNet-50D',   'n_var': 25, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'cheap_obj_indices': [1]},
+        1: {'label': 'IN-1k/MOP1', 'search_space': 'ResNet-50D',   'n_var': 25, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'obj_names': ('Err.', '#Params'),              'cheap_obj_indices': [1]},
         # Objectives: err & flops
-        2: {'label': 'IN-1k/MOP2', 'search_space': 'ResNet-50D',   'n_var': 25, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', 'FLOPs (norm.)'),    'cheap_obj_indices': [1]},
+        2: {'label': 'IN-1k/MOP2', 'search_space': 'ResNet-50D',   'n_var': 25, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', 'FLOPs (norm.)'),    'obj_names': ('Err.', 'FLOPs'),                'cheap_obj_indices': [1]},
         # Objectives: err & params & flops
-        3: {'label': 'IN-1k/MOP3', 'search_space': 'ResNet-50D',   'n_var': 25, 'n_obj': 3,                                                           'cheap_obj_indices': [1, 2]},
+        3: {'label': 'IN-1k/MOP3', 'search_space': 'ResNet-50D',   'n_var': 25, 'n_obj': 3,                                                           'obj_names': ('Err.', '#Params', 'FLOPs'),     'cheap_obj_indices': [1, 2]},
         # Objectives: err & params
-        4: {'label': 'IN-1k/MOP4', 'search_space': 'Transformer',  'n_var': 34, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'cheap_obj_indices': [1]},
+        4: {'label': 'IN-1k/MOP4', 'search_space': 'Transformer',  'n_var': 34, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'obj_names': ('Err.', '#Params'),              'cheap_obj_indices': [1]},
         # Objectives: err & flops
-        5: {'label': 'IN-1k/MOP5', 'search_space': 'Transformer',  'n_var': 34, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', 'FLOPs (norm.)'),    'cheap_obj_indices': [1]},
+        5: {'label': 'IN-1k/MOP5', 'search_space': 'Transformer',  'n_var': 34, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', 'FLOPs (norm.)'),    'obj_names': ('Err.', 'FLOPs'),                'cheap_obj_indices': [1]},
         # Objectives: err & params & flops
-        6: {'label': 'IN-1k/MOP6', 'search_space': 'Transformer',  'n_var': 34, 'n_obj': 3,                                                           'cheap_obj_indices': [1, 2]},
+        6: {'label': 'IN-1k/MOP6', 'search_space': 'Transformer',  'n_var': 34, 'n_obj': 3,                                                           'obj_names': ('Err.', '#Params', 'FLOPs'),     'cheap_obj_indices': [1, 2]},
         # Objectives: err & params
-        7: {'label': 'IN-1k/MOP7', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'cheap_obj_indices': [1]},
+        7: {'label': 'IN-1k/MOP7', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 2, 'obj_labels': ('Val. error (norm.)', '#Params (norm.)'),  'obj_names': ('Err.', '#Params'),              'cheap_obj_indices': [1]},
         # Objectives: err & params & flops
-        8: {'label': 'IN-1k/MOP8', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 3,                                                           'cheap_obj_indices': [1, 2]},
+        8: {'label': 'IN-1k/MOP8', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 3,                                                           'obj_names': ('Err.', '#Params', 'FLOPs'),     'cheap_obj_indices': [1, 2]},
         # Objectives: err & params & flops & latency
-        9: {'label': 'IN-1k/MOP9', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 4,                                                           'cheap_obj_indices': [1, 2]},
+        9: {'label': 'IN-1k/MOP9', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 4,                                                           'obj_names': ('Err.', '#Params', 'FLOPs', 'Latency'), 'cheap_obj_indices': [1, 2]},
     },
 }
+
+
+def get_obj_names(suite: str, pid: int) -> tuple[str, ...] | None:
+    """Return a tuple of short objective names for display in plot titles.
+
+    Returns None if no names are defined for this suite/pid.
+    """
+    meta = BENCHMARK_META.get(suite, {}).get(pid, {})
+    return meta.get('obj_names', None)
 
 
 def get_obj_labels(suite: str, pid: int) -> tuple[str, str]:

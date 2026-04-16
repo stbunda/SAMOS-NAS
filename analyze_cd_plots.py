@@ -1,21 +1,26 @@
 """analyze_cd_plots.py — Critical difference (CI ranking) plots using robustranking.
 
-Produces confidence-interval ranking plots for WFG, C10MOP and IN1KMOP
-benchmarks by collecting final per-seed HV and IGD+ values, caching them as
-DataFrames, and feeding them into robustranking's BootstrapComparison.
+Produces confidence-interval ranking plots for three benchmark groups:
+
+  Synthetic  — WFG 1–9
+  Tabular    — C10MOP 1–7
+  Surrogate  — C10MOP 8–9 + IN1KMOP 1–9
+
+Collects final per-seed HV and IGD+ values, caches them as DataFrames, and
+feeds them into robustranking's BootstrapComparison.
 
 Run examples
 ------------
-# All three benchmarks with default settings (n_gen=60, pop_size=20)
+# All three groups with default settings (n_gen=60, pop_size=20)
 python analyze_cd_plots.py
 
-# WFG only, force cache rebuild
+# Synthetic only, force cache rebuild
 python analyze_cd_plots.py --benchmarks wfg --force
 
 # Custom method list and budget
 python analyze_cd_plots.py \\
-    --benchmarks c10mop in1kmop \\
-    --methods random nsga2 mosmac gpsaf samos-xgb \\
+    --benchmarks c10mop surrogate \\
+    --methods random nsga2 mosmac gpsaf samos \\
     --pop_size 20 --n_gen 60
 
 # Reduce bootstrap samples for a quick preview
@@ -24,10 +29,10 @@ python analyze_cd_plots.py --bootstrap_runs 1000
 Output
 ------
 results/cd_analysis/
-    wfg/B1200_P20/indicators_df.pkl          (cached DataFrame)
+    wfg/B1200_P20/indicators_df.csv          (cached DataFrame)
     wfg/B1200_P20/indicators_meta.json       (staleness metadata)
     c10mop/B1200_P20/…
-    in1kmop/B1200_P20/…
+    surrogate/B1200_P20/…
     cd_ranking_hv.pdf                        (one subplot per benchmark)
     cd_ranking_igd_plus.pdf
     cd_ranking_grid.pdf                      (2 × N combined figure)
@@ -49,15 +54,19 @@ from analysis.cd_analysis import (
 )
 
 # ─── defaults ─────────────────────────────────────────────────────────────────
+_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 
+            'ssa-nsga2',
+            'samos']
 
-_DEFAULT_METHODS = ['random', 'nsga2', 'parego', 'mosmac', 'gpsaf', 'samos-xgb', 'samos2', 'samos-cheapreal']
-_DEFAULT_BENCHMARKS = ['wfg', 'c10mop', 'in1kmop']
+# _DEFAULT_METHODS = ['random', 'nsga2', 'parego', 'mosmac', 'gpsaf', 'ssa-nsga2', 'samos']
+# _DEFAULT_BENCHMARKS = ['wfg', 'c10mop', 'in1kmop']
 
 # Human-readable benchmark titles used in plot headers
 _BENCHMARK_TITLES = {
-    'wfg':    'WFG 1–9',
-    'c10mop': 'C10MOP 1–9',
-    'in1kmop': 'IN1KMOP 1–9',
+    'wfg':      'Synthetic\nWFG 1–9',
+    'c10mop':   'Tabular\nC10MOP 1–7',
+    'in1kmop':  'IN1KMOP 1–9',
+    'surrogate': 'Surrogate\nC10MOP 8–9\nIN1KMOP 1–9',
 }
 
 
@@ -70,18 +79,24 @@ def _parse_args(argv=None):
     )
     p.add_argument(
         '--benchmarks', nargs='+',
-        default=_DEFAULT_BENCHMARKS,
-        choices=['wfg', 'c10mop', 'in1kmop'],
+        default=['wfg', 'c10mop', 'surrogate'],
+        choices=['wfg', 'c10mop', 'in1kmop', 'surrogate'],
         metavar='BENCH',
-        help='Benchmarks to analyse.',
+        help=(
+            'Benchmark groups to analyse. '
+            'wfg=Synthetic (WFG 1–9), '
+            'c10mop=Tabular (C10MOP 1–7 by default), '
+            'surrogate=C10MOP 8–9 + IN1KMOP 1–9, '
+            'in1kmop=IN1KMOP 1–9 standalone.'
+        ),
     )
     p.add_argument(
         '--methods', nargs='+',
-        default=_DEFAULT_METHODS,
+        default=_METHODS,
         metavar='METHOD',
         help=(
             'Canonical method names. '
-            'Supported: random, nsga2, parego, mosmac, gpsaf, samos-xgb.'
+            'Supported: random, nsga2, parego, mosmac, gpsaf, ssa-nsga2, samos.'
         ),
     )
     p.add_argument('--pop_size',  type=int, default=20,  help='Population size.')
@@ -121,7 +136,7 @@ def _parse_args(argv=None):
         help='Skip the combined 2×N grid figure.',
     )
     p.add_argument(
-        '--font_size', type=int, default=12,
+        '--font_size', type=int, default=23,
         help='Base font size (pt) for all plot text. Increase when the figure will be scaled down in a paper.',
     )
     return p.parse_args(argv)
@@ -145,7 +160,10 @@ def main(argv=None):
             kwargs['experiment_name'] = args.experiment_name
             if args.problems:
                 kwargs['problems'] = args.problems
-        else:
+        elif bench == 'c10mop':
+            # Tabular group: C10MOP 1–7 only (8–9 belong to Surrogate group)
+            kwargs['pids'] = args.pids if args.pids else list(range(1, 8))
+        elif bench in ('in1kmop', 'surrogate'):
             if args.pids:
                 kwargs['pids'] = args.pids
 

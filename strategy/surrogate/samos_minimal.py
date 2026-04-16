@@ -17,7 +17,7 @@ Drop-in pymoo Algorithm (same interface as NSGA2):
 
 Per-generation behaviour (matches strategy/surrogate/samos.py):
   1. Fit one surrogate per predicted objective on the full evaluated archive.
-  2. Warm-start inner NSGA-II: 75 % best archive (rank + crowding) + 25 % fresh random.
+  2. Warm-start inner NSGA-II: 100 % best archive (rank + crowding) (There is an option to add random to the initial population via the `warm_start_ratio` parameter).
   3. Run inner NSGA-II on the surrogate problem for n_gen_inner generations.
   4. Deduplicate candidates against the evaluated archive.
   5. Subset-selection to pick n_infill diverse candidates.
