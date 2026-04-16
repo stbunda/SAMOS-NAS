@@ -1756,6 +1756,167 @@ def plot_convergence_grid_combined(
     print(f'  Convergence grid saved -> {out_path}')
 
 
+def plot_hv_convergence_3x3(
+    suite: str,
+    methods: list,
+    wfg_n_gen: int,
+    wfg_pop: int,
+    evox_n_gen: int,
+    evox_pop: int,
+    experiment_name: str,
+    evox_root: str,
+    out_path: str,
+    n_obj_wfg: int = 2,
+    no_norm: bool = False,
+    font_scale: float = 1.0,
+    evox_approx_cache: dict | None = None,
+) -> None:
+    """3×3 HV-only convergence grid for all 9 problems of a benchmark suite.
+
+    Parameters
+    ----------
+    suite : str
+        One of ``'wfg'``, ``'c10'``, or ``'in1k'``.  Determines which 9
+        problems are plotted.
+    methods : list[str]
+        Canonical method keys (from ``_METHODS``).
+    wfg_n_gen, wfg_pop :
+        Budget params for WFG results.
+    evox_n_gen, evox_pop :
+        Budget params for EvoXBench results.
+    experiment_name :
+        WFG sub-tree under ``results/``.
+    evox_root :
+        Root folder for EvoXBench results.
+    out_path :
+        Where to save the PNG.
+    n_obj_wfg :
+        Number of WFG objectives.
+    no_norm :
+        Derive empirical normalisation bounds for EvoXBench (no-norm mode).
+    font_scale :
+        Multiplier applied to all font sizes.
+    evox_approx_cache :
+        Pre-built ``{(suite, pid): approx_info}`` mapping (avoids rebuild).
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    suite_lc = suite.lower()
+    if suite_lc == 'wfg':
+        specs = [f'wfg-{i}' for i in range(1, 10)]
+    elif suite_lc == 'c10':
+        specs = [f'c10-{i}' for i in range(1, 10)]
+    elif suite_lc == 'in1k':
+        specs = [f'in1k-{i}' for i in range(1, 10)]
+    else:
+        raise ValueError(
+            f'Unknown suite keyword {suite!r}. Expected one of: wfg, c10, in1k'
+        )
+
+    plt.rcParams.update({
+        'font.size':        10 * font_scale,
+        'axes.titlesize':   11 * font_scale,
+        'axes.labelsize':   10 * font_scale,
+        'xtick.labelsize':  9  * font_scale,
+        'ytick.labelsize':  9  * font_scale,
+        'legend.fontsize':  9  * font_scale,
+        'figure.dpi':       150,
+    })
+
+    method_mk = {m: _MARKERS[i % len(_MARKERS)] for i, m in enumerate(methods)}
+    lw = 1.5 * font_scale
+
+    cell_w   = 4.5 * font_scale ** 0.5
+    cell_h   = 3.5 * font_scale ** 0.5
+    legend_h = 0.7 * font_scale
+
+    fig, axes = plt.subplots(
+        3, 3,
+        figsize=(cell_w * 3, cell_h * 3),
+        squeeze=False,
+    )
+
+    legend_handles: list = []
+    legend_labels:  list = []
+    seen_labels:    set  = set()
+
+    for idx, spec in enumerate(specs):
+        row, col = divmod(idx, 3)
+        suite_name, pid_or_problem = _parse_convergence_spec(spec)
+        display_label = _spec_display_label(suite_name, pid_or_problem)
+
+        print(f'  [3x3_convergence] Loading {spec} ({display_label}) ...')
+        trajectories, hv_ceiling, pop_size = _load_convergence_for_spec(
+            suite_name, pid_or_problem, methods,
+            wfg_n_gen, wfg_pop, evox_n_gen, evox_pop,
+            experiment_name, evox_root, n_obj_wfg, no_norm,
+            evox_approx_cache=evox_approx_cache,
+        )
+
+        ax = axes[row, col]
+
+        for key in methods:
+            traj = trajectories.get(key)
+            if traj is None:
+                continue
+            hv_mean, hv_std, *_ = traj
+            x      = np.arange(1, len(hv_mean) + 1) * pop_size
+            colour = _CONV_COLOURS.get(key, '#555555')
+            label  = _CONV_LABELS.get(key, key)
+            mk     = method_mk[key]
+
+            line, = ax.plot(
+                x, hv_mean, label=label,
+                color=colour, linestyle='-', linewidth=lw,
+                marker=mk, markevery=0.2, markersize=4 * font_scale,
+            )
+            ax.fill_between(
+                x, hv_mean - hv_std, hv_mean + hv_std,
+                alpha=0.12, color=colour,
+            )
+
+            if label not in seen_labels:
+                legend_handles.append(line)
+                legend_labels.append(label)
+                seen_labels.add(label)
+
+        # HV ceiling reference line (not added to legend)
+        ax.axhline(
+            hv_ceiling, color='#333333', linestyle='--',
+            linewidth=0.8 * font_scale, alpha=0.85, zorder=1,
+        )
+
+        ax.set_title(display_label)
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(axis='both')
+
+        if col == 0:
+            ax.set_ylabel('Hypervolume  ↑')
+        if row == 2:
+            ax.set_xlabel('Evaluations')
+
+    # Shared legend below the grid
+    fig.legend(
+        legend_handles, legend_labels,
+        loc='lower center',
+        bbox_to_anchor=(0.5, 0.0),
+        ncol=max(1, len(legend_labels)),
+        frameon=True,
+        fontsize=9 * font_scale,
+    )
+
+    fig.tight_layout()
+    bottom_frac = legend_h / (cell_h * 3 + legend_h)
+    fig.subplots_adjust(bottom=bottom_frac + 0.01)
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  3×3 HV convergence grid saved -> {out_path}')
+
+
 def main(args) -> None:
     wfg_problems = args.wfg_problems
     skip_set     = set(args.skip_pids or [])
@@ -1940,23 +2101,21 @@ def main(args) -> None:
 
     # ── cross-benchmark convergence grid ──────────────────────────────────────
     if args.convergence_plot_content:
-        specs = args.convergence_plot_content
+        _SUITE_KEYWORDS = {'wfg', 'c10', 'in1k'}
+        regular_specs  = [s for s in args.convergence_plot_content
+                          if s.lower() not in _SUITE_KEYWORDS]
+        suite_keywords = [s.lower() for s in args.convergence_plot_content
+                          if s.lower() in _SUITE_KEYWORDS]
+
         conv_out = getattr(args, 'convergence_plot_out',
                            os.path.join('results', 'figures', 'convergence_grid.png'))
-        print('\n' + '=' * 60)
-        print(f'  Convergence grid: {specs}')
-        print('=' * 60)
 
         # Build a combined approx cache keyed by (suite, pid) from the data
         # already loaded above, so EvoXBench trajectories are served from the
         # traj_cache embedded in each approx_info dict (no rebuild needed).
         _evox_approx_cache: dict = {}
         for _pid in pids:
-            for _suite, _data_var in [('c10mop', c10_data), ('in1kmop', in1k_data)]:
-                # Retrieve the approx_info objects that were built during data
-                # collection.  They are stored inside _collect_evox_data →
-                # build_pareto_approximation; we need to reconstruct the cache
-                # key from the results root actually used.
+            for _suite in ('c10mop', 'in1kmop'):
                 _root = _results_root_evox(_suite, _pid, args.evox_n_gen, args.evox_pop,
                                            root=args.evox_root)
                 _approx = build_pareto_approximation(
@@ -1964,26 +2123,53 @@ def main(args) -> None:
                     [_EVOX_FOLDER.get(k, k) for k in active_methods],
                     args.evox_pop, args.evox_n_gen,
                     results_root=_root,
-                    # load from cache only (force_rebuild=False is the default)
                 )
                 if _approx is not None:
                     _evox_approx_cache[(_suite, _pid)] = _approx
 
-        plot_convergence_grid_combined(
-            specs              = specs,
-            methods            = active_methods,
-            wfg_n_gen          = args.wfg_n_gen,
-            wfg_pop            = args.wfg_pop,
-            evox_n_gen         = args.evox_n_gen,
-            evox_pop           = args.evox_pop,
-            experiment_name    = args.experiment_name,
-            evox_root          = args.evox_root,
-            out_path           = conv_out,
-            n_obj_wfg          = args.n_obj_wfg,
-            no_norm            = args.evox_no_norm,
-            font_scale         = getattr(args, 'font_scale', 1.0),
-            evox_approx_cache  = _evox_approx_cache,
-        )
+        # Existing multi-row combined plot (individual specs like wfg-1, c10-3 …)
+        if regular_specs:
+            print('\n' + '=' * 60)
+            print(f'  Convergence grid: {regular_specs}')
+            print('=' * 60)
+            plot_convergence_grid_combined(
+                specs              = regular_specs,
+                methods            = active_methods,
+                wfg_n_gen          = args.wfg_n_gen,
+                wfg_pop            = args.wfg_pop,
+                evox_n_gen         = args.evox_n_gen,
+                evox_pop           = args.evox_pop,
+                experiment_name    = args.experiment_name,
+                evox_root          = args.evox_root,
+                out_path           = conv_out,
+                n_obj_wfg          = args.n_obj_wfg,
+                no_norm            = args.evox_no_norm,
+                font_scale         = getattr(args, 'font_scale', 1.0),
+                evox_approx_cache  = _evox_approx_cache,
+            )
+
+        # New 3×3 HV-only grids (one plot per suite keyword)
+        for suite_kw in suite_keywords:
+            base, ext = os.path.splitext(conv_out)
+            suite_out = f'{base}_{suite_kw}_3x3{ext}'
+            print('\n' + '=' * 60)
+            print(f'  3×3 HV convergence grid: {suite_kw.upper()}')
+            print('=' * 60)
+            plot_hv_convergence_3x3(
+                suite              = suite_kw,
+                methods            = active_methods,
+                wfg_n_gen          = args.wfg_n_gen,
+                wfg_pop            = args.wfg_pop,
+                evox_n_gen         = args.evox_n_gen,
+                evox_pop           = args.evox_pop,
+                experiment_name    = args.experiment_name,
+                evox_root          = args.evox_root,
+                out_path           = suite_out,
+                n_obj_wfg          = args.n_obj_wfg,
+                no_norm            = args.evox_no_norm,
+                font_scale         = getattr(args, 'font_scale', 1.0),
+                evox_approx_cache  = _evox_approx_cache,
+            )
 
 
 if __name__ == '__main__':
