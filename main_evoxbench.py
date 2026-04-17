@@ -32,7 +32,7 @@ from problem.evoxbench.benchmark_meta import BENCHMARK_META
 from problem.evoxbench.callbacks import EvoxBenchCallback
 from strategy.algorithm.algorithms import RandomGA
 from strategy.algorithm.gpsaf import GPSAF
-from strategy.algorithm.ssansga2 import SSANSGA2
+from strategy.algorithm.ssansga2 import SSANSGA2, SklearnSSANSGA2, SklearnSSANSGA2CheapReal
 from strategy.algorithm.parego import run_parego_evoxbench
 from strategy.sampler import EvoxBenchSampler
 from strategy.operations.crossover import IntegerUniformCrossover
@@ -350,17 +350,62 @@ def run_single(
             dedup_key_fn=elim.key,
         )
 
-    elif method == 'ssa-nsga2':
+    elif method.startswith('ssa-nsga2'):
+        surrogate_type = method[len('ssa-nsga2'):].lstrip('-') or 'default'
         n_doe_    = n_doe    if n_doe    is not None else pop_size
         n_infill_ = n_infill if n_infill is not None else pop_size
         inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
-        algorithm = SSANSGA2(
-            sampling=sampler,
-            n_infills=n_infill_,
-            surr_pop_size=inner_ps,
-            surr_n_gen=n_gen_inner,
-            n_initial_doe=n_doe_,
-        )
+
+        if surrogate_type == 'default':
+            algorithm = SSANSGA2(
+                sampling=sampler,
+                n_infills=n_infill_,
+                surr_pop_size=inner_ps,
+                surr_n_gen=n_gen_inner,
+                n_initial_doe=n_doe_,
+            )
+
+        elif surrogate_type == 'xgb':
+            rng   = np.random.RandomState(seed)
+            n_obj = benchmark.evaluator.n_objs
+            sklearn_models = [
+                XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                for _ in range(n_obj)
+            ]
+            algorithm = SklearnSSANSGA2(
+                sklearn_models=sklearn_models,
+                sampling=sampler,
+                n_infills=n_infill_,
+                surr_pop_size=inner_ps,
+                surr_n_gen=n_gen_inner,
+                n_initial_doe=n_doe_,
+            )
+
+        elif surrogate_type == 'xgb-cheap':
+            rng   = np.random.RandomState(seed)
+            n_obj = benchmark.evaluator.n_objs
+            meta  = BENCHMARK_META.get(suite, {}).get(pid, {})
+            real_obj_indices    = meta.get('cheap_obj_indices', [])
+            predict_obj_indices = [i for i in range(n_obj) if i not in set(real_obj_indices)]
+            sklearn_models = [
+                XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                for _ in predict_obj_indices
+            ]
+            algorithm = SklearnSSANSGA2CheapReal(
+                sklearn_models=sklearn_models,
+                predict_obj_indices=predict_obj_indices,
+                real_obj_indices=real_obj_indices,
+                benchmark=benchmark,
+                no_norm=no_norm,
+                sampling=sampler,
+                n_infills=n_infill_,
+                surr_pop_size=inner_ps,
+                surr_n_gen=n_gen_inner,
+                n_initial_doe=n_doe_,
+            )
+
+        else:
+            raise ValueError(f'Unknown surrogate type {surrogate_type!r} in {method!r}')
 
     elif method == 'gpsaf-default':
         n_doe_    = n_doe    if n_doe    is not None else pop_size
