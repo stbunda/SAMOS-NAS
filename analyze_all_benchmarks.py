@@ -1361,28 +1361,34 @@ _MARKERS = [
     '*',    # star
     'X',    # x (filled)
     'v',    # triangle down
+    'h',    # hexagon
+    '<',    # triangle left
 ]
 
 # Method colours (same palette used in plotter.py / analyze_evoxbench.py)
 _CONV_COLOURS = {
-    'random':    '#4e79a7',
-    'parego':    '#9c755f',
-    'mosmac':    '#76b7b2',
-    'nsga2':     '#f28e2b',
-    'gpsaf':     '#a0cbe8',
-    'ssa-nsga2': '#ff9da7',
-    'samos-xgb': '#b07aa1',
+    'random':              '#4e79a7',
+    'parego':              '#9c755f',
+    'mosmac':              '#76b7b2',
+    'nsga2':               '#f28e2b',
+    'gpsaf':               '#a0cbe8',
+    'ssa-nsga2':           '#ff9da7',
+    'ssa-nsga2-xgb':       '#e15759',
+    'ssa-nsga2-xgb-cheap': '#59a14f',
+    'samos':               '#b07aa1',
 }
 
 # Display labels for the legend
 _CONV_LABELS = {
-    'random':    'Random',
-    'parego':    'ParEGO',
-    'mosmac':    'MO-SMAC',
-    'nsga2':     'NSGA-II',
-    'gpsaf':     'GPSAF',
-    'ssa-nsga2': 'SSA-NSGA-II',
-    'samos-xgb': 'SAMOS (XGBoost)',
+    'random':              'Random',
+    'parego':              'ParEGO',
+    'mosmac':              'MO-SMAC',
+    'nsga2':               'NSGA-II',
+    'gpsaf':               'GPSAF',
+    'ssa-nsga2':           'SSA-NSGA-II',
+    'ssa-nsga2-xgb':       'SSA-NSGA-II-X',
+    'ssa-nsga2-xgb-cheap': 'SSA-NSGA-II-XC',
+    'samos':               'SAMOS-XC',
 }
 
 
