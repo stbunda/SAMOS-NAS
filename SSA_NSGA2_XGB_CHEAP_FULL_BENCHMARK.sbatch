@@ -26,7 +26,7 @@
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
 #SBATCH --time=48:00:00
-#SBATCH --output=slurm_logs_ssa_nsga2_xgb_cheap_full/%x_%A_%a.log
+#SBATCH --output=slurm_logs_ssa_nsga2_xgb/%x_%A_%a.log
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline
 
