@@ -53,9 +53,9 @@ _COLUMN_LABELS = {
     'mosmac':    'MO-SMAC',
     'nsga2':     'NSGA-II',
     'gpsaf':     'GPSAF',
-    'ssa-nsga2': 'SSA-NSGA-II',
-    'ssa-nsga2-xgb': 'SSA-NSGA-II-X',
-    'ssa-nsga2-xgb-cheap': 'SSA-NSGA-II-XC',
+    'ssa-nsga2': 'SSA-RBF',
+    'ssa-nsga2-xgb': 'SSA-XGB',
+    'ssa-nsga2-xgb-cheap': 'SSA-XGB-C',
     'samos':     'SAMOS-XC',
 }
 
@@ -1372,9 +1372,9 @@ _CONV_COLOURS = {
     'mosmac':              '#76b7b2',
     'nsga2':               '#f28e2b',
     'gpsaf':               '#a0cbe8',
-    'ssa-nsga2':           '#ff9da7',
-    'ssa-nsga2-xgb':       '#e15759',
-    'ssa-nsga2-xgb-cheap': '#59a14f',
+    'ssa-rbf':             '#ff9da7',
+    'ssa-xgb':             '#e15759',
+    'ssa-xgb-c':           '#59a14f',
     'samos':               '#b07aa1',
 }
 
@@ -1385,9 +1385,9 @@ _CONV_LABELS = {
     'mosmac':              'MO-SMAC',
     'nsga2':               'NSGA-II',
     'gpsaf':               'GPSAF',
-    'ssa-nsga2':           'SSA-NSGA-II',
-    'ssa-nsga2-xgb':       'SSA-NSGA-II-X',
-    'ssa-nsga2-xgb-cheap': 'SSA-NSGA-II-XC',
+    'ssa-rbf':             'SSA-NSGA-II',
+    'ssa-xgb':             'SSA-NSGA-II-X',
+    'ssa-xgb-c':           'SSA-NSGA-II-XC',
     'samos':               'SAMOS-XC',
 }
 
