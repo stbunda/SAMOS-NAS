@@ -286,8 +286,10 @@ def run_single(
             algo_family    = 'ssa-nsga2'
             surrogate_type = method[len('ssa-nsga2-'):]
 
-        if surrogate_type not in ('default', 'rfr', 'xgb'):
+        if surrogate_type not in ('default', 'rfr', 'xgb', 'xgb-cheap'):
             raise ValueError(f'Unknown surrogate type {surrogate_type!r} in {method!r}')
+        # WFG/ZDT/DTLZ have no cheap objective lookups; treat 'xgb-cheap' as plain 'xgb'
+        surrogate_type = 'xgb' if surrogate_type == 'xgb-cheap' else surrogate_type
 
         n_doe_    = n_doe    if n_doe    is not None else pop_size
         n_infill_ = n_infill if n_infill is not None else pop_size
