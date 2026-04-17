@@ -44,7 +44,7 @@ _TABULAR_SEARCH_SPACES: frozenset = frozenset({'NB101', 'NATS', 'NB201'})
 # ─── canonical method list ────────────────────────────────────────────────────
 
 _METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 
-            'ssa-nsga2',
+            'ssa-nsga2', 'ssa-nsga2-xgb', 'ssa-nsga2-xgb-cheap',
             'samos']
 
 _COLUMN_LABELS = {
@@ -54,7 +54,9 @@ _COLUMN_LABELS = {
     'nsga2':     'NSGA-II',
     'gpsaf':     'GPSAF',
     'ssa-nsga2': 'SSA-NSGA-II',
-    'samos':     'SAMOS',
+    'ssa-nsga2-xgb': 'SSA-NSGA-II-X',
+    'ssa-nsga2-xgb-cheap': 'SSA-NSGA-II-XC',
+    'samos':     'SAMOS-XC',
 }
 
 # Filesystem directory name for WFG results
@@ -65,6 +67,8 @@ _WFG_FOLDER = {
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
     'ssa-nsga2': 'ssa-nsga2-default',
+    'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
+    'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
     # 'samos-xgb': 'samos-xgb-i200-g20',
     'samos': 'samos-xgb-i200-g20',
 }
@@ -77,6 +81,8 @@ _EVOX_FOLDER = {
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
     'ssa-nsga2': 'ssa-nsga2',
+    'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
+    'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
     # 'samos-xgb': 'samos-xgb',
     'samos': 'samos-cheapreal',
 }
