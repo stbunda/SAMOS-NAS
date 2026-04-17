@@ -555,6 +555,7 @@ def generate_combined_hv_table(
     caption_note: str = '',
     include_wfg: bool = True,
     c10_pids: list | None = None,
+    rotate: bool = False,
 ) -> None:
     """Write a combined HV or IGD+ booktabs LaTeX table to *out_path*.
 
@@ -575,6 +576,10 @@ def generate_combined_hv_table(
         the same *pids* list is used (original behaviour).
     n_obj_wfg, n_var_wfg
         WFG dimensionality metadata used in the caption.
+    rotate
+        When ``True`` wrap the table in a ``sidewaystable`` environment
+        (requires ``\\usepackage{rotating}`` in the document preamble) so
+        that it is rotated 90° to fit on a portrait page.
     """
     _METRIC_META = {
         'hv':       ('hypervolume',                    'tab:combined_hv',       True),
@@ -591,8 +596,9 @@ def generate_combined_hv_table(
         + [r'\textbf{' + _COLUMN_LABELS[k] + r'}' for k in _m]
     )
 
+    table_env = 'sidewaystable' if rotate else 'table*'
     lines = [
-        r'\begin{table*}[t]',
+        r'\begin{' + table_env + r'}[t]',
         r'\centering',
         (
             r'\caption{Final ' + metric_name
@@ -609,8 +615,13 @@ def generate_combined_hv_table(
             + r'}'
         ),
         r'\label{' + label_key + r'}',
-        r'\resizebox{\linewidth}{!}{%',
-        r'\setlength\tabcolsep{5pt}%',
+    ]
+    if not rotate:
+        lines += [
+            r'\resizebox{\linewidth}{!}{%',
+            r'\setlength\tabcolsep{5pt}%',
+        ]
+    lines += [
         r'\begin{tabular}{' + col_spec + r'}',
         r'\toprule',
         col_header + r' \\',
@@ -689,9 +700,10 @@ def generate_combined_hv_table(
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\diamond}$: synthetic benchmark (WFG); $^{\square}$: tabular NAS benchmark (NB101/NATS/NB201); $^{\dagger}$: surrogate NAS benchmark (DARTS/ResNet-50D/\ldots).} \\',
         # r'\bottomrule',
         r'\end{tabular}',
-        r'}',
-        r'\end{table*}',
     ]
+    if not rotate:
+        lines.append(r'}')
+    lines.append(r'\end{' + table_env + r'}')
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     with open(out_path, 'w', encoding='utf-8') as fh:
@@ -1655,7 +1667,7 @@ def plot_convergence_grid_combined(
     method_mk = {m: _MARKERS[i % len(_MARKERS)] for i, m in enumerate(methods)}
 
     col_w    = 8 * font_scale**0.5   
-    row_h    = 4.5 * font_scale**0.5
+    row_h    = 4 * font_scale**0.5
     legend_h = 0.8 * font_scale   # extra bottom space for shared legend
 
     fig, axes = plt.subplots(
@@ -2005,6 +2017,7 @@ def main(args) -> None:
             caption_note=caption_note,
             include_wfg=not args.evox_no_norm,
             c10_pids=[8, 9] if args.evox_no_norm else None,
+            rotate=args.rotate,
         )
 
     # ── optional rank-Pareto analysis ─────────────────────────────────────────
@@ -2231,6 +2244,8 @@ if __name__ == '__main__':
                         help='Number of objectives for WFG (used in caption).')
     parser.add_argument('--force', action='store_true',
                         help='Ignore the indicators cache and recompute all EvoXBench values.')
+    parser.add_argument('--rotate', action='store_true',
+                        help='Wrap the table in a sidewaystable environment (requires \\usepackage{rotating}) to rotate it 90° and fit on a portrait page.')
     parser.add_argument(
         '--evox_root', '--evox-root',
         default='results/evoxbench',
