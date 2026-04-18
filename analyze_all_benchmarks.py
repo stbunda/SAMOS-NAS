@@ -576,11 +576,8 @@ def generate_combined_hv_table(
     caption_note: str = '',
     include_wfg: bool = True,
     c10_pids: list | None = None,
-<<<<<<< HEAD
     max_seeds: int | None = None,
-=======
     rotate: bool = False,
->>>>>>> bdffdbedc696c4eebf4f23c5093d463df2f10da7
 ) -> None:
     """Write a combined HV or IGD+ booktabs LaTeX table to *out_path*.
 
@@ -621,15 +618,12 @@ def generate_combined_hv_table(
         + [r'\textbf{' + _COLUMN_LABELS[k] + r'}' for k in _m]
     )
 
-<<<<<<< HEAD
     _seed_threshold = max_seeds if max_seeds is not None else _EXPECTED_SEEDS
     _seeds_str = (
         rf'{max_seeds}~seeds' if max_seeds is not None else r'seeds'
     )
 
-=======
     table_env = 'sidewaystable' if rotate else 'table*'
->>>>>>> bdffdbedc696c4eebf4f23c5093d463df2f10da7
     lines = [
         r'\begin{' + table_env + r'}[t]',
         r'\centering',
@@ -2062,11 +2056,8 @@ def main(args) -> None:
             caption_note=caption_note,
             include_wfg=not args.evox_no_norm,
             c10_pids=[8, 9] if args.evox_no_norm else None,
-<<<<<<< HEAD
             max_seeds=args.max_seeds,
-=======
             rotate=args.rotate,
->>>>>>> bdffdbedc696c4eebf4f23c5093d463df2f10da7
         )
 
     # ── optional rank-Pareto analysis ─────────────────────────────────────────
