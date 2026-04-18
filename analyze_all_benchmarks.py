@@ -1402,9 +1402,9 @@ _CONV_COLOURS = {
     'mosmac':              '#76b7b2',
     'nsga2':               '#f28e2b',
     'gpsaf':               '#a0cbe8',
-    'ssa-rbf':             '#ff9da7',
-    'ssa-xgb':             '#e15759',
-    'ssa-xgb-c':           '#59a14f',
+    'ssa-nsga2':           '#ff9da7',
+    'ssa-nsga2-xgb':       '#e15759',
+    'ssa-nsga2-xgb-cheap': '#59a14f',
     'samos':               '#b07aa1',
 }
 
@@ -1415,9 +1415,9 @@ _CONV_LABELS = {
     'mosmac':              'MO-SMAC',
     'nsga2':               'NSGA-II',
     'gpsaf':               'GPSAF',
-    'ssa-rbf':             'SSA-NSGA-II',
-    'ssa-xgb':             'SSA-NSGA-II-X',
-    'ssa-xgb-c':           'SSA-NSGA-II-XC',
+    'ssa-nsga2':           'SSA-RBF',
+    'ssa-nsga2-xgb':       'SSA-XGB',
+    'ssa-nsga2-xgb-cheap': 'SSA-XGB-C',
     'samos':               'SAMOS-XC',
 }
 
@@ -1789,19 +1789,20 @@ def plot_convergence_grid_combined(
         ax_hv.grid(True, alpha=0.3)
         ax_igd.grid(True, alpha=0.3)
 
-    # Shared legend: all methods on one row below the figure
+    # Shared legend: two rows below the figure
+    import math
     fig.legend(
         legend_handles, legend_labels,
         loc='lower center',
         bbox_to_anchor=(0.5, 0.0),
-        ncol=len(legend_labels),
+        ncol=math.ceil(len(legend_labels) / 2),
         frameon=True,
         fontsize=10 * font_scale,
     )
 
     fig.tight_layout()
-    # Reserve room for the legend at the bottom
-    bottom_frac = legend_h / (row_h * n_rows + legend_h)
+    # Reserve room for the two-row legend at the bottom
+    bottom_frac = (legend_h * 2) / (row_h * n_rows + legend_h * 2)
     fig.subplots_adjust(bottom=bottom_frac + 0.01)
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
@@ -1951,18 +1952,19 @@ def plot_hv_convergence_3x3(
         if row == 2:
             ax.set_xlabel('Evaluations')
 
-    # Shared legend below the grid
+    # Shared legend below the grid (two rows)
+    import math
     fig.legend(
         legend_handles, legend_labels,
         loc='lower center',
         bbox_to_anchor=(0.5, 0.0),
-        ncol=max(1, len(legend_labels)),
+        ncol=math.ceil(max(1, len(legend_labels)) / 2),
         frameon=True,
         fontsize=9 * font_scale,
     )
 
     fig.tight_layout()
-    bottom_frac = legend_h / (cell_h * 3 + legend_h)
+    bottom_frac = (legend_h * 2) / (cell_h * 3 + legend_h * 2)
     fig.subplots_adjust(bottom=bottom_frac + 0.01)
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
