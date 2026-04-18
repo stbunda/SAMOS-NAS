@@ -71,7 +71,7 @@ _WFG_FOLDER = {
     'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
     'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
     'samos-xgb': 'samos-xgb-i200-g20',
-    'samos-xgb-c': 'samos-xgb-cheap',
+    'samos-xgb-c': 'samos-xgb-i200-g20',
 }
 
 # Filesystem directory name for EvoXBench results
