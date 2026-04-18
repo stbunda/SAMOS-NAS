@@ -88,9 +88,9 @@ _EVOX_FOLDER = {
     'samos-xgb-c': 'samos-cheapreal',
 }
 
-_WILCOXON_REF    = 'samos-xgb'
+_WILCOXON_REF    = 'samos-xgb-cheap'
 _WILCOXON_ALPHA  = 0.05
-_EXPECTED_SEEDS  = 30
+_EXPECTED_SEEDS  = 20
 
 
 # ─── path helpers ─────────────────────────────────────────────────────────────
