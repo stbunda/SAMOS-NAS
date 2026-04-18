@@ -239,12 +239,18 @@ def _seed_mtimes(seed_dir: str) -> dict:
 
 # ─── data-loading helpers ─────────────────────────────────────────────────────
 
-def _load_seeds_from_indicators(seed_dir: str) -> dict | None:
+def _load_seeds_from_indicators(seed_dir: str, max_seeds: int | None = None) -> dict | None:
     """Load per-seed HV and IGD+ from stored ``indicators[-1]`` (WFG results).
 
     Each ``seed_*.pkl`` is expected to contain a list of per-generation
     indicator dicts under the ``'indicators'`` key.  Only the last
     generation values are used.
+
+    Parameters
+    ----------
+    max_seeds
+        When set, only the first *max_seeds* seed files (in sorted order)
+        are loaded.  ``None`` (default) loads all available seeds.
 
     Returns ``{'hv': np.ndarray, 'igd_plus': np.ndarray}`` or ``None`` if
     the directory is absent or no valid seeds are found.
@@ -252,9 +258,10 @@ def _load_seeds_from_indicators(seed_dir: str) -> dict | None:
     if not os.path.isdir(seed_dir):
         return None
     hvs, igds = [], []
-    for fname in sorted(os.listdir(seed_dir)):
-        if not fname.endswith('.pkl'):
-            continue
+    all_fnames = sorted(f for f in os.listdir(seed_dir) if f.endswith('.pkl'))
+    if max_seeds is not None:
+        all_fnames = all_fnames[:max_seeds]
+    for fname in all_fnames:
         try:
             with open(os.path.join(seed_dir, fname), 'rb') as fh:
                 data = pickle.load(fh)
@@ -277,6 +284,7 @@ def _collect_wfg_data(
     n_gen: int,
     pop_size: int,
     methods: list | None = None,
+    max_seeds: int | None = None,
 ) -> dict:
     """Return ``{problem: {method_key: ndarray | None}}`` for all WFG problems.
 
@@ -288,6 +296,8 @@ def _collect_wfg_data(
         Sub-tree relative to ``results/``, e.g. ``'pymoo_benchmark/2_obj'``.
     n_gen, pop_size
         Budget parameters used to locate the ``B{budget}_P{pop_size}`` folder.
+    max_seeds
+        When set, only the first *max_seeds* seed files are used.
     """
     result: dict = {}
     _m = methods if methods is not None else _METHODS
@@ -296,7 +306,8 @@ def _collect_wfg_data(
         prob_data = {}
         for key in _m:
             folder  = _WFG_FOLDER[key]
-            metrics = _load_seeds_from_indicators(os.path.join(root, folder))
+            metrics = _load_seeds_from_indicators(os.path.join(root, folder),
+                                                  max_seeds=max_seeds)
             prob_data[key] = metrics
             if metrics is not None:
                 hv_f = metrics['hv'][np.isfinite(metrics['hv'])]
@@ -319,6 +330,7 @@ def _collect_evox_data(
     evox_root: str = 'results/evoxbench',
     no_norm: bool = False,
     methods: list | None = None,
+    max_seeds: int | None = None,
 ) -> dict:
     """Return ``{pid: {method_key: ndarray | None}}`` for an EvoXBench suite.
 
@@ -339,6 +351,9 @@ def _collect_evox_data(
         Budget parameters.
     force
         Ignore the on-disk cache and recompute everything.
+    max_seeds
+        When set, only the first *max_seeds* seeds (sorted order) are used
+        for statistics.  The on-disk cache is read in full and then truncated.
     """
     result: dict = {}
     methods_list = methods if methods is not None else _METHODS
@@ -367,6 +382,8 @@ def _collect_evox_data(
             # ── cache hit ─────────────────────────────────────────────────
             if folder in cached:
                 metrics        = cached[folder]   # {'hv': arr, 'igd_plus': arr}
+                if max_seeds is not None:
+                    metrics = {k: v[:max_seeds] for k, v in metrics.items()}
                 pid_data[key]  = metrics
                 hv_f           = metrics['hv'][np.isfinite(metrics['hv'])]
                 mean_str       = f'{hv_f.mean():.4f}' if len(hv_f) else 'NaN'
@@ -374,8 +391,8 @@ def _collect_evox_data(
                       f'mean HV = {mean_str} (cached)')
                 seed_dir = os.path.join(root, folder)
                 updated[folder] = {
-                    'hv':            metrics['hv'],
-                    'igd_plus':      metrics['igd_plus'],
+                    'hv':            cached[folder]['hv'],
+                    'igd_plus':      cached[folder]['igd_plus'],
                     'source_mtimes': _seed_mtimes(seed_dir),
                 }
                 continue
@@ -392,6 +409,8 @@ def _collect_evox_data(
             else:
                 metrics = _load_seeds_from_indicators(os.path.join(root, folder))
 
+            if metrics is not None and max_seeds is not None:
+                metrics = {k: v[:max_seeds] for k, v in metrics.items()}
             pid_data[key] = metrics
             if metrics is not None:
                 hv_f     = metrics['hv'][np.isfinite(metrics['hv'])]
@@ -466,6 +485,7 @@ def _render_section(
     metric: str = 'hv',
     higher_is_better: bool = True,
     methods: list | None = None,
+    max_seeds: int | None = None,
 ) -> None:
     """Append one benchmark section (a header row + data rows) to *lines*.
 
@@ -526,7 +546,8 @@ def _render_section(
             std    = float(np.std(arr_f))
             bold   = (key == best_key)
             marker = '' if key == _WILCOXON_REF else _wilcoxon_marker(ref_arr, arr, higher_is_better)
-            if len(arr) < _EXPECTED_SEEDS:
+            _seed_threshold = max_seeds if max_seeds is not None else _EXPECTED_SEEDS
+            if len(arr) < _seed_threshold:
                 marker += r'$^*$'
             cells.append(_fmt(mean, std, bold, marker))
 
@@ -549,6 +570,7 @@ def generate_combined_hv_table(
     caption_note: str = '',
     include_wfg: bool = True,
     c10_pids: list | None = None,
+    max_seeds: int | None = None,
 ) -> None:
     """Write a combined HV or IGD+ booktabs LaTeX table to *out_path*.
 
@@ -585,12 +607,17 @@ def generate_combined_hv_table(
         + [r'\textbf{' + _COLUMN_LABELS[k] + r'}' for k in _m]
     )
 
+    _seed_threshold = max_seeds if max_seeds is not None else _EXPECTED_SEEDS
+    _seeds_str = (
+        rf'{max_seeds}~seeds' if max_seeds is not None else r'seeds'
+    )
+
     lines = [
         r'\begin{table*}[t]',
         r'\centering',
         (
             r'\caption{Final ' + metric_name
-            + r' (mean\,\textpm\,std over seeds) after 1200 evaluations on '
+            + r' (mean\,\textpm\,std over ' + _seeds_str + r') after 1200 evaluations on '
             + (
                 r'WFG\,1\textendash{}9 , C-10\,MOP\,1\textendash{}9, and IN-1K\,MOP\,1\textendash{}9. '
                 if include_wfg else
@@ -633,6 +660,7 @@ def generate_combined_hv_table(
             metric=metric,
             higher_is_better=higher_is_better,
             methods=_m,
+            max_seeds=max_seeds,
         )
 
     # C-10 MOP section
@@ -653,6 +681,7 @@ def generate_combined_hv_table(
         metric=metric,
         higher_is_better=higher_is_better,
         methods=_m,
+        max_seeds=max_seeds,
     )
 
     # IN-1K MOP section
@@ -673,13 +702,14 @@ def generate_combined_hv_table(
         metric=metric,
         higher_is_better=higher_is_better,
         methods=_m,
+        max_seeds=max_seeds,
     )
 
     # Footnote row (before \bottomrule, inside the tabular body)
     lines += [
         r'\midrule',
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS; $^{-}$: significantly worse; $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
-        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^*$: fewer than ' + str(_EXPECTED_SEEDS) + r' seeds evaluated.} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^*$: fewer than ' + str(_seed_threshold) + r' seeds evaluated.} \\',
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\diamond}$: synthetic benchmark (WFG); $^{\square}$: tabular NAS benchmark (NB101/NATS/NB201); $^{\dagger}$: surrogate NAS benchmark (DARTS/ResNet-50D/\ldots).} \\',
         # r'\bottomrule',
         r'\end{tabular}',
@@ -1956,6 +1986,7 @@ def main(args) -> None:
     wfg_data = _collect_wfg_data(
         wfg_problems, args.experiment_name, args.wfg_n_gen, args.wfg_pop,
         methods=active_methods,
+        max_seeds=args.max_seeds,
     )
 
     print('\n' + '=' * 60)
@@ -1964,7 +1995,8 @@ def main(args) -> None:
     c10_data = _collect_evox_data('c10mop', pids, args.evox_n_gen, args.evox_pop,
                                    force=args.force, evox_root=args.evox_root,
                                    no_norm=args.evox_no_norm,
-                                   methods=active_methods)
+                                   methods=active_methods,
+                                   max_seeds=args.max_seeds)
 
     print('\n' + '=' * 60)
     print('  Collecting IN-1K MOP data ...')
@@ -1972,7 +2004,8 @@ def main(args) -> None:
     in1k_data = _collect_evox_data('in1kmop', pids, args.evox_n_gen, args.evox_pop,
                                     force=args.force, evox_root=args.evox_root,
                                     no_norm=args.evox_no_norm,
-                                    methods=active_methods)
+                                    methods=active_methods,
+                                    max_seeds=args.max_seeds)
 
     def _out_path_for(m: str) -> str:
         """Derive the output path for a given metric from ``args.out``."""
@@ -1999,6 +2032,7 @@ def main(args) -> None:
             caption_note=caption_note,
             include_wfg=not args.evox_no_norm,
             c10_pids=[8, 9] if args.evox_no_norm else None,
+            max_seeds=args.max_seeds,
         )
 
     # ── optional rank-Pareto analysis ─────────────────────────────────────────
@@ -2225,6 +2259,17 @@ if __name__ == '__main__':
                         help='Number of objectives for WFG (used in caption).')
     parser.add_argument('--force', action='store_true',
                         help='Ignore the indicators cache and recompute all EvoXBench values.')
+    parser.add_argument(
+        '--max_seeds', '--max-seeds',
+        type=int,
+        default=None,
+        dest='max_seeds',
+        metavar='N',
+        help=(
+            'Use only the first N seed files (sorted order) per method/problem. '
+            'Default: use all available seeds.'
+        ),
+    )
     parser.add_argument(
         '--evox_root', '--evox-root',
         default='results/evoxbench',
