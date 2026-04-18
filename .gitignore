@@ -7,6 +7,7 @@ problem/data/
 smac3_output/
 .github/
 batchresults/
+text/
 .idea/
 .vscode/
 *.log

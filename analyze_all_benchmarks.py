@@ -44,7 +44,7 @@ _TABULAR_SEARCH_SPACES: frozenset = frozenset({'NB101', 'NATS', 'NB201'})
 # ─── canonical method list ────────────────────────────────────────────────────
 
 _METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 
-            'ssa-nsga2',
+            'ssa-nsga2', 'ssa-nsga2-xgb', 'ssa-nsga2-xgb-cheap',
             'samos']
 
 _COLUMN_LABELS = {
@@ -53,8 +53,10 @@ _COLUMN_LABELS = {
     'mosmac':    'MO-SMAC',
     'nsga2':     'NSGA-II',
     'gpsaf':     'GPSAF',
-    'ssa-nsga2': 'SSA-NSGA-II',
-    'samos':     'SAMOS',
+    'ssa-nsga2': 'SSA-RBF',
+    'ssa-nsga2-xgb': 'SSA-XGB',
+    'ssa-nsga2-xgb-cheap': 'SSA-XGB-C',
+    'samos':     'SAMOS-XC',
 }
 
 # Filesystem directory name for WFG results
@@ -65,6 +67,8 @@ _WFG_FOLDER = {
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
     'ssa-nsga2': 'ssa-nsga2-default',
+    'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
+    'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
     # 'samos-xgb': 'samos-xgb-i200-g20',
     'samos': 'samos-xgb-i200-g20',
 }
@@ -77,6 +81,8 @@ _EVOX_FOLDER = {
     'nsga2':     'nsga2',
     'gpsaf':     'gpsaf-default',
     'ssa-nsga2': 'ssa-nsga2',
+    'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
+    'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
     # 'samos-xgb': 'samos-xgb',
     'samos': 'samos-cheapreal',
 }
@@ -570,7 +576,11 @@ def generate_combined_hv_table(
     caption_note: str = '',
     include_wfg: bool = True,
     c10_pids: list | None = None,
+<<<<<<< HEAD
     max_seeds: int | None = None,
+=======
+    rotate: bool = False,
+>>>>>>> bdffdbedc696c4eebf4f23c5093d463df2f10da7
 ) -> None:
     """Write a combined HV or IGD+ booktabs LaTeX table to *out_path*.
 
@@ -591,6 +601,10 @@ def generate_combined_hv_table(
         the same *pids* list is used (original behaviour).
     n_obj_wfg, n_var_wfg
         WFG dimensionality metadata used in the caption.
+    rotate
+        When ``True`` wrap the table in a ``sidewaystable`` environment
+        (requires ``\\usepackage{rotating}`` in the document preamble) so
+        that it is rotated 90° to fit on a portrait page.
     """
     _METRIC_META = {
         'hv':       ('hypervolume',                    'tab:combined_hv',       True),
@@ -607,13 +621,17 @@ def generate_combined_hv_table(
         + [r'\textbf{' + _COLUMN_LABELS[k] + r'}' for k in _m]
     )
 
+<<<<<<< HEAD
     _seed_threshold = max_seeds if max_seeds is not None else _EXPECTED_SEEDS
     _seeds_str = (
         rf'{max_seeds}~seeds' if max_seeds is not None else r'seeds'
     )
 
+=======
+    table_env = 'sidewaystable' if rotate else 'table*'
+>>>>>>> bdffdbedc696c4eebf4f23c5093d463df2f10da7
     lines = [
-        r'\begin{table*}[t]',
+        r'\begin{' + table_env + r'}[t]',
         r'\centering',
         (
             r'\caption{Final ' + metric_name
@@ -630,8 +648,13 @@ def generate_combined_hv_table(
             + r'}'
         ),
         r'\label{' + label_key + r'}',
-        r'\resizebox{\linewidth}{!}{%',
-        r'\setlength\tabcolsep{5pt}%',
+    ]
+    if not rotate:
+        lines += [
+            r'\resizebox{\linewidth}{!}{%',
+            r'\setlength\tabcolsep{5pt}%',
+        ]
+    lines += [
         r'\begin{tabular}{' + col_spec + r'}',
         r'\toprule',
         col_header + r' \\',
@@ -713,9 +736,10 @@ def generate_combined_hv_table(
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\diamond}$: synthetic benchmark (WFG); $^{\square}$: tabular NAS benchmark (NB101/NATS/NB201); $^{\dagger}$: surrogate NAS benchmark (DARTS/ResNet-50D/\ldots).} \\',
         # r'\bottomrule',
         r'\end{tabular}',
-        r'}',
-        r'\end{table*}',
     ]
+    if not rotate:
+        lines.append(r'}')
+    lines.append(r'\end{' + table_env + r'}')
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     with open(out_path, 'w', encoding='utf-8') as fh:
@@ -1373,28 +1397,34 @@ _MARKERS = [
     '*',    # star
     'X',    # x (filled)
     'v',    # triangle down
+    'h',    # hexagon
+    '<',    # triangle left
 ]
 
 # Method colours (same palette used in plotter.py / analyze_evoxbench.py)
 _CONV_COLOURS = {
-    'random':    '#4e79a7',
-    'parego':    '#9c755f',
-    'mosmac':    '#76b7b2',
-    'nsga2':     '#f28e2b',
-    'gpsaf':     '#a0cbe8',
-    'ssa-nsga2': '#ff9da7',
-    'samos-xgb': '#b07aa1',
+    'random':              '#4e79a7',
+    'parego':              '#9c755f',
+    'mosmac':              '#76b7b2',
+    'nsga2':               '#f28e2b',
+    'gpsaf':               '#a0cbe8',
+    'ssa-rbf':             '#ff9da7',
+    'ssa-xgb':             '#e15759',
+    'ssa-xgb-c':           '#59a14f',
+    'samos':               '#b07aa1',
 }
 
 # Display labels for the legend
 _CONV_LABELS = {
-    'random':    'Random',
-    'parego':    'ParEGO',
-    'mosmac':    'MO-SMAC',
-    'nsga2':     'NSGA-II',
-    'gpsaf':     'GPSAF',
-    'ssa-nsga2': 'SSA-NSGA-II',
-    'samos-xgb': 'SAMOS (XGBoost)',
+    'random':              'Random',
+    'parego':              'ParEGO',
+    'mosmac':              'MO-SMAC',
+    'nsga2':               'NSGA-II',
+    'gpsaf':               'GPSAF',
+    'ssa-rbf':             'SSA-NSGA-II',
+    'ssa-xgb':             'SSA-NSGA-II-X',
+    'ssa-xgb-c':           'SSA-NSGA-II-XC',
+    'samos':               'SAMOS-XC',
 }
 
 
@@ -1679,7 +1709,7 @@ def plot_convergence_grid_combined(
     method_mk = {m: _MARKERS[i % len(_MARKERS)] for i, m in enumerate(methods)}
 
     col_w    = 8 * font_scale**0.5   
-    row_h    = 4.5 * font_scale**0.5
+    row_h    = 4 * font_scale**0.5
     legend_h = 0.8 * font_scale   # extra bottom space for shared legend
 
     fig, axes = plt.subplots(
@@ -2032,7 +2062,11 @@ def main(args) -> None:
             caption_note=caption_note,
             include_wfg=not args.evox_no_norm,
             c10_pids=[8, 9] if args.evox_no_norm else None,
+<<<<<<< HEAD
             max_seeds=args.max_seeds,
+=======
+            rotate=args.rotate,
+>>>>>>> bdffdbedc696c4eebf4f23c5093d463df2f10da7
         )
 
     # ── optional rank-Pareto analysis ─────────────────────────────────────────
@@ -2259,6 +2293,8 @@ if __name__ == '__main__':
                         help='Number of objectives for WFG (used in caption).')
     parser.add_argument('--force', action='store_true',
                         help='Ignore the indicators cache and recompute all EvoXBench values.')
+    parser.add_argument('--rotate', action='store_true',
+                        help='Wrap the table in a sidewaystable environment (requires \\usepackage{rotating}) to rotate it 90° and fit on a portrait page.')
     parser.add_argument(
         '--max_seeds', '--max-seeds',
         type=int,
