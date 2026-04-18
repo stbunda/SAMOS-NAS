@@ -43,9 +43,9 @@ _TABULAR_SEARCH_SPACES: frozenset = frozenset({'NB101', 'NATS', 'NB201'})
 
 # ─── canonical method list ────────────────────────────────────────────────────
 
-_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 
+_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf',
             'ssa-nsga2', 'ssa-nsga2-xgb', 'ssa-nsga2-xgb-cheap',
-            'samos']
+            'samos-xgb', 'samos-xgb-c']
 
 _COLUMN_LABELS = {
     'random':    'Random',
@@ -56,7 +56,8 @@ _COLUMN_LABELS = {
     'ssa-nsga2': 'SSA-RBF',
     'ssa-nsga2-xgb': 'SSA-XGB',
     'ssa-nsga2-xgb-cheap': 'SSA-XGB-C',
-    'samos':     'SAMOS-XC',
+    'samos-xgb': 'SAMOS',
+    'samos-xgb-c': 'SAMOS-C',
 }
 
 # Filesystem directory name for WFG results
@@ -69,8 +70,8 @@ _WFG_FOLDER = {
     'ssa-nsga2': 'ssa-nsga2-default',
     'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
     'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
-    # 'samos-xgb': 'samos-xgb-i200-g20',
-    'samos': 'samos-xgb-i200-g20',
+    'samos-xgb': 'samos-xgb-i200-g20',
+    'samos-xgb-c': 'samos-xgb-cheap',
 }
 
 # Filesystem directory name for EvoXBench results
@@ -83,12 +84,11 @@ _EVOX_FOLDER = {
     'ssa-nsga2': 'ssa-nsga2',
     'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
     'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
-    # 'samos-xgb': 'samos-xgb',
-    'samos': 'samos-cheapreal',
+    'samos-xgb': 'samos-xgb',
+    'samos-xgb-c': 'samos-cheapreal',
 }
 
-# _WILCOXON_REF    = 'samos-xgb'
-_WILCOXON_REF    = 'samos'
+_WILCOXON_REF    = 'samos-xgb'
 _WILCOXON_ALPHA  = 0.05
 _EXPECTED_SEEDS  = 30
 
@@ -1405,7 +1405,8 @@ _CONV_COLOURS = {
     'ssa-nsga2':           '#ff9da7',
     'ssa-nsga2-xgb':       '#e15759',
     'ssa-nsga2-xgb-cheap': '#59a14f',
-    'samos':               '#b07aa1',
+    'samos-xgb':           '#b07aa1',
+    'samos-xgb-c':         '#8cd17d',
 }
 
 # Display labels for the legend
@@ -1418,7 +1419,8 @@ _CONV_LABELS = {
     'ssa-nsga2':           'SSA-RBF',
     'ssa-nsga2-xgb':       'SSA-XGB',
     'ssa-nsga2-xgb-cheap': 'SSA-XGB-C',
-    'samos':               'SAMOS-XC',
+    'samos-xgb':           'SAMOS',
+    'samos-xgb-c':         'SAMOS-C',
 }
 
 
