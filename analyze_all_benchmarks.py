@@ -636,7 +636,7 @@ def generate_combined_hv_table(
                 r'C-10\,MOP\,8\textendash{}9 and IN-1K\,MOP\,1\textendash{}9. '
             )
             + r'\textbf{Bold}: best per problem. '
-            r'Wilcoxon rank-sum vs. SAMOS, $p{<}0.05$: '
+            r'Wilcoxon rank-sum vs. SAMOS-C, $p{<}0.05$: '
             r'$^{+}$\,better, $^{-}$\,worse, $^{\approx}$\,not significant.'
             + (' ' + caption_note if caption_note else '')
             + r'}'
@@ -725,7 +725,7 @@ def generate_combined_hv_table(
     # Footnote row (before \bottomrule, inside the tabular body)
     lines += [
         r'\midrule',
-        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS; $^{-}$: significantly worse; $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS-C; $^{-}$: significantly worse; $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^*$: fewer than ' + str(_seed_threshold) + r' seeds evaluated.} \\',
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\diamond}$: synthetic benchmark (WFG); $^{\square}$: tabular NAS benchmark (NB101/NATS/NB201); $^{\dagger}$: surrogate NAS benchmark (DARTS/ResNet-50D/\ldots).} \\',
         # r'\bottomrule',
