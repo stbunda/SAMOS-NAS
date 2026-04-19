@@ -1,22 +1,22 @@
 #!/bin/bash
 # ─── WFG_BENCHMARK.sbatch ─────────────────────────────────────────────────────
-# Run Random / NSGA-II / SAMOS-XGB / SAMOS-RFR / MOSMAC on ALL WFG1-9 for 30
+# Run Random / NSGA-II / SAMOS-XGB / MOSMAC on ALL WFG1-9 for 30
 # independent seeds.  Each array task = one method × one seed.  All 9 problems
-# are run sequentially inside a for-loop; results are rsync’d back and analysis
+# are run sequentially inside a for-loop; results are rsync'd back and analysis
 # is run after each problem so plots update incrementally.
 #
 # Due to the 100-task array limit, submit in three seed batches:
-#   sbatch WFG_BENCHMARK.sbatch                  # seeds  0-9  (tasks  0-49)
-#   [edit array to 50-99,  then] sbatch ...       # seeds 10-19
-#   [edit array to 100-149, then] sbatch ...      # seeds 20-29
+#   sbatch WFG_BENCHMARK.sbatch                  # seeds  0-9  (tasks  0-39)
+#   [edit array to 40-79,  then] sbatch ...       # seeds 10-19
+#   [edit array to 80-119, then] sbatch ...       # seeds 20-29
 # ─────────────────────────────────────────────────────────────────────────────
 
 #SBATCH -J wfg_benchmark
 #SBATCH -c 2
 # Uncomment ONE of the following:
-#SBATCH --array=0-49               # Seeds 0-9   (5 methods × 10 seeds)
-## --array=50-99             # Seeds 10-19 (5 methods × 10 seeds)
-## --array=100-149           # Seeds 20-29 (5 methods × 10 seeds)
+#SBATCH --array=0-39               # Seeds 0-9   (4 methods × 10 seeds)
+## --array=40-79             # Seeds 10-19 (4 methods × 10 seeds)
+## --array=80-119            # Seeds 20-29 (4 methods × 10 seeds)
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -41,12 +41,11 @@ TOTAL_BUDGET=$(( 100 * N_VAR ))
 N_GEN=$(( TOTAL_BUDGET / POP_SIZE ))
 
 SAMOS_XGB="samos-xgb-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
-SAMOS_RFR="samos-rfr-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
 EXPERIMENT_NAME="pymoo_benchmark/${N_OBJ}_obj"
 
 # ─── method/seed from array task ID ──────────────────────────────────────────
-METHODS=(random nsga2 "$SAMOS_XGB" "$SAMOS_RFR" mosmac)
-N_METHODS=${#METHODS[@]}   # 5
+METHODS=(random nsga2 "$SAMOS_XGB" mosmac)
+N_METHODS=${#METHODS[@]}   # 4
 SEED=$(( SLURM_ARRAY_TASK_ID / N_METHODS ))
 METHOD_IDX=$(( SLURM_ARRAY_TASK_ID % N_METHODS ))
 METHOD=${METHODS[$METHOD_IDX]}
@@ -64,7 +63,6 @@ RSYNC_SOURCES=(
     analysis
     problem/pymoo
     strategy
-    utils
     main_pymoo_benchmark.py
     analyze_pymoo_benchmark.py
 )
@@ -105,7 +103,6 @@ echo "N_GEN             = $N_GEN"
 echo "POP_SIZE          = $POP_SIZE"
 echo "BUDGET            = $TOTAL_BUDGET"
 echo "SAMOS_XGB         = $SAMOS_XGB"
-echo "SAMOS_RFR         = $SAMOS_RFR"
 
 # ─── run: loop over all 9 problems ────────────────────────────────────────────
 for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
@@ -141,7 +138,7 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
             --problems        "$PROBLEM" \
             --n_obj           "$N_OBJ" \
             --n_var           "$N_VAR" \
-            --methods         random nsga2 "$SAMOS_XGB" "$SAMOS_RFR" mosmac \
+            --methods         random nsga2 "$SAMOS_XGB" mosmac \
             --pop_size        "$POP_SIZE" \
             --n_gen           "$N_GEN" \
             --checkpoints_d   10 25 50 100 \

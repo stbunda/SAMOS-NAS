@@ -18,8 +18,6 @@ Available Models:
 - GPR_White: GPR with RBF + WhiteKernel (noise-aware)
 - XGBoost: XGBoost Regressor
 - CART: Classification and Regression Trees
-- MLP: Multi-Layer Perceptron
-- RNN: Recurrent Neural Network
 
 GPR variants all expose predict_std(x) returning posterior std.
 RFR and ETR expose predict_std(x) via ensemble tree disagreement.
@@ -48,23 +46,6 @@ try:
 except ImportError:
     _XGBOOST_AVAILABLE = False
     XGBoost = None
-
-# Neural network-based models (may require additional dependencies)
-try:
-    from .rnn import RNN, MLP
-    _RNN_AVAILABLE = True
-except (ImportError, OSError):
-    _RNN_AVAILABLE = False
-    RNN = None
-    MLP = None
-
-# Enhanced models
-try:
-    from .gpr_enhanced import GPR_Enhanced
-    _GPR_ENHANCED_AVAILABLE = True
-except (ImportError, OSError):
-    _GPR_ENHANCED_AVAILABLE = False
-    GPR_Enhanced = None
 
 # RBF interpolation surrogates (scipy required)
 try:
@@ -109,12 +90,6 @@ if _RBF_AVAILABLE:
         'RBF_Multiquadric', 'RBF_InverseQuadratic', 'RBF_InverseMultiquadric',
     ])
 
-if _RNN_AVAILABLE:
-    __all__.extend(['MLP', 'RNN'])
-
-if _GPR_ENHANCED_AVAILABLE:
-    __all__.append('GPR_Enhanced')
-
 # Model registry for dynamic instantiation
 SURROGATE_MODELS = {
     'RFR': RFR,
@@ -140,13 +115,6 @@ if _RBF_AVAILABLE:
         'RBF_InverseQuadratic':   RBF_InverseQuadratic,
         'RBF_InverseMultiquadric': RBF_InverseMultiquadric,
     })
-
-if _RNN_AVAILABLE:
-    SURROGATE_MODELS['MLP'] = MLP
-    SURROGATE_MODELS['RNN'] = RNN
-
-if _GPR_ENHANCED_AVAILABLE:
-    SURROGATE_MODELS['GPR_Enhanced'] = GPR_Enhanced
 
 
 def get_surrogate_model(model_name: str):

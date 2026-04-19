@@ -38,9 +38,8 @@ from strategy.sampler import EvoxBenchSampler
 from strategy.operations.crossover import IntegerUniformCrossover
 from strategy.operations.mutation import IntegerPointMutation
 from strategy.genetics.duplicate import IntegerVectorDuplicateElimination
-from strategy.surrogate.models import RFR, XGBoost
+from strategy.surrogate.models import XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
-from strategy.surrogate.samos2 import SAMOS2
 
 
 # ─── mosmac standalone runner ────────────────────────────────────────────────
@@ -181,7 +180,6 @@ def run_single(
     n_infill: int = None,
     n_gen_inner: int = 20,
     inner_pop_size: int = None,
-    warm_start_ratio: float = 0.75,
     proxy_obj_indices: list = None,
     no_norm: bool = False,
     compute_indicators: bool = True,
@@ -266,17 +264,12 @@ def run_single(
             n_infill=n_infill_,
             n_gen_inner=n_gen_inner,
             ga_pop_size=inner_ps,
-            warm_start_ratio=warm_start_ratio,
             use_subset_selection=True,
             eliminate_duplicates=elim,
             dedup_key_fn=elim.key,
         )
 
     elif method.startswith('samos-'):
-        samos_type = method.split('-')[1]   # 'xgb' or 'rfr'
-        if samos_type not in ('xgb', 'rfr'):
-            raise ValueError(f'Unknown surrogate type {samos_type!r} in {method!r}')
-
         n_doe_    = n_doe    if n_doe    is not None else pop_size
         n_infill_ = n_infill if n_infill is not None else pop_size
         inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
@@ -291,8 +284,6 @@ def run_single(
 
         rng = np.random.RandomState(seed)
         surrogates = [
-            RFR(20, seed=rng.randint(0, 2**31 - 1))
-            if samos_type == 'rfr' else
             XGBoost(100, seed=rng.randint(0, 2**31 - 1))
             for _ in predict_obj_indices
         ]
@@ -315,37 +306,7 @@ def run_single(
             n_infill=n_infill_,
             n_gen_inner=n_gen_inner,
             ga_pop_size=inner_ps,
-            warm_start_ratio=warm_start_ratio,
             use_subset_selection=True,
-            eliminate_duplicates=elim,
-            dedup_key_fn=elim.key,
-        )
-
-    elif method == 'samos2':
-        n_doe_    = n_doe    if n_doe    is not None else pop_size
-        n_infill_ = n_infill if n_infill is not None else pop_size
-
-        n_obj  = benchmark.evaluator.n_objs
-        rng    = np.random.RandomState(seed)
-        surrogates = [
-            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
-            for _ in range(n_obj)
-        ]
-        _poi = list(range(n_obj))
-        _roi: list = []
-        _bm  = benchmark
-        _nn  = no_norm
-        factory = lambda surrs, _p=_poi, _r=_roi, _b=_bm, _n=_nn: (
-            SurrogateProblemEvox(surrs, _p, _r, _b, no_norm=_n)
-        )
-        algorithm = SAMOS2(
-            sampling=sampler,
-            surrogates=surrogates,
-            surrogate_problem_factory=factory,
-            crossover=crossover,
-            mutation=mutation,
-            n_doe=n_doe_,
-            n_infill=n_infill_,
             eliminate_duplicates=elim,
             dedup_key_fn=elim.key,
         )
@@ -476,7 +437,6 @@ def main(args):
                     n_infill=args.n_infill,
                     n_gen_inner=args.n_gen_inner,
                     inner_pop_size=args.inner_pop_size,
-                    warm_start_ratio=args.warm_start_ratio,
                     proxy_obj_indices=args.proxy_obj_indices,
                     no_norm=args.no_norm,
                     compute_indicators=not args.no_indicators,
@@ -498,10 +458,11 @@ if __name__ == '__main__':
                         help='Problem ID(s) within the suite (e.g. --pids 1 2 3 or --pids 7)')
     parser.add_argument('--methods', type=str, nargs='+',
                         default=['random', 'nsga2', 'samos-xgb'],
-                        help='Methods: random, nsga2, samos-xgb, samos-rfr, samos2, '
+                        help='Methods: random, nsga2, samos-xgb, '
                              'samos-cheapreal (SAMOS where params/flops use real eval; '
                              'only val_err uses a surrogate), '
                              'ssa-nsga2 (pysamoo SSA-NSGA-II with default surrogates), '
+                             'ssa-nsga2-xgb, ssa-nsga2-xgb-cheap, '
                              'parego, gpsaf-default, mosmac')
     parser.add_argument('--seeds',          type=int, nargs='+', default=list(range(10)))
     parser.add_argument('--pop_size',       type=int, default=20)
@@ -514,8 +475,6 @@ if __name__ == '__main__':
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size', type=int, default=None,
                         help='SAMOS: inner NSGA-II population size (default: pop_size × 10)')
-    parser.add_argument('--warm_start_ratio', type=float, default=1.0,
-                        help='SAMOS: warm-start ratio for the inner NSGA-II (default: 1.0)')
     parser.add_argument('--proxy_obj_indices', type=int, nargs='+', default=None,
                         help='SAMOS: objective column indices to approximate with surrogates '
                              '(default: all). E.g. --proxy_obj_indices 0')

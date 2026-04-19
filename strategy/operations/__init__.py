@@ -1,4 +1,4 @@
-from strategy.operations.crossover import CrossoverProgram
-from strategy.operations.mutation import MutateProgram
+from strategy.operations.crossover import IntegerUniformCrossover
+from strategy.operations.mutation import IntegerPointMutation
 
-__all__ = ['MutateProgram', 'CrossoverProgram']
+__all__ = ['IntegerUniformCrossover', 'IntegerPointMutation']

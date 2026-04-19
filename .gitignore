@@ -1,13 +1,29 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 
+# Results (large pkl files — regenerate with the experiment scripts)
 results/
+
+# Data files (large, download separately)
 problem/data/
+
+# SMAC output
 smac3_output/
-.github/
-batchresults/
+
+# Paper LaTeX source (tracked separately)
 text/
+
+# IDE
 .idea/
 .vscode/
+
+# SLURM logs
+slurm_logs_*/
 *.log
+
+# OS
+.DS_Store
+Thumbs.db

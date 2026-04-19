@@ -33,15 +33,12 @@ from analysis.plotter import plot_results
 from problem.pymoo.benchmark_utils import build_problem, get_pareto_front, default_ref_point
 from problem.pymoo.surrogate_problem import SurrogateProblemMOO
 from strategy.algorithm.algorithms import RandomGA
-from strategy.algorithm.gpsaf import GPSAF, SklearnGPSAF
+from strategy.algorithm.gpsaf import GPSAF
 from strategy.algorithm.ssansga2 import SSANSGA2, SklearnSSANSGA2
-# from strategy.algorithm.cobra import run_cobra
 from strategy.algorithm.parego import run_parego
 from strategy.callbacks import PymooBenchmarkCallback
-from strategy.surrogate.models import RFR, XGBoost
+from strategy.surrogate.models import XGBoost
 from strategy.surrogate.samos_minimal import SAMOSMinimal as SAMOS
-from strategy.surrogate.samos_ssa import SAMOSSA
-from strategy.surrogate.samos2 import SAMOS2
 
 # ─── MOSMAC on continuous benchmarks ─────────────────────────────────────────
 
@@ -146,7 +143,6 @@ def run_single(
     n_infill: int = None,
     n_gen_inner: int = 20,
     inner_pop_size: int = None,
-    warm_start_ratio: float = 1.0,
     proxy_obj_indices: list = None,
 ) -> dict:
     np.random.seed(seed)
@@ -157,8 +153,6 @@ def run_single(
         return _mosmac_run(problem_name, seed, pop_size, n_gen, n_obj, n_var)
     if method == 'parego':
         return run_parego(problem_name, seed, pop_size, n_gen, n_obj, n_var)
-    if method == 'cobra':
-        return run_cobra(problem_name, seed, pop_size, n_gen, n_obj, n_var, n_doe, n_infill)
 
     # ── build problem ─────────────────────────────────────────────────────────
     problem   = build_problem(problem_name, n_obj, n_var)
@@ -180,38 +174,8 @@ def run_single(
             crossover=crossover, mutation=mutation,
         )
 
-    elif method.startswith('samos-ssa'):
-        # SAMOS-SSA: SAMOS loop with pysamoo cross-validated surrogates
-        # Supports optional i{INT}/g{INT} tokens: samos-ssa-i200-g20
-        parts = method.split('-')
-        _n_gen_inner = n_gen_inner
-        _inner_ps    = inner_pop_size
-        for tok in parts[2:]:
-            if tok.startswith('i') and tok[1:].isdigit():
-                _inner_ps = int(tok[1:])
-            elif tok.startswith('g') and tok[1:].isdigit():
-                _n_gen_inner = int(tok[1:])
-        n_doe_    = n_doe    if n_doe    is not None else pop_size
-        n_infill_ = n_infill if n_infill is not None else pop_size
-        inner_ps  = _inner_ps if _inner_ps is not None else pop_size * 10
-
-        algorithm = SAMOSSA(
-            sampling=sampling,
-            crossover=crossover,
-            mutation=mutation,
-            n_doe=n_doe_,
-            n_infill=n_infill_,
-            n_gen_inner=_n_gen_inner,
-            ga_pop_size=inner_ps,
-            warm_start_ratio=warm_start_ratio,
-            use_subset_selection=True,
-            eliminate_duplicates=False,
-            dedup_key_fn=lambda x: tuple(np.round(x, 4).tolist()),
-        )
-
     elif method.startswith('samos-'):
         parts = method.split('-')
-        samos_type   = parts[1]   # 'xgb' or 'rfr'
         # parse optional i{INT} / g{INT} tokens embedded in the method name
         # e.g. 'samos-xgb-i200-g20' → inner_pop_size=200, n_gen_inner=20
         _n_gen_inner = n_gen_inner
@@ -231,9 +195,7 @@ def run_single(
             else set(range(problem.n_obj))
         )
         surrogates = [
-            (RFR(20, seed=rng.randint(0, 2**31 - 1))
-             if samos_type == 'rfr' else
-             XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
+            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
             if i in proxy_set else None
             for i in range(problem.n_obj)
         ]
@@ -253,27 +215,7 @@ def run_single(
             n_infill=n_infill_,
             n_gen_inner=_n_gen_inner,
             ga_pop_size=inner_ps,
-            warm_start_ratio=warm_start_ratio,
             use_subset_selection=True,
-            eliminate_duplicates=False,
-            dedup_key_fn=lambda x: tuple(np.round(x, 4).tolist()),
-        )
-
-    elif method == 'samos2':
-        n_doe_    = n_doe    if n_doe    is not None else pop_size
-        n_infill_ = n_infill if n_infill is not None else pop_size
-        rng = np.random.RandomState(seed)
-        surrogates = [
-            XGBoost(100, seed=rng.randint(0, 2**31 - 1))
-            for _ in range(problem.n_obj)
-        ]
-        algorithm = SAMOS2(
-            sampling=sampling,
-            surrogates=surrogates,
-            crossover=crossover,
-            mutation=mutation,
-            n_doe=n_doe_,
-            n_infill=n_infill_,
             eliminate_duplicates=False,
             dedup_key_fn=lambda x: tuple(np.round(x, 4).tolist()),
         )
@@ -286,7 +228,7 @@ def run_single(
             algo_family    = 'ssa-nsga2'
             surrogate_type = method[len('ssa-nsga2-'):]
 
-        if surrogate_type not in ('default', 'rfr', 'xgb', 'xgb-cheap'):
+        if surrogate_type not in ('default', 'xgb', 'xgb-cheap'):
             raise ValueError(f'Unknown surrogate type {surrogate_type!r} in {method!r}')
         # WFG/ZDT/DTLZ have no cheap objective lookups; treat 'xgb-cheap' as plain 'xgb'
         surrogate_type = 'xgb' if surrogate_type == 'xgb-cheap' else surrogate_type
@@ -295,12 +237,10 @@ def run_single(
         n_infill_ = n_infill if n_infill is not None else pop_size
         inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
 
-        if surrogate_type in ('rfr', 'xgb'):
+        if surrogate_type == 'xgb':
             rng = np.random.RandomState(seed)
             sklearn_models = [
-                (RFR(20, seed=rng.randint(0, 2**31 - 1))
-                 if surrogate_type == 'rfr' else
-                 XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
+                XGBoost(100, seed=rng.randint(0, 2**31 - 1))
                 for _ in range(problem.n_obj)
             ]
 
@@ -322,21 +262,12 @@ def run_single(
                 )
         else:  # gpsaf
             base_algo = NSGA2(pop_size=pop_size, crossover=crossover, mutation=mutation)
-            if surrogate_type == 'default':
-                algorithm = GPSAF(
-                    base_algo,
-                    n_initial_doe=n_doe_,
-                    n_max_infills=n_infill_,
-                    beta=n_gen_inner,
-                )
-            else:
-                algorithm = SklearnGPSAF(
-                    base_algo,
-                    sklearn_models=sklearn_models,
-                    n_initial_doe=n_doe_,
-                    n_max_infills=n_infill_,
-                    beta=n_gen_inner,
-                )
+            algorithm = GPSAF(
+                base_algo,
+                n_initial_doe=n_doe_,
+                n_max_infills=n_infill_,
+                beta=n_gen_inner,
+            )
 
     else:
         raise ValueError(f'Unknown method: {method!r}')
@@ -389,7 +320,6 @@ def main(args):
                     n_infill=args.n_infill,
                     n_gen_inner=args.n_gen_inner,
                     inner_pop_size=args.inner_pop_size,
-                    warm_start_ratio=args.warm_start_ratio,
                     proxy_obj_indices=args.proxy_obj_indices,
                 )
                 with open(out_path, 'wb') as f:
@@ -434,9 +364,9 @@ if __name__ == '__main__':
                         help='Override the default number of decision variables')
     parser.add_argument('--methods', type=str, nargs='+',
                         default=['random', 'nsga2', 'samos-xgb',],
-                        help='Methods: random, nsga2, samos-rfr, samos-xgb, samos-ssa, '
-                             'mosmac, parego, cobra, gpsaf-default, gpsaf-rfr, gpsaf-xgb, '
-                             'ssa-nsga2-default, ssa-nsga2-rfr, ssa-nsga2-xgb, samos2')
+                        help='Methods: random, nsga2, samos-xgb, '
+                             'mosmac, parego, gpsaf-default, '
+                             'ssa-nsga2-default, ssa-nsga2-xgb')
     parser.add_argument('--seeds',   type=int, nargs='+', default=list(range(2)))
     parser.add_argument('--pop_size',        type=int,   default=20)
     parser.add_argument('--n_gen',           type=int,   default=50)
@@ -448,8 +378,6 @@ if __name__ == '__main__':
                         help='SAMOS: inner NSGA-II generations (default: 20)')
     parser.add_argument('--inner_pop_size',  type=int,   default=None,
                         help='SAMOS: inner NSGA-II population size (default: pop_size × 10)')
-    parser.add_argument('--warm_start_ratio', type=float, default=1.0,
-                        help='SAMOS: warm start ratio (default: 1.0)')
     parser.add_argument('--proxy_obj_indices', type=int, nargs='+', default=None,
                         help='SAMOS: indices of objectives to approximate with a surrogate '
                              '(default: all objectives). E.g. --proxy_obj_indices 0 1')

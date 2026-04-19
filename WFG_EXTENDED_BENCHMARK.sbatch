@@ -3,9 +3,9 @@
 # Run ALL comparison methods on a single WFG problem for 30 independent seeds:
 #   Baselines  : random, nsga2
 #   SAMOS      : samos-xgb-i{IPS}-g{NGI}
-#   MO-Bayesian: mosmac, parego, cobra
+#   MO-Bayesian: mosmac, parego
 #   SSA-NSGA-II: ssa-nsga2-default, ssa-nsga2-xgb
-#   GPSAF-NSGA-II: gpsaf-default, gpsaf-xgb
+#   GPSAF-NSGA-II: gpsaf-default
 #
 # All methods share the same evaluation budget: pop_size × n_gen evaluations.
 # After each seed, results are rsync'd back and analyze_pymoo_benchmark.py is
@@ -22,9 +22,9 @@
 #SBATCH -J wfg_extended
 #SBATCH -c 2
 # Uncomment ONE of the following:
-#SBATCH --array=0-59              # Seeds 0-9   (6 methods × 10 seeds)
-## --array=60-119            # Seeds 10-19 (6 methods × 10 seeds)
-## --array=120-179           # Seeds 20-29 (6 methods × 10 seeds)
+#SBATCH --array=0-39              # Seeds 0-9   (4 methods × 10 seeds)
+## --array=40-79            # Seeds 10-19 (4 methods × 10 seeds)
+## --array=80-119           # Seeds 20-29 (4 methods × 10 seeds)
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -51,8 +51,8 @@ SAMOS_XGB="samos-xgb-i${INNER_POP_SIZE}-g${N_GEN_INNER}"
 EXPERIMENT_NAME="pymoo_benchmark/${N_OBJ}_obj"
 
 # ─── method/seed from array task ID ──────────────────────────────────────────
-METHODS=(parego cobra ssa-nsga2-default ssa-nsga2-xgb gpsaf-default gpsaf-xgb)
-N_METHODS=${#METHODS[@]}   # 6
+METHODS=(parego ssa-nsga2-default ssa-nsga2-xgb gpsaf-default)
+N_METHODS=${#METHODS[@]}   # 4
 SEED=$(( SLURM_ARRAY_TASK_ID / N_METHODS ))
 METHOD_IDX=$(( SLURM_ARRAY_TASK_ID % N_METHODS ))
 METHOD=${METHODS[$METHOD_IDX]}
@@ -70,7 +70,6 @@ RSYNC_SOURCES=(
     analysis
     problem/pymoo
     strategy
-    utils
     main_pymoo_benchmark.py
     analyze_pymoo_benchmark.py
 )
@@ -151,9 +150,9 @@ for PROBLEM in wfg1 wfg2 wfg3 wfg4 wfg5 wfg6 wfg7 wfg8 wfg9; do
             --methods         \
                 random nsga2 \
                 "$SAMOS_XGB" \
-                mosmac parego cobra \
+                mosmac parego \
                 ssa-nsga2-default ssa-nsga2-xgb \
-                gpsaf-default gpsaf-xgb \
+                gpsaf-default \
             --pop_size        "$POP_SIZE" \
             --n_gen           "$N_GEN" \
             --checkpoints_d   10 25 50 100 \

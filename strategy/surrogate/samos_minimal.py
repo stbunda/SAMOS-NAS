@@ -73,7 +73,6 @@ class SAMOSMinimal(Algorithm):
                  n_infill=8,
                  n_gen_inner=20,
                  ga_pop_size=None,
-                 warm_start_ratio=0.75,
                  use_subset_selection=True,
                  eliminate_duplicates=True,
                  dedup_key_fn=None,
@@ -88,7 +87,6 @@ class SAMOSMinimal(Algorithm):
         self.n_infill                 = n_infill
         self.n_gen_inner              = n_gen_inner
         self.ga_pop_size              = ga_pop_size if ga_pop_size is not None else n_infill * 10
-        self.warm_start_ratio         = warm_start_ratio
         self.use_subset_selection     = use_subset_selection
         self.eliminate_duplicates     = eliminate_duplicates
         # dedup_key_fn(x: np.ndarray) -> hashable: maps a decision vector to a
@@ -139,10 +137,7 @@ class SAMOSMinimal(Algorithm):
         for s, surrogate in enumerate(self.surrogates):
             surrogate.fit(X_arc, F_arc[:, s])
 
-        # 2. Warm-start: 75 % best archive (rank + crowding) + 25 % fresh random
-        #    Strip F so the inner NSGA-II re-evaluates all on the surrogate problem.
-        topx     = max(1, int(self.ga_pop_size * self.warm_start_ratio))
-        top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=topx)
+        top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=self.ga_pop_size)
         n_rand   = self.ga_pop_size - len(top_pop)
         if n_rand > 0:
             rand_pop = self._init.do(self.problem, n_rand, algorithm=self)
@@ -151,7 +146,7 @@ class SAMOSMinimal(Algorithm):
             inner_X  = top_pop.get('X')
         inner_init = Population.new('X', inner_X)   # X-only → surrogate re-evaluates
 
-        # 3. Inner NSGA-II on the surrogate problem
+        # 2. Inner NSGA-II on the surrogate problem
         surr_problem = self.surrogate_problem_factory(self.surrogates)
         inner_alg = NSGA2(
             pop_size=self.ga_pop_size,
@@ -210,7 +205,7 @@ class SAMOSMinimal(Algorithm):
             f" | {self._fmt_float(eps, _W['eps'])} | {str(ind or '-'):>{_W['ind']}} "
         )
 
-        # 4. Deduplicate candidates against the evaluated archive
+        # 3. Deduplicate candidates against the evaluated archive
         cand_pop = res.pop if res.pop is not None else Population.empty()
         if len(cand_pop) > 0:
             not_dup = np.array([
@@ -219,7 +214,7 @@ class SAMOSMinimal(Algorithm):
             ], dtype=bool)
             cand_pop = cand_pop[not_dup]
 
-        # 5. Select n_infill candidates; pad with random if scarce
+        # 4. Select n_infill candidates; pad with random if scarce
         infill_pop = self._select_infill(cand_pop, F_arc)
 
         # Return X-only — real problem fills F after this returns
