@@ -43,9 +43,9 @@ _TABULAR_SEARCH_SPACES: frozenset = frozenset({'NB101', 'NATS', 'NB201'})
 
 # ─── canonical method list ────────────────────────────────────────────────────
 
-_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf', 
+_METHODS = ['random', 'parego', 'mosmac', 'nsga2', 'gpsaf',
             'ssa-nsga2', 'ssa-nsga2-xgb', 'ssa-nsga2-xgb-cheap',
-            'samos']
+            'samos-xgb', 'samos-xgb-c']
 
 _COLUMN_LABELS = {
     'random':    'Random',
@@ -56,7 +56,8 @@ _COLUMN_LABELS = {
     'ssa-nsga2': 'SSA-RBF',
     'ssa-nsga2-xgb': 'SSA-XGB',
     'ssa-nsga2-xgb-cheap': 'SSA-XGB-C',
-    'samos':     'SAMOS-XC',
+    'samos-xgb': 'SAMOS',
+    'samos-xgb-c': 'SAMOS-C',
 }
 
 # Filesystem directory name for WFG results
@@ -69,8 +70,8 @@ _WFG_FOLDER = {
     'ssa-nsga2': 'ssa-nsga2-default',
     'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
     'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
-    # 'samos-xgb': 'samos-xgb-i200-g20',
-    'samos': 'samos-xgb-i200-g20',
+    'samos-xgb': 'samos-xgb-i200-g20',
+    'samos-xgb-c': 'samos-xgb-i200-g20',
 }
 
 # Filesystem directory name for EvoXBench results
@@ -83,14 +84,13 @@ _EVOX_FOLDER = {
     'ssa-nsga2': 'ssa-nsga2',
     'ssa-nsga2-xgb': 'ssa-nsga2-xgb',
     'ssa-nsga2-xgb-cheap': 'ssa-nsga2-xgb-cheap',
-    # 'samos-xgb': 'samos-xgb',
-    'samos': 'samos-cheapreal',
+    'samos-xgb': 'samos-xgb',
+    'samos-xgb-c': 'samos-cheapreal',
 }
 
-# _WILCOXON_REF    = 'samos-xgb'
-_WILCOXON_REF    = 'samos'
+_WILCOXON_REF    = 'samos-xgb-c'
 _WILCOXON_ALPHA  = 0.05
-_EXPECTED_SEEDS  = 30
+_EXPECTED_SEEDS  = 20
 
 
 # ─── path helpers ─────────────────────────────────────────────────────────────
@@ -636,7 +636,7 @@ def generate_combined_hv_table(
                 r'C-10\,MOP\,8\textendash{}9 and IN-1K\,MOP\,1\textendash{}9. '
             )
             + r'\textbf{Bold}: best per problem. '
-            r'Wilcoxon rank-sum vs. SAMOS, $p{<}0.05$: '
+            r'Wilcoxon rank-sum vs. SAMOS-C, $p{<}0.05$: '
             r'$^{+}$\,better, $^{-}$\,worse, $^{\approx}$\,not significant.'
             + (' ' + caption_note if caption_note else '')
             + r'}'
@@ -725,7 +725,7 @@ def generate_combined_hv_table(
     # Footnote row (before \bottomrule, inside the tabular body)
     lines += [
         r'\midrule',
-        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS; $^{-}$: significantly worse; $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS-C; $^{-}$: significantly worse; $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^*$: fewer than ' + str(_seed_threshold) + r' seeds evaluated.} \\',
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\diamond}$: synthetic benchmark (WFG); $^{\square}$: tabular NAS benchmark (NB101/NATS/NB201); $^{\dagger}$: surrogate NAS benchmark (DARTS/ResNet-50D/\ldots).} \\',
         # r'\bottomrule',
@@ -1405,7 +1405,8 @@ _CONV_COLOURS = {
     'ssa-nsga2':           '#ff9da7',
     'ssa-nsga2-xgb':       '#e15759',
     'ssa-nsga2-xgb-cheap': '#59a14f',
-    'samos':               '#b07aa1',
+    'samos-xgb':           '#b07aa1',
+    'samos-xgb-c':         '#8cd17d',
 }
 
 # Display labels for the legend
@@ -1418,7 +1419,8 @@ _CONV_LABELS = {
     'ssa-nsga2':           'SSA-RBF',
     'ssa-nsga2-xgb':       'SSA-XGB',
     'ssa-nsga2-xgb-cheap': 'SSA-XGB-C',
-    'samos':               'SAMOS-XC',
+    'samos-xgb':           'SAMOS',
+    'samos-xgb-c':         'SAMOS-C',
 }
 
 
