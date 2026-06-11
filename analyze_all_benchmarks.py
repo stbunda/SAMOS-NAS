@@ -88,7 +88,8 @@ _EVOX_FOLDER = {
     'samos-xgb-c': 'samos-cheapreal',
 }
 
-_WILCOXON_REF    = 'samos-xgb-c'
+_WILCOXON_REF   = 'samos-xgb' 
+_WILCOXON_REF2    = 'samos-xgb-c'
 _WILCOXON_ALPHA  = 0.05
 _EXPECTED_SEEDS  = 20
 
@@ -472,6 +473,49 @@ def _wilcoxon_marker(ref_vals, other_vals, higher_is_better: bool = True) -> str
     else:
         return r'$^{+}$' if other_med < ref_med else r'$^{-}$'
 
+def _holm_correct(p_values: list[float], alpha: float) -> list[bool]:
+    """Holm-Bonferroni correction. Returns a bool list: True = reject H0."""
+    n = len(p_values)
+    order = np.argsort(p_values)
+    reject = [False] * n
+    for rank, idx in enumerate(order):
+        if p_values[idx] <= alpha / (n - rank):
+            reject[idx] = True
+        else:
+            break  # Holm: stop at first non-rejection
+    return reject
+
+
+def _raw_wilcoxon_p(ref_vals, other_vals) -> float:
+    """Return the Wilcoxon rank-sum p-value, or 1.0 if data is insufficient."""
+    if ref_vals is None or other_vals is None:
+        return 1.0
+    rv = np.asarray(ref_vals, dtype=float)
+    ov = np.asarray(other_vals, dtype=float)
+    rv = rv[np.isfinite(rv)]
+    ov = ov[np.isfinite(ov)]
+    if len(rv) < 3 or len(ov) < 3:
+        return 1.0
+    try:
+        _, p = ranksums(rv, ov)
+        return float(p)
+    except Exception:
+        return 1.0
+
+
+def _direction_symbol(ref_arr, other_arr, higher_is_better: bool) -> str:
+    """Return '+' or '-' based on mean direction (assumes significance already confirmed)."""
+    rv = np.asarray(ref_arr, dtype=float)
+    ov = np.asarray(other_arr, dtype=float)
+    rv = rv[np.isfinite(rv)]
+    ov = ov[np.isfinite(ov)]
+    if len(rv) == 0 or len(ov) == 0:
+        return r'\approx'
+    if higher_is_better:
+        return '+' if np.mean(ov) > np.mean(rv) else '-'
+    else:
+        return '+' if np.mean(ov) < np.mean(rv) else '-'
+
 
 def _fmt(mean: float, std: float, bold: bool, marker: str = '') -> str:
     """Format a ``mean_{std}`` cell, optionally bolding and appending a marker."""
@@ -539,20 +583,57 @@ def _render_section(
             best_key = max(avail_m, key=lambda k: float(np.nanmean(avail_m[k]))) if avail_m else None
         else:
             best_key = min(avail_m, key=lambda k: float(np.nanmean(avail_m[k]))) if avail_m else None
-        ref_arr = avail.get(_WILCOXON_REF)
+        ref1_arr = avail.get(_WILCOXON_REF)
+        ref2_arr = avail.get(_WILCOXON_REF2)
+
+        # ── per-row Holm-Bonferroni correction ───────────────────────────
+        # The two reference methods are excluded from the corrected family;
+        # they are compared only against each other (single uncorrected test).
+        comparison_keys = [k for k in _m if k not in (_WILCOXON_REF, _WILCOXON_REF2)]
+        p1s = [_raw_wilcoxon_p(ref1_arr, avail.get(k)) for k in comparison_keys]
+        p2s = [_raw_wilcoxon_p(ref2_arr, avail.get(k)) for k in comparison_keys]
+        sig1 = dict(zip(comparison_keys, _holm_correct(p1s, _WILCOXON_ALPHA)))
+        sig2 = dict(zip(comparison_keys, _holm_correct(p2s, _WILCOXON_ALPHA)))
+
+        # Single test between the two reference methods (no correction needed)
+        p_refs = _raw_wilcoxon_p(ref1_arr, ref2_arr)
+        sig_refs = p_refs < _WILCOXON_ALPHA
 
         cells = [row_label]
+        _seed_threshold = max_seeds if max_seeds is not None else _EXPECTED_SEEDS
         for key in _m:
             arr = avail.get(key)
             if arr is None:
                 cells.append('--')
                 continue
-            arr_f  = arr[np.isfinite(arr)]
-            mean   = float(np.mean(arr_f))
-            std    = float(np.std(arr_f))
-            bold   = (key == best_key)
-            marker = '' if key == _WILCOXON_REF else _wilcoxon_marker(ref_arr, arr, higher_is_better)
-            _seed_threshold = max_seeds if max_seeds is not None else _EXPECTED_SEEDS
+            arr_f = arr[np.isfinite(arr)]
+            mean  = float(np.mean(arr_f))
+            std   = float(np.std(arr_f))
+            bold  = (key == best_key)
+
+            if key == _WILCOXON_REF:
+                # SAMOS: single marker vs. SAMOS-C
+                if ref2_arr is not None:
+                    sym = _direction_symbol(ref2_arr, arr, higher_is_better) if sig_refs else r'\approx'
+                    marker = rf'$^{{{sym}}}$'
+                else:
+                    marker = ''
+            elif key == _WILCOXON_REF2:
+                # SAMOS-C: single marker vs. SAMOS
+                if ref1_arr is not None:
+                    sym = _direction_symbol(ref1_arr, arr, higher_is_better) if sig_refs else r'\approx'
+                    marker = rf'$^{{{sym}}}$'
+                else:
+                    marker = ''
+            else:
+                # All other methods: combined $^{a,b}$ marker
+                s1 = _direction_symbol(ref1_arr, arr, higher_is_better) if sig1.get(key, False) else r'\approx'
+                s2 = _direction_symbol(ref2_arr, arr, higher_is_better) if sig2.get(key, False) else r'\approx'
+                if ref1_arr is not None or ref2_arr is not None:
+                    marker = rf'$^{{{s1},{s2}}}$'
+                else:
+                    marker = ''
+
             if len(arr) < _seed_threshold:
                 marker += r'$^*$'
             cells.append(_fmt(mean, std, bold, marker))
@@ -636,8 +717,9 @@ def generate_combined_hv_table(
                 r'C-10\,MOP\,8\textendash{}9 and IN-1K\,MOP\,1\textendash{}9. '
             )
             + r'\textbf{Bold}: best per problem. '
-            r'Wilcoxon rank-sum vs. SAMOS-C, $p{<}0.05$: '
-            r'$^{+}$\,better, $^{-}$\,worse, $^{\approx}$\,not significant.'
+            r'Superscripts $^{a,b}$: Wilcoxon rank-sum (Holm-corrected, $\alpha{=}0.05$) vs.\ SAMOS~(a) and SAMOS-C~(b); '
+            r'$+$\,better, $-$\,worse, $\approx$\,not significant. '
+            r'SAMOS and SAMOS-C columns show a single superscript (mutual comparison, uncorrected).'
             + (' ' + caption_note if caption_note else '')
             + r'}'
         ),
@@ -725,7 +807,8 @@ def generate_combined_hv_table(
     # Footnote row (before \bottomrule, inside the tabular body)
     lines += [
         r'\midrule',
-        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{+}$: significantly better than SAMOS-C; $^{-}$: significantly worse; $^{\approx}$: no significant difference (Wilcoxon rank-sum, $p{<}0.05$).} \\',
+        r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize Superscripts $^{a,b}$: Wilcoxon rank-sum, Holm-corrected ($\alpha{=}0.05$), vs.\ SAMOS~(a) and SAMOS-C~(b). $+$: better; $-$: worse; $\approx$: not significant. SAMOS/SAMOS-C columns: mutual comparison only (uncorrected).} \\',
+
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^*$: fewer than ' + str(_seed_threshold) + r' seeds evaluated.} \\',
         r'\multicolumn{' + str(n_cols) + r'}{l}{\footnotesize $^{\diamond}$: synthetic benchmark (WFG); $^{\square}$: tabular NAS benchmark (NB101/NATS/NB201); $^{\dagger}$: surrogate NAS benchmark (DARTS/ResNet-50D/\ldots).} \\',
         # r'\bottomrule',
@@ -2245,7 +2328,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--out',
-        default=os.path.join('results', 'all_benchmarks_hv_table.tex'),
+        default=os.path.join('results', 'all_benchmarks_hv_table_posthoc.tex'),
         help='Output path for the generated LaTeX table.',
     )
     parser.add_argument(
