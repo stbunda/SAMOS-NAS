@@ -193,7 +193,9 @@ def plot_density_heatmap() -> None:
 
     H, xedges, yedges = np.histogram2d(test_acc, n_params, bins=[x_edges, y_edges])
 
-    matplotlib.rcParams.update({'font.size': 15})
+    fontsize= 20
+
+    matplotlib.rcParams.update({'font.size': fontsize})
 
     fig, ax = plt.subplots(figsize=(5, 7), dpi=150)
 
@@ -207,13 +209,13 @@ def plot_density_heatmap() -> None:
     )
 
     cbar = fig.colorbar(mesh, ax=ax, pad=0.02)
-    cbar.set_label('# Architectures', fontsize=15)
+    cbar.set_label('# Architectures', fontsize=fontsize)
 
     ax.set_yscale('log')
-    ax.set_xlabel('Test Accuracy (%)', fontsize=15)
+    ax.set_xlabel('Test Accuracy (%)', fontsize=fontsize)
     ax.set_xlim(0, 100)
-    ax.set_ylabel('Number of Parameters', fontsize=15)
-    ax.set_title('C-10/MOP1\nSearch Space Density', fontsize=15)
+    ax.set_ylabel('Number of Parameters', fontsize=fontsize)
+    ax.set_title('C-10/MOP1\nSearch Space Density', fontsize=fontsize)
 
     ax.text(
         0.02, 0.97,
