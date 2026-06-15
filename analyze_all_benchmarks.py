@@ -1780,7 +1780,7 @@ def plot_convergence_grid_combined(
         'axes.labelsize':   14 * font_scale,
         'xtick.labelsize':  12 * font_scale,
         'ytick.labelsize':  12 * font_scale,
-        'legend.fontsize':  12 * font_scale,
+        'legend.fontsize':  14 * font_scale,
         'figure.dpi':       150,
     })
 
@@ -1882,7 +1882,7 @@ def plot_convergence_grid_combined(
         bbox_to_anchor=(0.5, 0.0),
         ncol=math.ceil(len(legend_labels) / 2),
         frameon=True,
-        fontsize=10 * font_scale,
+        fontsize=14 * font_scale,
     )
 
     fig.tight_layout()
