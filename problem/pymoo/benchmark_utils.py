@@ -22,7 +22,7 @@ def get_pareto_front(problem, n_obj: int, min_pts: int = 300) -> np.ndarray:
         pf = problem.pareto_front(n_points=1000)
         if pf is not None and len(pf) >= min_pts:
             return pf
-    except TypeError:
+    except Exception:
         pass
 
     from pymoo.util.ref_dirs import get_reference_directions
