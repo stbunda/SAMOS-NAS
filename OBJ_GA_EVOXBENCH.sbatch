@@ -34,7 +34,7 @@
 mkdir -p slurm_logs_obj_ga_evoxbench
 
 # ─── environment ──────────────────────────────────────────────────────────────
-module load nvidia/nvhpc/23.3
+module load nvidia/nvhpc/26.3
 module load anaconda3/2023.09
 source activate
 conda deactivate

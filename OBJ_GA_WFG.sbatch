@@ -18,7 +18,7 @@
 #SBATCH -J obj_ga_wfg
 #SBATCH -c 2
 #SBATCH --array=0-19%5            # 20 tasks = 20 seeds, 5 concurrent
-#SBATCH --mem=16gb
+#SBATCH --mem=8gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
 #SBATCH --time=48:00:00
@@ -29,7 +29,7 @@
 mkdir -p slurm_logs_obj_ga_wfg
 
 # ─── environment ──────────────────────────────────────────────────────────────
-module load nvidia/nvhpc/23.3
+module load nvidia/nvhpc/26.3
 module load anaconda3/2023.09
 source activate
 conda deactivate
