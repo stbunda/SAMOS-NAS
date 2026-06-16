@@ -30,7 +30,7 @@ experiments:
       problems: [wfg1, wfg2, wfg3, wfg4, wfg5, wfg6, wfg7, wfg8, wfg9]
     evoxbench:
       c10mop:  [1, 8]
-      in1kmop: [1, 4, 7]
+      in1kmop: [1, 2, 4, 5, 7]
   "1.2":
     n_obj: 3
     wfg:
@@ -38,7 +38,7 @@ experiments:
       problems: [wfg1, wfg2, wfg3, wfg4, wfg5, wfg6, wfg7, wfg8, wfg9]
     evoxbench:
       c10mop:  [2, 3, 9]
-      in1kmop: [3, 6]
+      in1kmop: [3, 6, 8]
   "1.3":
     n_obj: 4
     wfg:
