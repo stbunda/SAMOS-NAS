@@ -212,11 +212,11 @@ def format_table(coverage):
 
                 # Status: all complete (20/20), partial, or missing
                 if all(c == 20 for c in counts if c > 0):
-                    status = "✓ complete"
+                    status = "[OK] complete"
                 elif any(c > 0 for c in counts):
-                    status = f"⚠ partial ({sum(1 for c in counts if c > 0)}/{len(all_methods)} methods)"
+                    status = f"[PART] partial ({sum(1 for c in counts if c > 0)}/{len(all_methods)} methods)"
                 else:
-                    status = "✗ missing"
+                    status = "[MISS] missing"
 
                 row += f"  {status}"
                 lines.append(row)
@@ -259,11 +259,11 @@ def format_table(coverage):
                         row += f"{count:<12}"
 
                     if all(c == 20 for c in counts if c > 0):
-                        status = "✓ complete"
+                        status = "[OK] complete"
                     elif any(c > 0 for c in counts):
-                        status = f"⚠ partial ({sum(1 for c in counts if c > 0)}/{len(all_methods)} methods)"
+                        status = f"[PART] partial ({sum(1 for c in counts if c > 0)}/{len(all_methods)} methods)"
                     else:
-                        status = "✗ missing"
+                        status = "[MISS] missing"
 
                     row += f"  {status}"
                     lines.append(row)
