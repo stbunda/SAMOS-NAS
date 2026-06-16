@@ -419,7 +419,14 @@ def analyse_group(
     baseline = 'nsga2' if 'nsga2' in methods else methods[0]
 
     plot_dir = os.path.join(output_dir, 'plots')
+    hv_plot_dir = os.path.join(plot_dir, 'hv_convergence')
+    igd_plot_dir = os.path.join(plot_dir, 'igd_convergence')
+    attainment_plot_dir = os.path.join(plot_dir, 'attainment')
     table_dir = os.path.join(output_dir, 'tables')
+
+    os.makedirs(hv_plot_dir, exist_ok=True)
+    os.makedirs(igd_plot_dir, exist_ok=True)
+    os.makedirs(attainment_plot_dir, exist_ok=True)
 
     # ── WFG ─────────────────────────────────────────────────────────────────
     if benchmark in ('wfg', 'all'):
@@ -446,18 +453,20 @@ def analyse_group(
                 table_data[prob] = pdata if pdata else _trajectories_to_table_dict(traj)
 
                 # Convergence plots (full trajectory).
-                for metric in ('hv', 'igd_plus'):
-                    out_png = os.path.join(
-                        plot_dir, f'wfg_{n_obj}obj_{prob}_{metric}_convergence.png')
-                    plotter.plot_convergence_obj_ga(
-                        traj, methods, method_labels, prob.upper(), metric, out_png)
+                out_hv = os.path.join(hv_plot_dir, f'wfg_{n_obj}obj_{prob}_hv.png')
+                plotter.plot_convergence_obj_ga(
+                    traj, methods, method_labels, prob.upper(), 'hv', out_hv)
+
+                out_igd = os.path.join(igd_plot_dir, f'wfg_{n_obj}obj_{prob}_igd_plus.png')
+                plotter.plot_convergence_obj_ga(
+                    traj, methods, method_labels, prob.upper(), 'igd_plus', out_igd)
 
                 # Attainment plots (2-obj only).
                 if n_obj == 2:
                     archives = _final_archives_per_method(proot, methods)
                     if archives:
                         out_png = os.path.join(
-                            plot_dir, f'wfg_{n_obj}obj_{prob}_attainment.png')
+                            attainment_plot_dir, f'wfg_{prob}_attainment.png')
                         plotter.plot_attainment_surface(
                             archives, method_labels, prob.upper(), out_png)
 
@@ -505,19 +514,22 @@ def analyse_group(
                 table_data[key] = pdata if pdata else _trajectories_to_table_dict(traj)
 
                 # Convergence plots (full trajectory).
-                for metric in ('hv', 'igd_plus'):
-                    out_png = os.path.join(
-                        plot_dir, f'evox_{n_obj}obj_{key}_{metric}_convergence.png')
-                    plotter.plot_convergence_obj_ga(
-                        traj, methods, method_labels,
-                        problem_labels[key], metric, out_png)
+                out_hv = os.path.join(hv_plot_dir, f'evox_{n_obj}obj_{key}_hv.png')
+                plotter.plot_convergence_obj_ga(
+                    traj, methods, method_labels,
+                    problem_labels[key], 'hv', out_hv)
+
+                out_igd = os.path.join(igd_plot_dir, f'evox_{n_obj}obj_{key}_igd_plus.png')
+                plotter.plot_convergence_obj_ga(
+                    traj, methods, method_labels,
+                    problem_labels[key], 'igd_plus', out_igd)
 
                 # Attainment plots (2-obj only).
                 if n_obj == 2:
                     archives = _final_archives_per_method(pid_root, methods)
                     if archives:
                         out_png = os.path.join(
-                            plot_dir, f'evox_{n_obj}obj_{key}_attainment.png')
+                            attainment_plot_dir, f'evox_{key}_attainment.png')
                         plotter.plot_attainment_surface(
                             archives, method_labels, problem_labels[key], out_png)
 
@@ -530,6 +542,102 @@ def analyse_group(
                         table_data, methods, method_labels,
                         ordered_keys, problem_labels,
                         metric, checkpoints, out_tex, baseline_method=baseline)
+
+
+# ─── combined n_obj convergence plots ──────────────────────────────────────────
+
+def plot_combined_convergence(
+    cfg: dict, methods: list, method_labels: dict,
+    benchmark: str, output_dir: str
+):
+    """Create combined convergence plots with subplots for each n_obj value.
+
+    Produces one plot per metric (HV, IGD+) showing all n_obj benchmarks as subplots.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    results_root = cfg.get('results_root', 'results/obj_ga')
+    n_gen = int(cfg.get('n_gen', 100))
+
+    plot_dir = os.path.join(output_dir, 'plots')
+    hv_plot_dir = os.path.join(plot_dir, 'hv_convergence')
+    igd_plot_dir = os.path.join(plot_dir, 'igd_convergence')
+
+    # Collect all n_obj/problem combinations
+    all_data = {}  # {n_obj: {problem_key: {metric: traj_dict}}}
+
+    for n_obj, group in _iter_experiments(cfg):
+        all_data[n_obj] = {}
+
+        # WFG
+        if benchmark in ('wfg', 'all'):
+            wfg_problems = _wfg_problems(group)
+            for prob in wfg_problems:
+                proot = _wfg_results_root(results_root, n_obj, prob)
+                traj = _wfg_trajectories(proot, methods, n_gen)
+                if traj:
+                    all_data[n_obj][f'WFG {prob.upper()}'] = traj
+
+        # EvoXBench
+        if benchmark in ('evoxbench', 'all'):
+            evox_problems = _evox_problems(group)
+            for suite, pid in evox_problems:
+                key = f'EvoXBench {suite.upper()} pid{pid}'
+                pid_root = _evox_pid_root(results_root, suite, pid)
+                approx = get_or_build_pareto_approx(
+                    suite, pid, methods, n_gen, results_root, False)
+                if approx:
+                    traj = _evox_trajectories(pid_root, methods, n_gen, approx)
+                    if traj:
+                        all_data[n_obj][key] = traj
+
+    if not all_data:
+        return
+
+    # Create combined plots per metric
+    for metric in ('hv', 'igd_plus'):
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        fig.suptitle(
+            f'{metric.upper()} Convergence across all Objectives',
+            fontsize=14, fontweight='bold')
+
+        for ax_idx, n_obj in sorted(all_data.keys()):
+            ax = axes[ax_idx - 2] if n_obj < 3 else axes[n_obj - 2]
+            ax.set_title(f'n_obj = {n_obj}')
+            ax.set_xlabel('Generation')
+            ax.set_ylabel(metric.upper())
+
+            # Plot all problems on this subplot
+            for prob_key, traj in all_data[n_obj].items():
+                if metric not in traj:
+                    continue
+                mean_vals = traj[metric]['mean']
+                std_vals = traj[metric]['std']
+                gens = np.arange(len(mean_vals))
+
+                # Get method color from plotter's default colors
+                color = plotter._default_colors.get(methods[0], 'C0')  # fallback
+                ax.plot(gens, mean_vals, label=prob_key, alpha=0.7)
+                ax.fill_between(
+                    gens, mean_vals - std_vals, mean_vals + std_vals,
+                    alpha=0.2)
+
+            ax.legend(fontsize=8, loc='best')
+            ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+
+        # Save
+        out_metric = metric.replace('_', '_plus') if 'plus' in metric else metric
+        out_hv = os.path.join(
+            hv_plot_dir if metric == 'hv' else igd_plot_dir,
+            f'{benchmark}_all_objectives_{metric}_combined.png')
+        os.makedirs(os.path.dirname(out_hv), exist_ok=True)
+        plt.savefig(out_hv, dpi=150, bbox_inches='tight')
+        print(f'[plot] Saved {out_hv}')
+        plt.close(fig)
 
 
 # ─── main ─────────────────────────────────────────────────────────────────────
@@ -560,6 +668,11 @@ def main():
         analyse_group(
             n_obj, group, cfg, methods, method_labels,
             args.benchmark, args.output_dir, args.force)
+
+    # Generate combined convergence plots across all n_obj values
+    if str(args.n_obj).lower() == 'all':
+        print(f'\n{"=" * 70}\n Combined convergence plots (all n_obj)\n{"=" * 70}')
+        plot_combined_convergence(cfg, methods, method_labels, args.benchmark, args.output_dir)
 
     print('\n[analyse] Done.')
 

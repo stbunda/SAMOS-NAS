@@ -496,11 +496,13 @@ def generate_obj_ga_table(
     """Generate a LaTeX table of HV or IGD+ at several generation checkpoints.
 
     One table for a single (benchmark, n_obj_group); call once per metric and
-    write to a separate file each time.  Columns are (problem × checkpoint
-    generation); rows are methods.  Cells show ``mean$_{std}$``; the best value
-    per column is bold; a significance marker (``^{*}``) is appended where the
-    method differs significantly from *baseline_method* under a Holm-corrected
-    Wilcoxon rank-sum test (only when per-seed data is supplied).
+    write to a separate file each time. Layout:
+    - Columns: Methods (algorithms)
+    - Rows: Problems (grouped), with sub-rows for each checkpoint generation
+
+    Cells show ``mean$_{std}$``; the best value per (problem, generation) is bold;
+    a significance marker (``^{*}``) is appended where the method differs
+    significantly from *baseline_method* under a Holm-corrected Wilcoxon rank-sum test.
 
     Parameters
     ----------
@@ -509,7 +511,7 @@ def generate_obj_ga_table(
         is either a 1-D mean trajectory ``(n_gen,)`` or a 2-D per-seed matrix
         ``(n_seeds, n_gen)``.  2-D arrays enable Wilcoxon significance markers.
     methods
-        Ordered method keys (table row order).
+        Ordered method keys (table column order).
     method_labels
         ``{method: display label}``.
     problems
@@ -519,7 +521,7 @@ def generate_obj_ga_table(
     metric
         ``'hv'`` (higher is better) or ``'igd_plus'`` (lower is better).
     checkpoint_gens
-        1-based generation numbers to show as columns (``config.metric_checkpoints``).
+        1-based generation numbers to show as rows (``config.metric_checkpoints``).
     out_path
         Path to the ``.tex`` file to write.
     baseline_method
@@ -538,18 +540,16 @@ def generate_obj_ga_table(
     # checkpoint_gens are 1-based generations → 0-based array indices
     ckpt_idx = [g - 1 for g in checkpoint_gens]
 
-    n_ckpt = len(checkpoint_gens)
-    n_data_cols = len(problems) * n_ckpt
-
-    # ── column spec: Method | (problem groups of n_ckpt r-columns) ──────────
-    col_spec = "l" + "".join("r" * n_ckpt for _ in problems)
+    # ── column spec: Gen / Problem | method1 | method2 | ... ───────────────
+    n_methods = len(methods)
+    col_spec = "ll" + "r" * n_methods
 
     lines = [
         "\\begin{table}[ht]",
         "  \\centering",
         f"  \\caption{{{metric_disp.split(' ')[0]} at generation checkpoints "
         f"({', '.join(str(g) for g in checkpoint_gens)}). "
-        f"Mean$_{{\\text{{std}}}}$ over seeds. \\textbf{{Bold}} = best per column. "
+        f"Mean$_{{\\text{{std}}}}$ over seeds. \\textbf{{Bold}} = best per (generation, problem). "
         f"$^{{*}}$ = significant vs.\\ {method_labels.get(baseline_method, baseline_method)} "
         f"(Holm-corrected Wilcoxon, $\\alpha={alpha}$).}}",
         "  \\label{tab:obj_ga_" + metric_key + "}",
@@ -558,34 +558,17 @@ def generate_obj_ga_table(
         "    \\toprule",
     ]
 
-    # ── header row 1: problem group spanning n_ckpt columns each ────────────
-    h1 = "    Method"
-    for prob in problems:
-        plabel = problem_labels.get(prob, prob).replace('_', '\\_')
-        h1 += f" & \\multicolumn{{{n_ckpt}}}{{c}}{{{plabel}}}"
-    h1 += " \\\\"
-    lines.append(h1)
-
-    # cmidrules under each problem group
-    cmid = "    "
-    start = 2
-    for _ in problems:
-        end = start + n_ckpt - 1
-        cmid += f"\\cmidrule(lr){{{start}-{end}}} "
-        start = end + 1
-    lines.append(cmid.rstrip())
-
-    # ── header row 2: generation numbers ────────────────────────────────────
-    h2 = "    "
-    for _ in problems:
-        for g in checkpoint_gens:
-            h2 += f" & g{g}"
-    h2 += " \\\\"
-    lines.append(h2)
+    # ── header row: method labels ────────────────────────────────────────────
+    h = "    Gen & Problem"
+    for m in methods:
+        mlabel = method_labels.get(m, m).replace('_', '\\_')
+        h += f" & {mlabel}"
+    h += " \\\\"
+    lines.append(h)
     lines.append("    \\midrule")
 
-    # ── determine best value per (problem, checkpoint) column ───────────────
-    # best_vals[(prob, gen_idx)] = best mean value among methods present
+    # ── determine best value per (problem, checkpoint) ──────────────────────
+    # best_vals[(prob, gen_idx)] = best mean value among methods
     best_vals = {}
     for prob in problems:
         pdata = data_dict.get(prob, {})
@@ -601,7 +584,6 @@ def generate_obj_ga_table(
                                          else min(col_means))
 
     # ── precompute Holm-corrected significance per (problem, checkpoint) ────
-    # sig[(prob, gi)] = {method: bool}
     sig = {}
     if _SCIPY_AVAILABLE:
         compare_methods = [m for m in methods if m != baseline_method]
@@ -636,15 +618,27 @@ def generate_obj_ga_table(
                 reject = _holm_correct(pvals, alpha)
                 sig[(prob, gi)] = {m: r for m, r in zip(order, reject)}
 
-    # ── data rows ───────────────────────────────────────────────────────────
-    for method in methods:
-        label = method_labels.get(method, method).replace('_', '\\_')
-        row = f"    {label}"
-        for prob in problems:
+    # ── data rows: grouped by generation, with sub-rows per problem ───────
+    first_gen = True
+    for gi_idx, gi in enumerate(ckpt_idx):
+        g = checkpoint_gens[gi_idx]
+
+        for prob_idx, prob in enumerate(problems):
             pdata = data_dict.get(prob, {})
-            mdata = pdata.get(method, {})
-            arr = mdata.get(metric_key)
-            for gi in ckpt_idx:
+            plabel = problem_labels.get(prob, prob).replace('_', '\\_')
+
+            # First problem of each generation: show generation label
+            if prob_idx == 0:
+                if not first_gen:
+                    lines.append("    \\addlinespace")
+                first_gen = False
+                row = f"    Gen {g} & {plabel}"
+            else:
+                row = f"     & {plabel}"
+
+            for m in methods:
+                mdata = pdata.get(m, {})
+                arr = mdata.get(metric_key)
                 if arr is None:
                     row += " & --"
                     continue
@@ -653,11 +647,12 @@ def generate_obj_ga_table(
                 best = best_vals.get((prob, gi))
                 if best is not None and np.isfinite(mean) and abs(mean - best) < 1e-9:
                     cell = f"\\textbf{{{cell}}}"
-                if sig.get((prob, gi), {}).get(method, False):
+                if sig.get((prob, gi), {}).get(m, False):
                     cell = f"{cell}$^{{*}}$"
                 row += f" & {cell}"
-        row += " \\\\"
-        lines.append(row)
+
+            row += " \\\\"
+            lines.append(row)
 
     lines += [
         "    \\bottomrule",
