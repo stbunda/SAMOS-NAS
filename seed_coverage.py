@@ -181,7 +181,9 @@ def format_table(coverage):
         lines.append('='*100)
 
         for n_obj in sorted(coverage['wfg']['wfg'].keys()):
-            lines.append(f'\nSub-exp 1.{[1.1, 1.2, 1.3][int(n_obj)-2]} (n_obj={n_obj})')
+            subexp_map = {2: '1.1', 3: '1.2', 4: '1.3'}
+            subexp_id = subexp_map.get(int(n_obj), f'?.{int(n_obj)}')
+            lines.append(f'\nSub-exp {subexp_id} (n_obj={n_obj})')
             lines.append('-' * 100)
 
             problems_methods = defaultdict(dict)
@@ -229,7 +231,9 @@ def format_table(coverage):
             lines.append('='*100)
 
             for n_obj in sorted(coverage['evoxbench'][suite].keys()):
-                lines.append(f'\nSub-exp 1.{[1.1, 1.2, 1.3][int(n_obj)-2]} (n_obj={n_obj})')
+                subexp_map = {2: '1.1', 3: '1.2', 4: '1.3'}
+                subexp_id = subexp_map.get(int(n_obj), f'?.{int(n_obj)}')
+                lines.append(f'\nSub-exp {subexp_id} (n_obj={n_obj})')
                 lines.append('-' * 100)
 
                 pids_methods = defaultdict(dict)
