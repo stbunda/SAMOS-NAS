@@ -1,7 +1,7 @@
 # Experiment 1: GA comparison under varying objectives
 # Consumed by experiment_obj_ga.py (per-run driver) and analyse_obj_ga.py.
 
-# ─── algorithm set (8) ────────────────────────────────────────────────────────
+# --- algorithm set (8) ---
 algorithms:
   - {name: random,    label: "Random"}
   - {name: nsga2,     label: "NSGA-II"}
@@ -12,14 +12,14 @@ algorithms:
   - {name: age-moea,  label: "AGE-MOEA"}
   - {name: age-moea2, label: "AGE-MOEA-II"}
 
-# ─── shared budget / protocol ─────────────────────────────────────────────────
+# --- shared budget / protocol ---
 seeds: 20
 n_gen: 100
 pop_size_floor: 12
-metric_checkpoints: [10, 20, 50, 100]   # used only by analysis for table extraction
+metric_checkpoints: [10, 20, 50, 100]
 results_root: "results/obj_ga"
 
-# ─── sub-experiments (keyed by n_obj) ─────────────────────────────────────────
+# --- sub-experiments (keyed by n_obj) ---
 # Each block lists the WFG and EvoXBench problems for that objective count.
 # wfg / evoxbench problem lists are kept separable so callers can iterate either.
 experiments:
