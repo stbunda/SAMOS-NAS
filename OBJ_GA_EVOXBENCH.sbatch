@@ -33,6 +33,38 @@
 
 mkdir -p slurm_logs_obj_ga_evoxbench
 
+# ─── scratch setup ─────────────────────────────────────────────────────────────
+SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
+if [ -d "$SCRATCH_DIRECTORY" ]; then
+    echo "'$SCRATCH_DIRECTORY' already found!"
+else
+    echo "'$SCRATCH_DIRECTORY' not found, creating!"
+    mkdir -p "$SCRATCH_DIRECTORY"
+fi
+
+RSYNC_SOURCES=(
+    analysis
+    config
+    problem
+    strategy
+    experiment_obj_ga.py
+)
+
+# Pre-copy any already-computed results for EvoXBench (all suites and pids)
+for _SUITE in c10mop in1kmop; do
+    for _N_OBJ in 2 3 4; do
+        _SRC="results/obj_ga/evoxbench/${_SUITE}/pid"*
+        [ -d "$_SRC" ] 2>/dev/null && RSYNC_SOURCES+=("$_SRC")
+    done
+done
+
+rsync -aR "${RSYNC_SOURCES[@]}" "$SCRATCH_DIRECTORY/" 2>/dev/null || true
+
+cd "$SCRATCH_DIRECTORY"
+
+echo "Copied structure:"
+find "${SCRATCH_DIRECTORY}" -maxdepth 4 -type d 2>/dev/null | head -20
+
 # ─── environment ──────────────────────────────────────────────────────────────
 module load nvidia/nvhpc/26.3
 module load anaconda3/2023.09
@@ -69,7 +101,7 @@ esac
 # ─── logging ──────────────────────────────────────────────────────────────────
 echo "Date              = $(date)"
 echo "Hostname          = $(hostname -s)"
-echo "Working Directory = $(pwd)"
+echo "Scratch Directory = $SCRATCH_DIRECTORY"
 echo "BENCHMARK         = $BENCHMARK"
 echo "N_OBJ             = $N_OBJ"
 echo "SEED              = $SEED"
@@ -91,8 +123,20 @@ for METHOD in "${METHODS[@]}"; do
             --seed      "$SEED" \
             --config    "$CONFIG" \
             ${OVERWRITE:+--overwrite}
+
+        # ── copy results back ──────────────────────────────────────────────────────
+        DEST="${SLURM_SUBMIT_DIR}/results/obj_ga/evoxbench/${BENCHMARK}/pid${PID}"
+        mkdir -p "$DEST"
+        rsync -a \
+            "${SCRATCH_DIRECTORY}/results/obj_ga/evoxbench/${BENCHMARK}/pid${PID}/" \
+            "$DEST/" 2>/dev/null || true
+        echo "Results copied to $DEST"
     done
 done
 
 echo ""
 echo "Date (done)       = $(date)"
+
+# ─── scratch cleanup ──────────────────────────────────────────────────────────
+echo "Removing scratch directory: $SCRATCH_DIRECTORY"
+rm -rf "$SCRATCH_DIRECTORY"
