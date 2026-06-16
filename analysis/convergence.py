@@ -139,12 +139,17 @@ def _cache_path(results_root: str) -> str:
     return os.path.join(results_root, 'pareto_approx.pkl')
 
 
-def _load_cache(results_root: str) -> dict | None:
+def _load_cache(results_root: str, experiment_subdir: str = '') -> dict | None:
     """Return the cached approximation dict if it exists and is still valid.
 
     Validity: every source entry ``{seed_file, mtime}`` must still exist on
     disk and must *not* have been modified since the cache was written
     (i.e. current mtime <= stored mtime, with a 1 ms tolerance).
+
+    *experiment_subdir* mirrors the same parameter on
+    :func:`build_pareto_approximation` so the new-file scan inspects
+    ``results_root/{method}/{experiment_subdir}`` rather than
+    ``results_root/{method}``.
     """
     path = _cache_path(results_root)
     if not os.path.isfile(path):
@@ -169,7 +174,8 @@ def _load_cache(results_root: str) -> dict | None:
     # Also check for new seed files not recorded in sources.
     known_files = {e['seed_file'] for e in cache.get('sources', [])}
     for method in cache.get('methods', []):
-        seed_dir = os.path.join(results_root, method)
+        seed_dir = os.path.join(results_root, method, experiment_subdir) \
+            if experiment_subdir else os.path.join(results_root, method)
         if not os.path.isdir(seed_dir):
             continue
         for fname in sorted(os.listdir(seed_dir)):
@@ -302,6 +308,7 @@ def build_pareto_approximation(
     force_rebuild: bool = False,
     norm_bounds: dict | None = None,
     results_root: str | None = None,
+    experiment_subdir: str = '',
 ) -> dict | None:
     """Build (or load from cache) the combined Pareto approximation for one PID.
 
@@ -327,6 +334,13 @@ def build_pareto_approximation(
     results_root
         Override the folder derived from *suite/pid/pop_size/n_gen*.  Useful
         when results live under a non-standard root (e.g. ``evoxbench_no_norm``).
+    experiment_subdir
+        Optional sub-directory inserted between the per-method folder and the
+        ``seed_*.pkl`` files (e.g. ``'ga_obj'`` for the obj-GA layout
+        ``results_root/{method}/ga_obj/seed_*.pkl``).  Defaults to ``''`` so
+        existing callers (``results_root/{method}/seed_*.pkl``) are unaffected.
+        The ``pareto_approx.pkl`` cache is still written to *results_root* (the
+        pid-level folder), not inside *experiment_subdir*.
 
     Returns
     -------
@@ -341,7 +355,7 @@ def build_pareto_approximation(
     root = results_root if results_root is not None else _results_root(suite, pid, pop_size, n_gen)
 
     if not force_rebuild:
-        cached = _load_cache(root)
+        cached = _load_cache(root, experiment_subdir)
         if cached is not None:
             # Invalidate if norm_bounds mode has changed (None ↔ provided)
             cached_nb = cached.get('norm_bounds')
@@ -372,7 +386,8 @@ def build_pareto_approximation(
     sources: list[dict] = []
 
     for method in methods:
-        seed_dir = os.path.join(root, method)
+        seed_dir = os.path.join(root, method, experiment_subdir) if experiment_subdir \
+            else os.path.join(root, method)
         for F, abs_path in _load_final_test_archive(seed_dir):
             if norm_bounds is not None:
                 finite = np.isfinite(F).all(axis=1)
@@ -437,6 +452,7 @@ def recompute_indicator_trajectories(
     ref_point: np.ndarray,
     pareto_approx: np.ndarray,
     norm_bounds: dict | None = None,
+    experiment_subdir: str = '',
 ) -> tuple | None:
     """Recompute HV / IGD+ trajectories using the shared reference / PF.
 
@@ -453,12 +469,17 @@ def recompute_indicator_trajectories(
     ``plotter.load_indicator_trajectories`` so the result is directly
     substitutable in all plotting calls.
 
+    *experiment_subdir*, when given, is inserted between the per-method folder
+    and the ``seed_*.pkl`` files (e.g. ``'ga_obj'`` for the obj-GA layout),
+    matching :func:`build_pareto_approximation`.
+
     Returns
     -------
     ``(hv_mean, hv_std, igd_mean, igd_std)`` — each a ``(n_gen,)`` ndarray.
     ``None`` if no seed files are found for *method*.
     """
-    seed_dir = os.path.join(results_root, method)
+    seed_dir = os.path.join(results_root, method, experiment_subdir) \
+        if experiment_subdir else os.path.join(results_root, method)
     if not os.path.isdir(seed_dir):
         return None
 

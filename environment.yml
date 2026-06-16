@@ -16,6 +16,7 @@ dependencies:
       - pymoo==0.6.1.5
       - pysamoo
       - cma
+      - moocore   # empirical attainment function (EAF) for attainment plots
 
       # Surrogate models
       - xgboost>=2.0

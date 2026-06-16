@@ -1430,3 +1430,210 @@ def plot_pareto_snapshots_evoxbench_subplots(
     fig.savefig(out_path, bbox_inches='tight')
     print(f'  Plot saved -> {out_path}')
     plt.close(fig)
+
+
+# --- obj-GA convergence + attainment ------------------------------------------
+
+def plot_convergence_obj_ga(
+    trajectories_dict: dict,
+    methods: list,
+    method_labels: dict,
+    problem_label: str,
+    metric: str,
+    out_path: str,
+    colours: dict = None,
+    font_scale: float = 1.0,
+):
+    """Line plot of HV or IGD+ vs. *all* generations (no subsampling).
+
+    One line per method with mean +/- std shading over seeds.
+
+    Parameters
+    ----------
+    trajectories_dict
+        ``{method: (hv_mean, hv_std, igd_mean, igd_std)}`` -- the 4-tuple
+        produced by ``convergence.recompute_indicator_trajectories`` /
+        ``plotter.load_indicator_trajectories``.  Each element is a 1-D array of
+        length == number of generations.
+    methods
+        Ordered method keys to draw (subset of *trajectories_dict* keys).
+    method_labels
+        ``{method: display label}`` (merged on top of module LABELS).
+    problem_label
+        Display name of the problem (used in the title).
+    metric
+        ``'hv'`` (higher is better) or ``'igd_plus'`` / ``'igd'`` (lower).
+    out_path
+        Output PNG path.
+    """
+    metric_key = 'hv' if metric.lower() in ('hv', 'hypervolume') else 'igd_plus'
+    is_hv = (metric_key == 'hv')
+
+    _colours = {**COLOURS, **(colours or {})}
+    _labels = {**LABELS, **(method_labels or {})}
+
+    matplotlib.rcParams.update({
+        'font.size': 11 * font_scale,
+        'axes.titlesize': 12 * font_scale,
+        'axes.labelsize': 11 * font_scale,
+        'xtick.labelsize': 10 * font_scale,
+        'ytick.labelsize': 10 * font_scale,
+        'legend.fontsize': 10 * font_scale,
+        'figure.titlesize': 12 * font_scale,
+        'figure.dpi': 150,
+    })
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+
+    for method in methods:
+        result = trajectories_dict.get(method)
+        if result is None:
+            print(f'  [plot_conv_obj_ga] No data for method={method}, skipping.')
+            continue
+        hv_mean, hv_std, igd_mean, igd_std = result
+        if is_hv:
+            mean, std = np.asarray(hv_mean, float), np.asarray(hv_std, float)
+            lo = mean - std
+        else:
+            mean, std = np.asarray(igd_mean, float), np.asarray(igd_std, float)
+            lo = np.maximum(0.0, mean - std)
+        x = np.arange(1, len(mean) + 1)   # all generations, no subsampling
+        colour, label = _resolve_style(method, _colours, _labels)
+        ax.plot(x, mean, label=label, color=colour, linewidth=1.8)
+        ax.fill_between(x, lo, mean + std, alpha=0.15, color=colour)
+
+    ax.set_xlabel('Generation', fontsize=11 * font_scale)
+    ax.set_ylabel('Hypervolume' if is_hv else 'IGD+', fontsize=11 * font_scale)
+    metric_title = (
+        "Hypervolume (higher is better)" if is_hv
+        else "IGD+ (lower is better)"
+    )
+    ax.set_title(f'{problem_label} -- {metric_title}', fontsize=12 * font_scale)
+    ax.grid(True, alpha=0.3)
+    ax.tick_params(axis='both', labelsize=10 * font_scale)
+
+    handles, leg_labels = ax.get_legend_handles_labels()
+    fig.legend(handles, leg_labels, loc='lower center',
+               bbox_to_anchor=(0.5, -0.12), ncol=3, frameon=True,
+               fontsize=10 * font_scale)
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)
+
+
+def plot_attainment_surface(
+    archives_per_method: dict,
+    method_labels: dict,
+    problem_label: str,
+    out_path: str,
+    colours: dict = None,
+    font_scale: float = 1.0,
+):
+    """50 percent empirical attainment function (EAF) overlay via moocore.eaf.
+
+    2-objective problems only -- asserts ``n_obj == 2``.  The caller is
+    responsible for filtering to 2-obj problems.
+
+    Parameters
+    ----------
+    archives_per_method
+        ``{method: list[(n_i, 2) ndarray]}`` -- one final-generation ND-front
+        array per seed (minimisation space).  Methods with no usable data are
+        skipped.
+    method_labels
+        ``{method: display label}`` (merged on top of module LABELS).
+    problem_label
+        Display name of the problem (used in the title).
+    out_path
+        Output PNG path.
+    """
+    import moocore
+
+    _colours = {**COLOURS, **(colours or {})}
+    _labels = {**LABELS, **(method_labels or {})}
+
+    matplotlib.rcParams.update({
+        'font.size': 11 * font_scale,
+        'axes.titlesize': 12 * font_scale,
+        'axes.labelsize': 11 * font_scale,
+        'xtick.labelsize': 10 * font_scale,
+        'ytick.labelsize': 10 * font_scale,
+        'legend.fontsize': 10 * font_scale,
+        'figure.dpi': 150,
+    })
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    drew_any = False
+    for method, fronts in archives_per_method.items():
+        if not fronts:
+            continue
+        # Build the moocore "data + set" stacked layout: each seed is one set.
+        blocks, set_ids = [], []
+        for s, front in enumerate(fronts):
+            F = np.asarray(front, dtype=float)
+            if F.ndim != 2 or F.shape[0] == 0:
+                continue
+            assert F.shape[1] == 2, (
+                f'plot_attainment_surface requires n_obj == 2, '
+                f'got {F.shape[1]} objectives for method={method}.'
+            )
+            blocks.append(F)
+            set_ids.append(np.full(len(F), s + 1, dtype=int))
+        if not blocks:
+            continue
+
+        data = np.vstack(blocks)
+        sets = np.concatenate(set_ids)
+        n_sets = len(np.unique(sets))
+
+        # 50 percent EAF: percentile = 50 (median attainment surface).
+        # moocore.eaf(data, sets, *, percentiles): data is the (n, n_obj)
+        # point matrix, sets labels each row's seed; the returned matrix has
+        # n_obj + 1 columns (objectives + percentile in the last column).
+        eaf_pts = moocore.eaf(data, sets, percentiles=[50])
+
+        eaf_pts = np.asarray(eaf_pts, dtype=float)
+        if eaf_pts.ndim != 2 or eaf_pts.shape[0] == 0:
+            continue
+        # moocore returns columns [obj1, obj2, percentile]; keep the 50 level.
+        if eaf_pts.shape[1] >= 3:
+            eaf_pts = eaf_pts[np.isclose(eaf_pts[:, 2], 50.0)][:, :2]
+        else:
+            eaf_pts = eaf_pts[:, :2]
+        if len(eaf_pts) == 0:
+            continue
+
+        order = np.argsort(eaf_pts[:, 0])
+        eaf_pts = eaf_pts[order]
+        colour, label = _resolve_style(method, _colours, _labels)
+        ax.step(eaf_pts[:, 0], eaf_pts[:, 1], where='post',
+                color=colour, linewidth=1.8,
+                label=f'{label} ({n_sets} seeds)')
+        drew_any = True
+
+    if not drew_any:
+        print(f'  [plot_attainment] No usable 2-obj data; skipping {out_path}.')
+        plt.close(fig)
+        return
+
+    ax.set_xlabel('$f_1$', fontsize=11 * font_scale)
+    ax.set_ylabel('$f_2$', fontsize=11 * font_scale)
+    ax.set_title(f'{problem_label} -- 50 percent attainment surface',
+                 fontsize=12 * font_scale)
+    ax.grid(True, alpha=0.3)
+    ax.tick_params(axis='both', labelsize=10 * font_scale)
+
+    handles, leg_labels = ax.get_legend_handles_labels()
+    fig.legend(handles, leg_labels, loc='lower center',
+               bbox_to_anchor=(0.5, -0.12), ncol=3, frameon=True,
+               fontsize=9 * font_scale)
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)

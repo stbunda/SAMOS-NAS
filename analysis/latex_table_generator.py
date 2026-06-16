@@ -8,6 +8,12 @@ across multiple datasets with abbreviated objective names and tolerances.
 from pathlib import Path
 import numpy as np
 
+try:
+    from scipy.stats import ranksums
+    _SCIPY_AVAILABLE = True
+except ImportError:
+    _SCIPY_AVAILABLE = False
+
 
 def generate_latex_table_all_datasets(
     datasets: list,
@@ -411,5 +417,261 @@ def generate_latex_table_nasbench101(
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(tex)
         print(f"[OK] Saved NASBench-101 LaTeX table: {out_path}")
+
+    return tex
+
+
+# ─── obj-GA sweep table ───────────────────────────────────────────────────────
+
+def _format_mean_std(mean: float, std: float) -> str:
+    """Format a ``mean$_{std}$`` cell, mirroring the existing table style.
+
+    Switches to scientific notation for very small magnitudes (as the IGD+
+    branch of :func:`generate_latex_table_all_datasets` already does).
+    """
+    if not np.isfinite(mean):
+        return "--"
+    if abs(mean) < 0.01 and mean != 0.0:
+        return f"{mean:.2e}$_{{{{{std:.2e}}}}}$"
+    return f"{mean:.3f}$_{{{{{std:.3f}}}}}$"
+
+
+def _holm_correct(p_values: list, alpha: float = 0.05) -> list:
+    """Holm-Bonferroni correction. Returns bool list (True = reject H0).
+
+    Identical logic to ``pairwise_significance_test._holm_correct``.
+    """
+    n = len(p_values)
+    if n == 0:
+        return []
+    order = np.argsort(p_values)
+    reject = [False] * n
+    for rank, idx in enumerate(order):
+        if p_values[idx] <= alpha / (n - rank):
+            reject[idx] = True
+        else:
+            break
+    return reject
+
+
+def _checkpoint_samples(arr, gen_idx: int):
+    """Return per-seed values at *gen_idx*, or None when unavailable.
+
+    Accepts either a 1-D mean trajectory ``(n_gen,)`` (no per-seed info → None)
+    or a 2-D per-seed matrix ``(n_seeds, n_gen)``.
+    """
+    a = np.asarray(arr, dtype=float)
+    if a.ndim == 2:
+        col = min(gen_idx, a.shape[1] - 1)
+        return a[:, col]
+    return None
+
+
+def _checkpoint_mean_std(arr, gen_idx: int):
+    """Return ``(mean, std)`` at *gen_idx* for a 1-D mean or 2-D per-seed array."""
+    a = np.asarray(arr, dtype=float)
+    if a.ndim == 2:
+        col = min(gen_idx, a.shape[1] - 1)
+        vals = a[:, col]
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            return np.nan, 0.0
+        return float(np.mean(vals)), float(np.std(vals))
+    idx = min(gen_idx, len(a) - 1)
+    return float(a[idx]), 0.0
+
+
+def generate_obj_ga_table(
+    data_dict: dict,
+    methods: list,
+    method_labels: dict,
+    problems: list,
+    problem_labels: dict,
+    metric: str,
+    checkpoint_gens: list,
+    out_path,
+    baseline_method: str = "nsga2",
+    alpha: float = 0.05,
+) -> str:
+    """Generate a LaTeX table of HV or IGD+ at several generation checkpoints.
+
+    One table for a single (benchmark, n_obj_group); call once per metric and
+    write to a separate file each time.  Columns are (problem × checkpoint
+    generation); rows are methods.  Cells show ``mean$_{std}$``; the best value
+    per column is bold; a significance marker (``^{*}``) is appended where the
+    method differs significantly from *baseline_method* under a Holm-corrected
+    Wilcoxon rank-sum test (only when per-seed data is supplied).
+
+    Parameters
+    ----------
+    data_dict
+        ``{problem: {method: {'hv': arr, 'igd_plus': arr}}}`` where each ``arr``
+        is either a 1-D mean trajectory ``(n_gen,)`` or a 2-D per-seed matrix
+        ``(n_seeds, n_gen)``.  2-D arrays enable Wilcoxon significance markers.
+    methods
+        Ordered method keys (table row order).
+    method_labels
+        ``{method: display label}``.
+    problems
+        Ordered problem keys (must be keys of *data_dict*).
+    problem_labels
+        ``{problem: display label}``.
+    metric
+        ``'hv'`` (higher is better) or ``'igd_plus'`` (lower is better).
+    checkpoint_gens
+        1-based generation numbers to show as columns (``config.metric_checkpoints``).
+    out_path
+        Path to the ``.tex`` file to write.
+    baseline_method
+        Method against which Wilcoxon tests are run (default ``'nsga2'``).
+    alpha
+        Significance level for the Holm-corrected tests (default 0.05).
+
+    Returns
+    -------
+    str   The LaTeX source.
+    """
+    metric_key = 'hv' if metric.lower() in ('hv', 'hypervolume') else 'igd_plus'
+    higher_is_better = (metric_key == 'hv')
+    metric_disp = 'HV $\\uparrow$' if higher_is_better else 'IGD+ $\\downarrow$'
+
+    # checkpoint_gens are 1-based generations → 0-based array indices
+    ckpt_idx = [g - 1 for g in checkpoint_gens]
+
+    n_ckpt = len(checkpoint_gens)
+    n_data_cols = len(problems) * n_ckpt
+
+    # ── column spec: Method | (problem groups of n_ckpt r-columns) ──────────
+    col_spec = "l" + "".join("r" * n_ckpt for _ in problems)
+
+    lines = [
+        "\\begin{table}[ht]",
+        "  \\centering",
+        f"  \\caption{{{metric_disp.split(' ')[0]} at generation checkpoints "
+        f"({', '.join(str(g) for g in checkpoint_gens)}). "
+        f"Mean$_{{\\text{{std}}}}$ over seeds. \\textbf{{Bold}} = best per column. "
+        f"$^{{*}}$ = significant vs.\\ {method_labels.get(baseline_method, baseline_method)} "
+        f"(Holm-corrected Wilcoxon, $\\alpha={alpha}$).}}",
+        "  \\label{tab:obj_ga_" + metric_key + "}",
+        f"  \\resizebox{{\\textwidth}}{{!}}{{%",
+        f"  \\begin{{tabular}}{{{col_spec}}}",
+        "    \\toprule",
+    ]
+
+    # ── header row 1: problem group spanning n_ckpt columns each ────────────
+    h1 = "    Method"
+    for prob in problems:
+        plabel = problem_labels.get(prob, prob).replace('_', '\\_')
+        h1 += f" & \\multicolumn{{{n_ckpt}}}{{c}}{{{plabel}}}"
+    h1 += " \\\\"
+    lines.append(h1)
+
+    # cmidrules under each problem group
+    cmid = "    "
+    start = 2
+    for _ in problems:
+        end = start + n_ckpt - 1
+        cmid += f"\\cmidrule(lr){{{start}-{end}}} "
+        start = end + 1
+    lines.append(cmid.rstrip())
+
+    # ── header row 2: generation numbers ────────────────────────────────────
+    h2 = "    "
+    for _ in problems:
+        for g in checkpoint_gens:
+            h2 += f" & g{g}"
+    h2 += " \\\\"
+    lines.append(h2)
+    lines.append("    \\midrule")
+
+    # ── determine best value per (problem, checkpoint) column ───────────────
+    # best_vals[(prob, gen_idx)] = best mean value among methods present
+    best_vals = {}
+    for prob in problems:
+        pdata = data_dict.get(prob, {})
+        for gi in ckpt_idx:
+            col_means = []
+            for m in methods:
+                if m in pdata and metric_key in pdata[m]:
+                    mean, _ = _checkpoint_mean_std(pdata[m][metric_key], gi)
+                    if np.isfinite(mean):
+                        col_means.append(mean)
+            if col_means:
+                best_vals[(prob, gi)] = (max(col_means) if higher_is_better
+                                         else min(col_means))
+
+    # ── precompute Holm-corrected significance per (problem, checkpoint) ────
+    # sig[(prob, gi)] = {method: bool}
+    sig = {}
+    if _SCIPY_AVAILABLE:
+        compare_methods = [m for m in methods if m != baseline_method]
+        for prob in problems:
+            pdata = data_dict.get(prob, {})
+            base = pdata.get(baseline_method, {})
+            base_arr = base.get(metric_key)
+            for gi in ckpt_idx:
+                base_samp = _checkpoint_samples(base_arr, gi) if base_arr is not None else None
+                if base_samp is None:
+                    continue
+                base_samp = base_samp[np.isfinite(base_samp)]
+                if len(base_samp) < 3:
+                    continue
+                pvals, order = [], []
+                for m in compare_methods:
+                    arr = pdata.get(m, {}).get(metric_key)
+                    samp = _checkpoint_samples(arr, gi) if arr is not None else None
+                    if samp is None:
+                        continue
+                    samp = samp[np.isfinite(samp)]
+                    if len(samp) < 3:
+                        continue
+                    try:
+                        _, p = ranksums(base_samp, samp)
+                    except Exception:
+                        p = 1.0
+                    pvals.append(float(p))
+                    order.append(m)
+                if not pvals:
+                    continue
+                reject = _holm_correct(pvals, alpha)
+                sig[(prob, gi)] = {m: r for m, r in zip(order, reject)}
+
+    # ── data rows ───────────────────────────────────────────────────────────
+    for method in methods:
+        label = method_labels.get(method, method).replace('_', '\\_')
+        row = f"    {label}"
+        for prob in problems:
+            pdata = data_dict.get(prob, {})
+            mdata = pdata.get(method, {})
+            arr = mdata.get(metric_key)
+            for gi in ckpt_idx:
+                if arr is None:
+                    row += " & --"
+                    continue
+                mean, std = _checkpoint_mean_std(arr, gi)
+                cell = _format_mean_std(mean, std)
+                best = best_vals.get((prob, gi))
+                if best is not None and np.isfinite(mean) and abs(mean - best) < 1e-9:
+                    cell = f"\\textbf{{{cell}}}"
+                if sig.get((prob, gi), {}).get(method, False):
+                    cell = f"{cell}$^{{*}}$"
+                row += f" & {cell}"
+        row += " \\\\"
+        lines.append(row)
+
+    lines += [
+        "    \\bottomrule",
+        "  \\end{tabular}%",
+        "  }",
+        "\\end{table}",
+    ]
+
+    tex = "\n".join(lines)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(tex)
+    print(f"[OK] Saved obj-GA {metric_key} LaTeX table: {out_path}")
 
     return tex
