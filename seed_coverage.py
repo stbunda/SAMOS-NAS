@@ -180,14 +180,28 @@ def format_table(coverage):
         lines.append('WFG Results')
         lines.append('='*100)
 
-        for n_obj in sorted(coverage['wfg']['wfg'].keys()):
-            subexp_map = {2: '1.1', 3: '1.2', 4: '1.3'}
-            subexp_id = subexp_map.get(int(n_obj), f'?.{int(n_obj)}')
-            lines.append(f'\nSub-exp {subexp_id} (n_obj={n_obj})')
+        # Group n_obj into 2, 3, and 4+
+        grouped = {}
+        for n_obj in coverage['wfg']['wfg'].keys():
+            key = '4+' if n_obj >= 4 else n_obj
+            if key not in grouped:
+                grouped[key] = {}
+            # Merge all problems for this key
+            grouped[key].update(coverage['wfg']['wfg'][n_obj])
+
+        for key in [2, 3, '4+']:
+            if key not in grouped:
+                continue
+
+            if key == '4+':
+                lines.append(f'\nSub-exp 1.3+ (n_obj >= 4)')
+            else:
+                subexp_map = {2: '1.1', 3: '1.2'}
+                lines.append(f'\nSub-exp {subexp_map[key]} (n_obj={key})')
             lines.append('-' * 100)
 
             problems_methods = defaultdict(dict)
-            for problem, methods in coverage['wfg']['wfg'][n_obj].items():
+            for problem, methods in grouped[key].items():
                 for method, data in methods.items():
                     if problem not in problems_methods:
                         problems_methods[problem] = {}
@@ -230,14 +244,28 @@ def format_table(coverage):
             lines.append(f'EvoXBench - {suite.upper()}')
             lines.append('='*100)
 
-            for n_obj in sorted(coverage['evoxbench'][suite].keys()):
-                subexp_map = {2: '1.1', 3: '1.2', 4: '1.3'}
-                subexp_id = subexp_map.get(int(n_obj), f'?.{int(n_obj)}')
-                lines.append(f'\nSub-exp {subexp_id} (n_obj={n_obj})')
+            # Group n_obj into 2, 3, and 4+
+            grouped = {}
+            for n_obj in coverage['evoxbench'][suite].keys():
+                key = '4+' if n_obj >= 4 else n_obj
+                if key not in grouped:
+                    grouped[key] = {}
+                # Merge all pids for this key
+                grouped[key].update(coverage['evoxbench'][suite][n_obj])
+
+            for key in [2, 3, '4+']:
+                if key not in grouped:
+                    continue
+
+                if key == '4+':
+                    lines.append(f'\nSub-exp 1.3+ (n_obj >= 4)')
+                else:
+                    subexp_map = {2: '1.1', 3: '1.2'}
+                    lines.append(f'\nSub-exp {subexp_map[key]} (n_obj={key})')
                 lines.append('-' * 100)
 
                 pids_methods = defaultdict(dict)
-                for pid, methods in coverage['evoxbench'][suite][n_obj].items():
+                for pid, methods in grouped[key].items():
                     for method, data in methods.items():
                         if pid not in pids_methods:
                             pids_methods[pid] = {}
