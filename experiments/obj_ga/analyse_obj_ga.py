@@ -40,7 +40,10 @@ import yaml
 
 from analysis import convergence
 from analysis import plotter
-from analysis.latex_table_generator import generate_obj_ga_table
+from analysis.latex_table_generator import (
+    generate_obj_ga_table,
+    generate_obj_ga_nobj_comparison_table,
+)
 from problem.evoxbench.benchmark_meta import BENCHMARK_META
 
 # Sub-directory inserted between the per-method folder and the seed pickles.
@@ -49,6 +52,18 @@ EXPERIMENT = 'ga_obj'
 # How the config groups problems by objective count.  The YAML keys are not
 # rigidly specified, so we accept several spellings.
 _NOBJ_GROUP_KEYS = ('1.1', '1.2', '1.3')
+
+# ─── method colour palette ────────────────────────────────────────────────────
+_METHOD_COLOURS = {
+    'random':           '#4e79a7',  # blue
+    'nsga2':            '#f28e2b',  # orange
+    'nsga3':            '#e15759',  # red
+    'moead':            '#59a14f',  # green
+    'sms-emoa':         '#a0cbe8',  # light blue
+    'rvea':             '#b07aa1',  # purple
+    'age-moea':         '#ff9da7',  # pink
+    'age-moea2':        '#8cd17d',  # light green
+}
 
 
 # --------- config loading ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -417,8 +432,12 @@ def analyse_group(
     n_obj: int, group: dict, cfg: dict,
     methods: list, method_labels: dict,
     benchmark: str, output_dir: str, force: bool,
-):
-    """Run all analysis steps for one (n_obj, benchmark) group."""
+) -> list:
+    """Run all analysis steps for one (n_obj, benchmark) group.
+
+    Returns a list of ``(section_header, problem_keys, table_data,
+    problem_labels)`` tuples for the combined n_obj table.
+    """
     results_root = cfg.get('results_root', 'results/obj_ga')
     n_gen = int(cfg.get('n_gen', 100))
     checkpoints = list(cfg.get('metric_checkpoints', [10, 20, 50, 100]))
@@ -434,13 +453,16 @@ def analyse_group(
     os.makedirs(igd_plot_dir, exist_ok=True)
     os.makedirs(attainment_plot_dir, exist_ok=True)
 
+    sections = []   # collected for combined n_obj table
+
     # ------ WFG ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     if benchmark in ('wfg', 'all'):
         wfg_problems = _wfg_problems(group)
         if wfg_problems:
+            wfg_cfg = group.get('wfg', {})
+            n_var = wfg_cfg.get('n_var', '?') if isinstance(wfg_cfg, dict) else '?'
             print(f'\n[WFG] n_obj={n_obj}: {wfg_problems}')
-            table_data = {}            # mean-only, for display + bolding
-            seed_data = {}             # per-seed matrices, for Wilcoxon
+            table_data = {}
             problem_labels = {}
             for prob in wfg_problems:
                 proot = _wfg_results_root(results_root, n_obj, prob)
@@ -455,17 +477,18 @@ def analyse_group(
                     hv_mat, igd_mat = _wfg_seed_matrix(proot, method, n_gen)
                     if hv_mat is not None:
                         pdata[method] = {'hv': hv_mat, 'igd_plus': igd_mat}
-                seed_data[prob] = pdata
                 table_data[prob] = pdata if pdata else _trajectories_to_table_dict(traj)
 
                 # Convergence plots (full trajectory).
                 out_hv = os.path.join(hv_plot_dir, f'wfg_{n_obj}obj_{prob}_hv.png')
                 plotter.plot_convergence_obj_ga(
-                    traj, methods, method_labels, prob.upper(), 'hv', out_hv)
+                    traj, methods, method_labels, prob.upper(), 'hv', out_hv,
+                    colours=_METHOD_COLOURS)
 
                 out_igd = os.path.join(igd_plot_dir, f'wfg_{n_obj}obj_{prob}_igd_plus.png')
                 plotter.plot_convergence_obj_ga(
-                    traj, methods, method_labels, prob.upper(), 'igd_plus', out_igd)
+                    traj, methods, method_labels, prob.upper(), 'igd_plus', out_igd,
+                    colours=_METHOD_COLOURS)
 
                 # Attainment plots (2-obj only).
                 if n_obj == 2:
@@ -474,7 +497,8 @@ def analyse_group(
                         out_png = os.path.join(
                             attainment_plot_dir, f'wfg_{prob}_attainment.png')
                         plotter.plot_attainment_surface(
-                            archives, method_labels, prob.upper(), out_png)
+                            archives, method_labels, prob.upper(), out_png,
+                            colours=_METHOD_COLOURS)
 
             if table_data:
                 ordered_probs = [p for p in wfg_problems if p in table_data]
@@ -485,6 +509,10 @@ def analyse_group(
                         table_data, methods, method_labels,
                         ordered_probs, problem_labels,
                         metric, checkpoints, out_tex, baseline_method=baseline)
+                sections.append((
+                    f'WFG ({n_obj} objectives, {n_var} variables)',
+                    ordered_probs, table_data, problem_labels,
+                ))
 
     # ------ EvoXBench ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     if benchmark in ('evoxbench', 'all'):
@@ -523,12 +551,14 @@ def analyse_group(
                 out_hv = os.path.join(hv_plot_dir, f'evox_{n_obj}obj_{key}_hv.png')
                 plotter.plot_convergence_obj_ga(
                     traj, methods, method_labels,
-                    problem_labels[key], 'hv', out_hv)
+                    problem_labels[key], 'hv', out_hv,
+                    colours=_METHOD_COLOURS)
 
                 out_igd = os.path.join(igd_plot_dir, f'evox_{n_obj}obj_{key}_igd_plus.png')
                 plotter.plot_convergence_obj_ga(
                     traj, methods, method_labels,
-                    problem_labels[key], 'igd_plus', out_igd)
+                    problem_labels[key], 'igd_plus', out_igd,
+                    colours=_METHOD_COLOURS)
 
                 # Attainment plots (2-obj only).
                 if n_obj == 2:
@@ -537,7 +567,8 @@ def analyse_group(
                         out_png = os.path.join(
                             attainment_plot_dir, f'evox_{key}_attainment.png')
                         plotter.plot_attainment_surface(
-                            archives, method_labels, problem_labels[key], out_png)
+                            archives, method_labels, problem_labels[key], out_png,
+                            colours=_METHOD_COLOURS)
 
             if table_data:
                 ordered_keys = [k for k in ordered_keys if k in table_data]
@@ -548,6 +579,12 @@ def analyse_group(
                         table_data, methods, method_labels,
                         ordered_keys, problem_labels,
                         metric, checkpoints, out_tex, baseline_method=baseline)
+                sections.append((
+                    f'EvoXBench ({n_obj} objectives)',
+                    ordered_keys, table_data, problem_labels,
+                ))
+
+    return sections
 
 
 # --------- combined n_obj convergence plots ------------------------------------------------------------------------------------------------------------------------------
@@ -693,7 +730,8 @@ def main():
                         experiments['4+']['evoxbench'][suite] = []
                     experiments['4+']['evoxbench'][suite].extend(pids)
 
-    # Analyze each group
+    # Analyze each group; collect sections for the combined n_obj table.
+    all_sections = []
     for key, group in sorted(experiments.items(), key=lambda x: (x[0] != '4+', x[0])):
         if isinstance(key, int):
             n_obj = key
@@ -706,14 +744,22 @@ def main():
             continue
 
         print(f'\n{"=" * 70}\n {display_str}\n{"=" * 70}')
-        analyse_group(
+        sections = analyse_group(
             n_obj, group, cfg, methods, method_labels,
             args.benchmark, args.output_dir, args.force)
+        all_sections.extend(sections)
 
-    # Generate combined convergence plots across all n_obj values
-    if str(args.n_obj).lower() == 'all':
-        print(f'\n{"=" * 70}\n Combined convergence plots (all n_obj)\n{"=" * 70}')
-        plot_combined_convergence(cfg, methods, method_labels, args.benchmark, args.output_dir)
+    # Combined n_obj comparison table (gen=100 only, all benchmarks in one table).
+    n_gen = int(cfg.get('n_gen', 100))
+    if all_sections and want_n_obj is None:
+        table_dir = os.path.join(args.output_dir, 'tables')
+        baseline = 'nsga2' if 'nsga2' in methods else methods[0]
+        print(f'\n{"=" * 70}\n Combined n_obj comparison table\n{"=" * 70}')
+        for metric in ('hv', 'igd_plus'):
+            out_tex = os.path.join(table_dir, f'combined_nobj_{metric}_table.tex')
+            generate_obj_ga_nobj_comparison_table(
+                all_sections, methods, method_labels,
+                metric, n_gen, out_tex, baseline_method=baseline)
 
     print('\n[analyse] Done.')
 

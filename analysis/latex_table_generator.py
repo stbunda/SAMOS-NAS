@@ -670,3 +670,164 @@ def generate_obj_ga_table(
     print(f"[OK] Saved obj-GA {metric_key} LaTeX table: {out_path}")
 
     return tex
+
+
+def generate_obj_ga_nobj_comparison_table(
+    sections: list,
+    methods: list,
+    method_labels: dict,
+    metric: str,
+    final_gen: int,
+    out_path,
+    baseline_method: str = 'nsga2',
+    alpha: float = 0.05,
+) -> str:
+    """Generate a single LaTeX table comparing algorithms at *final_gen* across
+    all n_obj groups and benchmarks.
+
+    Parameters
+    ----------
+    sections
+        Ordered list of ``(section_header, problem_keys, table_data,
+        problem_labels)`` tuples, one per (n_obj, benchmark) combination.
+        ``table_data`` has shape
+        ``{problem: {method: {'hv': arr, 'igd_plus': arr}}}``.
+    methods
+        Ordered method keys (table columns).
+    method_labels
+        ``{method: display label}``.
+    metric
+        ``'hv'`` or ``'igd_plus'``.
+    final_gen
+        1-based generation number shown (e.g. 100).
+    out_path
+        Destination ``.tex`` file path.
+    baseline_method
+        Method for Wilcoxon significance tests.
+    alpha
+        Significance level (Holm-corrected).
+
+    Returns
+    -------
+    str   The LaTeX source.
+    """
+    metric_key = 'hv' if metric.lower() in ('hv', 'hypervolume') else 'igd_plus'
+    higher_is_better = (metric_key == 'hv')
+    metric_disp = r'HV $\uparrow$' if higher_is_better else r'IGD$^{+}$ $\downarrow$'
+    gi = final_gen - 1   # 0-based array index
+
+    n_methods = len(methods)
+    n_cols = 1 + n_methods
+    col_spec = 'l' + 'r' * n_methods
+
+    header_cells = [r'\textbf{Problem}'] + [
+        r'\textbf{' + method_labels.get(m, m).replace('_', r'\_') + r'}'
+        for m in methods
+    ]
+
+    lines = [
+        r'\begin{table*}[t]',
+        r'\centering',
+        (
+            r'\caption{' + metric_disp.split(' ')[0]
+            + r' at generation ' + str(final_gen)
+            + r' (mean$_{\text{std}}$ over seeds). '
+            r'\textbf{Bold}: best per problem. '
+            r'$^{*}$: significantly different from '
+            + method_labels.get(baseline_method, baseline_method)
+            + r' (Holm-corrected Wilcoxon, $\alpha=' + str(alpha) + r'$).}'
+        ),
+        r'\label{tab:obj_ga_' + metric_key + r'_combined_nobj}',
+        r'\resizebox{\linewidth}{!}{%',
+        r'\begin{tabular}{' + col_spec + r'}',
+        r'\toprule',
+        ' & '.join(header_cells) + r' \\',
+    ]
+
+    for section_header, problem_keys, table_data, problem_labels in sections:
+        if not problem_keys:
+            continue
+
+        lines.append(r'\midrule')
+        lines.append(
+            r'\multicolumn{' + str(n_cols) + r'}{l}{\small\textit{'
+            + section_header + r'}} \\'
+        )
+        lines.append(r'\midrule')
+
+        for prob in problem_keys:
+            pdata = table_data.get(prob, {})
+            plabel = problem_labels.get(prob, prob).replace('_', r'\_')
+
+            # best value in this row
+            row_means = {}
+            for m in methods:
+                arr = pdata.get(m, {}).get(metric_key)
+                if arr is not None:
+                    mean, _ = _checkpoint_mean_std(arr, gi)
+                    if np.isfinite(mean):
+                        row_means[m] = mean
+            best_val = (
+                max(row_means.values()) if higher_is_better else min(row_means.values())
+            ) if row_means else None
+
+            # Holm-corrected Wilcoxon vs baseline
+            row_sig: dict = {}
+            if _SCIPY_AVAILABLE:
+                base_arr = pdata.get(baseline_method, {}).get(metric_key)
+                base_samp = _checkpoint_samples(base_arr, gi) if base_arr is not None else None
+                if base_samp is not None:
+                    base_samp = base_samp[np.isfinite(base_samp)]
+                    if len(base_samp) >= 3:
+                        compare_ms = [m for m in methods if m != baseline_method]
+                        pvals, tested = [], []
+                        for m in compare_ms:
+                            arr = pdata.get(m, {}).get(metric_key)
+                            samp = _checkpoint_samples(arr, gi) if arr is not None else None
+                            if samp is None:
+                                continue
+                            samp = samp[np.isfinite(samp)]
+                            if len(samp) < 3:
+                                continue
+                            try:
+                                _, p = ranksums(base_samp, samp)
+                                pvals.append(float(p))
+                                tested.append(m)
+                            except Exception:
+                                pass
+                        if pvals:
+                            reject = _holm_correct(pvals, alpha)
+                            row_sig = {m: r for m, r in zip(tested, reject)}
+
+            cells = [plabel]
+            for m in methods:
+                arr = pdata.get(m, {}).get(metric_key)
+                if arr is None:
+                    cells.append('--')
+                    continue
+                mean, std = _checkpoint_mean_std(arr, gi)
+                cell = _format_mean_std(mean, std)
+                if best_val is not None and np.isfinite(mean) and abs(mean - best_val) < 1e-9:
+                    cell = r'\textbf{' + cell + r'}'
+                if row_sig.get(m, False):
+                    cell += r'$^{*}$'
+                cells.append(cell)
+
+            lines.append(' & '.join(cells) + r' \\')
+
+    lines += [
+        r'\bottomrule',
+        r'\end{tabular}%',
+        r'}',
+        r'\end{table*}',
+    ]
+
+    tex = '\n'.join(lines)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(tex)
+    print(f'[OK] Saved combined n_obj {metric_key} table: {out_path}')
+
+    return tex
