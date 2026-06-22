@@ -28,6 +28,12 @@ python analyse_obj_ga.py --n_obj all --benchmark all \
 import argparse
 import os
 import pickle
+import sys
+
+# Allow running from any CWD: put the repo root (two levels up) on sys.path so the
+# root packages (strategy/, problem/, analysis/) import regardless of where this
+# script lives or is launched from.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import numpy as np
 import yaml
@@ -45,7 +51,7 @@ EXPERIMENT = 'ga_obj'
 _NOBJ_GROUP_KEYS = ('1.1', '1.2', '1.3')
 
 
-# ─── config loading ───────────────────────────────────────────────────────────
+# --------- config loading ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def load_config(path: str) -> dict:
     with open(path, 'r', encoding='utf-8') as fh:
@@ -135,7 +141,7 @@ def _parse_evox_item(item):
     return []
 
 
-# ─── path helpers (new obj-GA layout) ─────────────────────────────────────────
+# --------- path helpers (new obj-GA layout) ---------------------------------------------------------------------------------------------------------------------------
 
 def _wfg_results_root(results_root: str, n_obj: int, problem: str) -> str:
     return os.path.join(results_root, 'wfg', f'{n_obj}_obj', problem)
@@ -145,7 +151,7 @@ def _evox_pid_root(results_root: str, suite: str, pid: int) -> str:
     return os.path.join(results_root, 'evoxbench', suite, f'pid{pid}')
 
 
-# ─── EvoXBench Pareto approximation ───────────────────────────────────────────
+# --------- EvoXBench Pareto approximation ---------------------------------------------------------------------------------------------------------------------------------
 
 def _pareto_approx_path(pid_root: str) -> str:
     return os.path.join(pid_root, EXPERIMENT, 'pareto_approx.pkl')
@@ -232,7 +238,7 @@ def _collect_seed_ids(pid_root: str, methods: list) -> list:
     return sorted(seeds)
 
 
-# ─── indicator-trajectory loaders ─────────────────────────────────────────────
+# --------- indicator-trajectory loaders ---------------------------------------------------------------------------------------------------------------------------------------
 
 def _wfg_trajectories(problem_root: str, methods: list, n_gen: int) -> dict:
     """Load WFG HV / IGD+ trajectories directly from pickle ``indicators``.
@@ -280,7 +286,7 @@ def _trajectories_to_table_dict(trajectories: dict) -> dict:
     return out
 
 
-# ─── per-seed checkpoint matrices (for Wilcoxon significance) ──────────────────
+# --------- per-seed checkpoint matrices (for Wilcoxon significance) ------------------------------------------------------
 
 def _wfg_seed_matrix(problem_root: str, method: str, n_gen: int):
     """Return per-seed ``(n_seeds, n_gen)`` matrices ``(hv, igd_plus)`` for WFG.
@@ -371,7 +377,7 @@ def _fit_len(series: list, n_gen: int) -> list:
     return out
 
 
-# ─── final-generation archives for attainment plots ───────────────────────────
+# --------- final-generation archives for attainment plots ---------------------------------------------------------------------------------
 
 def _final_archives_per_method(root: str, methods: list) -> dict:
     """Return ``{method: list[(n_i, 2) ndarray]}`` from the final-gen
@@ -405,7 +411,7 @@ def _final_archives_per_method(root: str, methods: list) -> dict:
     return out
 
 
-# ─── per-group analysis ───────────────────────────────────────────────────────
+# --------- per-group analysis ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def analyse_group(
     n_obj: int, group: dict, cfg: dict,
@@ -428,7 +434,7 @@ def analyse_group(
     os.makedirs(igd_plot_dir, exist_ok=True)
     os.makedirs(attainment_plot_dir, exist_ok=True)
 
-    # ── WFG ─────────────────────────────────────────────────────────────────
+    # ------ WFG ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     if benchmark in ('wfg', 'all'):
         wfg_problems = _wfg_problems(group)
         if wfg_problems:
@@ -480,7 +486,7 @@ def analyse_group(
                         ordered_probs, problem_labels,
                         metric, checkpoints, out_tex, baseline_method=baseline)
 
-    # ── EvoXBench ─────────────────────────────────────────────────────────────
+    # ------ EvoXBench ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     if benchmark in ('evoxbench', 'all'):
         evox_problems = _evox_problems(group)
         if evox_problems:
@@ -544,7 +550,7 @@ def analyse_group(
                         metric, checkpoints, out_tex, baseline_method=baseline)
 
 
-# ─── combined n_obj convergence plots ──────────────────────────────────────────
+# --------- combined n_obj convergence plots ------------------------------------------------------------------------------------------------------------------------------
 
 def plot_combined_convergence(
     cfg: dict, methods: list, method_labels: dict,
@@ -640,7 +646,7 @@ def plot_combined_convergence(
         plt.close(fig)
 
 
-# ─── main ─────────────────────────────────────────────────────────────────────
+# --------- main ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description='Analyse obj-GA sweep results.')
@@ -648,7 +654,9 @@ def main():
                         help='Objective count to analyse: an int or "all".')
     parser.add_argument('--benchmark', default='all',
                         choices=['wfg', 'evoxbench', 'all'])
-    parser.add_argument('--config', default='config/experiment_obj_ga.yaml')
+    parser.add_argument('--config',
+                        default=os.path.join(os.path.dirname(__file__),
+                                             'config', 'experiment_obj_ga.yaml'))
     parser.add_argument('--output_dir', default='results/obj_ga/analysis')
     parser.add_argument('--force', action='store_true',
                         help='Rebuild the EvoXBench Pareto approximation pickles.')
@@ -661,10 +669,43 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # Collect experiments, grouping 4+ objectives together
+    experiments = {}
     for n_obj, group in _iter_experiments(cfg):
+        if n_obj <= 3:
+            experiments[n_obj] = group
+        else:
+            # Merge all 4+ objective groups under key '4+'
+            if '4+' not in experiments:
+                experiments['4+'] = {
+                    'n_obj': 4,  # Use 4 as representative n_obj for labeling
+                    'wfg': {'n_var': None, 'problems': []},
+                    'evoxbench': {}
+                }
+            # Merge problems from this group
+            if 'wfg' in group:
+                if experiments['4+']['wfg']['n_var'] is None:
+                    experiments['4+']['wfg']['n_var'] = group['wfg'].get('n_var')
+                experiments['4+']['wfg']['problems'].extend(group['wfg'].get('problems', []))
+            if 'evoxbench' in group:
+                for suite, pids in group['evoxbench'].items():
+                    if suite not in experiments['4+']['evoxbench']:
+                        experiments['4+']['evoxbench'][suite] = []
+                    experiments['4+']['evoxbench'][suite].extend(pids)
+
+    # Analyze each group
+    for key, group in sorted(experiments.items(), key=lambda x: (x[0] != '4+', x[0])):
+        if isinstance(key, int):
+            n_obj = key
+            display_str = f'n_obj = {n_obj}'
+        else:
+            n_obj = group['n_obj']
+            display_str = 'n_obj = 4+ (combined)'
+
         if want_n_obj is not None and n_obj != want_n_obj:
             continue
-        print(f'\n{"=" * 70}\n n_obj = {n_obj}\n{"=" * 70}')
+
+        print(f'\n{"=" * 70}\n {display_str}\n{"=" * 70}')
         analyse_group(
             n_obj, group, cfg, methods, method_labels,
             args.benchmark, args.output_dir, args.force)

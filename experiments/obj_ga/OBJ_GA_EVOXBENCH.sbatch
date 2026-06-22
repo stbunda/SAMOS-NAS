@@ -1,6 +1,6 @@
 #!/bin/bash
-# ─── OBJ_GA_EVOXBENCH.sbatch ──────────────────────────────────────────────────
-# Experiment 1 (GA comparison under varying objectives) — EvoXBench NAS suites.
+# --------- OBJ_GA_EVOXBENCH.sbatch ------------------------------------------------------------------------------------------------------------------------------------------------------
+# Experiment 1 (GA comparison under varying objectives) --- EvoXBench NAS suites.
 #
 # One array task == one seed. Each task loops over every METHOD x every PID in
 # the (BENCHMARK, N_OBJ) sub-experiment. The Python entry point auto-skips
@@ -18,22 +18,32 @@
 #
 # Selective single-seed rerun (force overwrite):
 #   sbatch --array=5 --export=ALL,BENCHMARK=in1kmop,N_OBJ=4,OVERWRITE=1 OBJ_GA_EVOXBENCH.sbatch
-# ─────────────────────────────────────────────────────────────────────────────
+#
+# PROBLEM RUNS (YAML parsing error - hidden control chars in config file):
+# Issue: yaml.reader.ReaderError (character #x0094 at position 134)
+# Root cause: File corruption during job launch or editor encoding issue
+# Fix applied: Config file rewritten cleanly with proper UTF-8 encoding (no control chars)
+# Rerun failed seeds with OVERWRITE=1:
+#   sbatch --array=5-7,10-14 --export=ALL,BENCHMARK=c10mop,N_OBJ=3,OVERWRITE=1 experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch
+#   sbatch --array=5-9,10-12,14-15,18-19 --export=ALL,BENCHMARK=c10mop,N_OBJ=4,OVERWRITE=1 experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch
+#   sbatch --array=0,10-19 --export=ALL,BENCHMARK=in1kmop,N_OBJ=2,OVERWRITE=1 experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch
+#   sbatch --array=5-9,10-15,17-19 --export=ALL,BENCHMARK=in1kmop,N_OBJ=3,OVERWRITE=1 experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #SBATCH -J obj_ga_evoxbench
 #SBATCH -c 2
-#SBATCH --array=0-19%5            # 20 tasks = 20 seeds, 5 concurrent
+#SBATCH --array=0-19%2            # 20 tasks = 20 seeds, 2 concurrent
 #SBATCH --mem=16gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
-#SBATCH --time=72:00:00
-#SBATCH --output=slurm_logs_obj_ga_evoxbench/%x_%A_%a.log
+#SBATCH --time=12:00:00
+#SBATCH --output=slurm/slurm_logs_obj_ga_evoxbench/%x_%A_%a.log
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline
 
-mkdir -p slurm_logs_obj_ga_evoxbench
+mkdir -p slurm/slurm_logs_obj_ga_evoxbench
 
-# ─── scratch setup ─────────────────────────────────────────────────────────────
+# --------- scratch setup ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
 if [ -d "$SCRATCH_DIRECTORY" ]; then
     echo "'$SCRATCH_DIRECTORY' already found!"
@@ -44,10 +54,9 @@ fi
 
 RSYNC_SOURCES=(
     analysis
-    config
     problem
     strategy
-    experiment_obj_ga.py
+    experiments/obj_ga
 )
 
 # Pre-copy any already-computed results for EvoXBench (all suites and pids)
@@ -65,7 +74,7 @@ cd "$SCRATCH_DIRECTORY"
 echo "Copied structure:"
 find "${SCRATCH_DIRECTORY}" -maxdepth 4 -type d 2>/dev/null | head -20
 
-# ─── environment ──────────────────────────────────────────────────────────────
+# --------- environment ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 module load nvidia/nvhpc/26.3
 module load anaconda3/2023.09
 source activate
@@ -74,16 +83,16 @@ conda activate SAMOS311
 
 echo "Activated: SAMOS311"
 
-# ─── parameters from submission env ───────────────────────────────────────────
+# --------- parameters from submission env ---------------------------------------------------------------------------------------------------------------------------------
 BENCHMARK=${BENCHMARK:-c10mop}
 N_OBJ=${N_OBJ:-2}
 SEED=$SLURM_ARRAY_TASK_ID
-CONFIG=config/experiment_obj_ga.yaml
+CONFIG=experiments/obj_ga/config/experiment_obj_ga.yaml
 
-# ─── method set ───────────────────────────────────────────────────────────────
+# --------- method set ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 METHODS=(random nsga2 nsga3 moead sms-emoa rvea age-moea age-moea2)
 
-# ─── PID set: depends on (BENCHMARK, N_OBJ) ───────────────────────────────────
+# --------- PID set: depends on (BENCHMARK, N_OBJ) ---------------------------------------------------------------------------------------------------------
 case "${BENCHMARK}_${N_OBJ}" in
     c10mop_2)  PIDS=(1 8) ;;
     c10mop_3)  PIDS=(2 3 9) ;;
@@ -98,7 +107,7 @@ case "${BENCHMARK}_${N_OBJ}" in
         ;;
 esac
 
-# ─── logging ──────────────────────────────────────────────────────────────────
+# --------- logging ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 echo "Date              = $(date)"
 echo "Hostname          = $(hostname -s)"
 echo "Scratch Directory = $SCRATCH_DIRECTORY"
@@ -109,13 +118,13 @@ echo "OVERWRITE         = ${OVERWRITE:-<unset>}"
 echo "METHODS           = ${METHODS[*]}"
 echo "PIDS              = ${PIDS[*]}"
 
-# ─── run: METHOD x PID ────────────────────────────────────────────────────────
+# --------- run: METHOD x PID ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 for METHOD in "${METHODS[@]}"; do
     for PID in "${PIDS[@]}"; do
         echo ""
-        echo "─── benchmark: $BENCHMARK  n_obj: $N_OBJ  pid: $PID  method: $METHOD  seed: $SEED"
+        echo "--------- benchmark: $BENCHMARK  n_obj: $N_OBJ  pid: $PID  method: $METHOD  seed: $SEED"
 
-        python experiment_obj_ga.py \
+        python experiments/obj_ga/experiment_obj_ga.py \
             --benchmark "$BENCHMARK" \
             --pid       "$PID" \
             --n_obj     "$N_OBJ" \
@@ -124,7 +133,7 @@ for METHOD in "${METHODS[@]}"; do
             --config    "$CONFIG" \
             ${OVERWRITE:+--overwrite}
 
-        # ── copy results back ──────────────────────────────────────────────────────
+        # ------ copy results back ------------------------------------------------------------------------------------------------------------------------------------------------------------------
         DEST="${SLURM_SUBMIT_DIR}/results/obj_ga/evoxbench/${BENCHMARK}/pid${PID}"
         mkdir -p "$DEST"
         rsync -a \
@@ -137,6 +146,6 @@ done
 echo ""
 echo "Date (done)       = $(date)"
 
-# ─── scratch cleanup ──────────────────────────────────────────────────────────
+# --------- scratch cleanup ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 echo "Removing scratch directory: $SCRATCH_DIRECTORY"
 rm -rf "$SCRATCH_DIRECTORY"

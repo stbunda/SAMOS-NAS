@@ -1,4 +1,4 @@
-"""experiment_obj_ga.py — One (benchmark, problem/pid, method, seed) GA run.
+"""experiment_obj_ga.py --- One (benchmark, problem/pid, method, seed) GA run.
 
 Experiment 1: compare 8 MOO algorithms across WFG1-9 and EvoXBench C-10 / IN-1K
 problems, grouped into 2/3/4+ objective sub-experiments. Each invocation runs a
@@ -22,6 +22,11 @@ import sys
 import time
 
 sys.stdout.reconfigure(line_buffering=True)
+
+# Allow running from any CWD: put the repo root (two levels up) on sys.path so the
+# root packages (strategy/, problem/, analysis/) import regardless of where this
+# script lives or is launched from.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import numpy as np
 import yaml
@@ -58,7 +63,7 @@ REF_DIR_METHODS = ('nsga3', 'moead', 'rvea')
 EXPERIMENT_SUBDIR = 'ga_obj'
 
 
-# ─── ref_dirs sizing ──────────────────────────────────────────────────────────
+# --------- ref_dirs sizing ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def _choose_ref_dirs(n_obj: int, target: int, floor: int):
     """Das-Dennis ref_dirs whose count is >= floor and as close as possible to target.
@@ -89,7 +94,7 @@ def _choose_ref_dirs(n_obj: int, target: int, floor: int):
     return best[2]
 
 
-# ─── algorithm factory ────────────────────────────────────────────────────────
+# --------- algorithm factory ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def build_algorithm(method, n_obj, n_var, pop_size, pop_size_floor, sampling,
                     crossover, mutation, elim):
@@ -180,7 +185,7 @@ def build_algorithm(method, n_obj, n_var, pop_size, pop_size_floor, sampling,
     raise ValueError(f'Unknown method: {method!r}')
 
 
-# ─── callback ─────────────────────────────────────────────────────────────────
+# --------- callback ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 class ObjGACallback(Callback):
     """Per-generation callback maintaining a cumulative non-dominated archive.
@@ -292,7 +297,7 @@ class ObjGACallback(Callback):
         return test_obj_nd, {}
 
 
-# ─── path helper ──────────────────────────────────────────────────────────────
+# --------- path helper ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def build_out_path(results_root, benchmark, n_obj, problem, pid, method, seed):
     if benchmark == 'wfg':
@@ -307,7 +312,7 @@ def build_out_path(results_root, benchmark, n_obj, problem, pid, method, seed):
     )
 
 
-# ─── main ─────────────────────────────────────────────────────────────────────
+# --------- main ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def main(args):
     with open(args.config, 'r') as f:
@@ -319,7 +324,7 @@ def main(args):
 
     is_evoxbench = args.benchmark in EVOXBENCH_SUITES
 
-    # ── resolve output path + skip logic ───────────────────────────────────────
+    # ------ resolve output path + skip logic ---------------------------------------------------------------------------------------------------------------------
     out_path = build_out_path(
         results_root, args.benchmark, args.n_obj,
         args.problem, args.pid, args.method, args.seed,
@@ -331,7 +336,7 @@ def main(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    # ── build problem + operators ──────────────────────────────────────────────
+    # ------ build problem + operators ------------------------------------------------------------------------------------------------------------------------------------------
     if is_evoxbench:
         if args.pid is None:
             raise ValueError('--pid is required for EvoXBench benchmarks')
@@ -372,7 +377,7 @@ def main(args):
         )
         problem_label = args.problem
 
-    # ── population size + algorithm ────────────────────────────────────────────
+    # ------ population size + algorithm ------------------------------------------------------------------------------------------------------------------------------------
     pop_size = max(n_var, pop_size_floor)
     algorithm, pop_size = build_algorithm(
         args.method, n_obj, n_var, pop_size, pop_size_floor,
@@ -385,7 +390,7 @@ def main(args):
         f'n_obj={n_obj} n_var={n_var} pop_size={pop_size} n_gen={n_gen}'
     )
 
-    # ── run ────────────────────────────────────────────────────────────────────
+    # ------ run ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     t0 = time.time()
     minimize(
         problem,
@@ -397,7 +402,7 @@ def main(args):
     )
     elapsed = time.time() - t0
 
-    # ── save ───────────────────────────────────────────────────────────────────
+    # ------ save ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     run_config = {
         'method': args.method,
         'seed': args.seed,
@@ -450,7 +455,9 @@ if __name__ == '__main__':
                         help='Algorithm key, e.g. nsga2, nsga3, moead, rvea, '
                              'sms-emoa, age-moea, age-moea2, random.')
     parser.add_argument('--seed', type=int, required=True)
-    parser.add_argument('--config', type=str, default='config/experiment_obj_ga.yaml')
+    parser.add_argument('--config', type=str,
+                        default=os.path.join(os.path.dirname(__file__),
+                                             'config', 'experiment_obj_ga.yaml'))
     parser.add_argument('--results_root', type=str, default=None,
                         help='Override results_root from the config.')
     parser.add_argument('--overwrite', action='store_true',

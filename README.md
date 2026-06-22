@@ -1,8 +1,24 @@
-# GA Comparison Under Varying Objectives (TEVC Journal Extension)
+# SAMOS NAS --- TEVC Journal Extension
 
-**Experiment 1 of the SAMOS journal extension:** Benchmark 8 multi-objective genetic algorithms across the **WFG** continuous suite and the **EvoXBench** NAS suites (CIFAR-10 / ImageNet-1K), grouped into 2-, 3-, and 4-objective sub-experiments.
+This branch (`SAMOS-NAS-TEVC`) contains the experiments for the SAMOS journal
+extension. Each experiment is a self-contained package under [`experiments/`](experiments/);
+the shared libraries (`strategy/`, `problem/`, `analysis/`) live at the repo root.
+The original PPSN-26 surrogate-assisted (SAMOS) code remains in
+[`depreciated/`](depreciated/) --- see [`depreciated/README.md`](depreciated/README.md).
 
-This branch (`SAMOS-NAS-TEVC`) contains new experiments for the journal extension. The original PPSN-26 surrogate-assisted (SAMOS) code remains in [`depreciated/`](depreciated/) — see [`depreciated/README.md`](depreciated/README.md) for that documentation.
+| Experiment | Question | Location |
+|-----------|----------|----------|
+| **1 --- `obj_ga`** | How do 8 MOO GAs compare on the *true* objectives across WFG + EvoXBench (2/3/4 objectives)? | [`experiments/obj_ga/`](experiments/obj_ga/) |
+| **2 --- `obj_ga_pred`** | How well does each GA exploit a *fixed* surrogate predictor (XGBoost / Random Forest / RBF) --- simulating surrogate-assisted search? | [`experiments/obj_ga_pred/`](experiments/obj_ga_pred/README.md) |
+
+> Run all commands from the repository root. Each driver/analysis script puts the
+> repo root on `sys.path` itself, so root-level packages import regardless of CWD.
+
+---
+
+## Experiment 1: GA comparison under varying objectives
+
+Benchmark 8 multi-objective genetic algorithms across the **WFG** continuous suite and the **EvoXBench** NAS suites (CIFAR-10 / ImageNet-1K), grouped into 2-, 3-, and 4-objective sub-experiments.
 
 ## Algorithms
 
@@ -17,17 +33,17 @@ This branch (`SAMOS-NAS-TEVC`) contains new experiments for the journal extensio
 | `age-moea`  | AGE-MOEA      | `AGEMOEA` |
 | `age-moea2` | AGE-MOEA-II   | `AGEMOEA2` |
 
-For the reference-direction methods (`nsga3`, `moead`, `rvea`) Das-Dennis directions are generated with the partition count chosen so `len(ref_dirs)` is nearest to `n_var` (and `≥ pop_size_floor`); that count becomes the effective population size.
+For the reference-direction methods (`nsga3`, `moead`, `rvea`) Das-Dennis directions are generated with the partition count chosen so `len(ref_dirs)` is nearest to `n_var` (and `>= pop_size_floor`); that count becomes the effective population size.
 
 ## Sub-experiments
 
-All configured in [`config/experiment_obj_ga.yaml`](config/experiment_obj_ga.yaml). 20 seeds, `n_gen = 100`, `pop_size = max(n_var, 12)`.
+All configured in [`experiments/obj_ga/config/experiment_obj_ga.yaml`](experiments/obj_ga/config/experiment_obj_ga.yaml). 20 seeds, `n_gen = 100`, `pop_size = max(n_var, 12)`.
 
 | Sub-exp | n_obj | WFG (n_var) | EvoXBench C10MOP pids | EvoXBench IN1KMOP pids |
 |---------|-------|-------------|-----------------------|------------------------|
-| 1.1 | 2 | wfg1–9 (12) | 1, 8         | 1, 4, 7 |
-| 1.2 | 3 | wfg1–9 (14) | 2, 3, 9      | 3, 6 |
-| 1.3 | 4 | wfg1–9 (16) | 4, 5, 6, 7   | 9 |
+| 1.1 | 2 | wfg1-9 (12) | 1, 8         | 1, 4, 7 |
+| 1.2 | 3 | wfg1-9 (14) | 2, 3, 9      | 3, 6 |
+| 1.3 | 4 | wfg1-9 (16) | 4, 5, 6, 7   | 9 |
 
 ## Installation
 
@@ -44,36 +60,36 @@ EvoXBench data files go in `problem/data/evoxbench/` (see the [EvoXBench docs](h
 
 ```bash
 # WFG
-python experiment_obj_ga.py --benchmark wfg --problem wfg1 --n_obj 2 \
-    --method nsga2 --seed 0 --config config/experiment_obj_ga.yaml
+python experiments/obj_ga/experiment_obj_ga.py --benchmark wfg --problem wfg1 --n_obj 2 \
+    --method nsga2 --seed 0
 
 # EvoXBench
-python experiment_obj_ga.py --benchmark c10mop --pid 1 --n_obj 2 \
-    --method nsga2 --seed 0 --config config/experiment_obj_ga.yaml
+python experiments/obj_ga/experiment_obj_ga.py --benchmark c10mop --pid 1 --n_obj 2 \
+    --method nsga2 --seed 0
 ```
 
 A run is **skipped if its pickle already exists**. Pass `--overwrite` to force a redo.
 
 ### SLURM cluster
 
-Each array task runs one seed across every method × problem/pid in the sub-experiment. The job stages code + existing results onto the node-local scratch disk (`/local/...`), runs, copies results back, and cleans up scratch.
+Each array task runs one seed across every method x problem/pid in the sub-experiment. The job stages code + existing results onto the node-local scratch disk (`/local/...`), runs, copies results back, and cleans up scratch.
 
 ```bash
 # WFG (one sub-experiment at a time)
-sbatch --export=ALL,BENCHMARK=wfg,N_OBJ=2 OBJ_GA_WFG.sbatch
-sbatch --export=ALL,BENCHMARK=wfg,N_OBJ=3 OBJ_GA_WFG.sbatch
-sbatch --export=ALL,BENCHMARK=wfg,N_OBJ=4 OBJ_GA_WFG.sbatch
+sbatch --export=ALL,BENCHMARK=wfg,N_OBJ=2 experiments/obj_ga/OBJ_GA_WFG.sbatch
+sbatch --export=ALL,BENCHMARK=wfg,N_OBJ=3 experiments/obj_ga/OBJ_GA_WFG.sbatch
+sbatch --export=ALL,BENCHMARK=wfg,N_OBJ=4 experiments/obj_ga/OBJ_GA_WFG.sbatch
 
 # EvoXBench
-sbatch --export=ALL,BENCHMARK=c10mop,N_OBJ=2 OBJ_GA_EVOXBENCH.sbatch
-sbatch --export=ALL,BENCHMARK=in1kmop,N_OBJ=2 OBJ_GA_EVOXBENCH.sbatch
+sbatch --export=ALL,BENCHMARK=c10mop,N_OBJ=2 experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch
+sbatch --export=ALL,BENCHMARK=in1kmop,N_OBJ=2 experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch
 # ... and N_OBJ=3, N_OBJ=4
 ```
 
 Selective single-seed rerun (force overwrite):
 
 ```bash
-sbatch --array=5 --export=ALL,BENCHMARK=wfg,N_OBJ=2,OVERWRITE=1 OBJ_GA_WFG.sbatch
+sbatch --array=5 --export=ALL,BENCHMARK=wfg,N_OBJ=2,OVERWRITE=1 experiments/obj_ga/OBJ_GA_WFG.sbatch
 ```
 
 ### Checking coverage
@@ -81,27 +97,27 @@ sbatch --array=5 --export=ALL,BENCHMARK=wfg,N_OBJ=2,OVERWRITE=1 OBJ_GA_WFG.sbatc
 `seed_coverage.py` reports how many seeds are present per experiment/algorithm:
 
 ```bash
-python seed_coverage.py                      # table to console
-python seed_coverage.py --format csv
-python seed_coverage.py --format json --output coverage.json
+python experiments/obj_ga/seed_coverage.py                      # table to console
+python experiments/obj_ga/seed_coverage.py --format csv
+python experiments/obj_ga/seed_coverage.py --format json --output coverage.json
 ```
 
 ## Analysis
 
 ```bash
-python analyse_obj_ga.py --n_obj all --benchmark all \
-    --config config/experiment_obj_ga.yaml --output_dir results/obj_ga/analysis
+python experiments/obj_ga/analyse_obj_ga.py --n_obj all --benchmark all \
+    --output_dir results/obj_ga/analysis
 ```
 
 This:
 1. Builds a shared **Pareto approximation** per EvoXBench problem (pooling all methods + seeds) and saves it to `pareto_approx.pkl`.
 2. Recomputes EvoXBench HV / IGD+ trajectories against that approximation (WFG indicators are computed live during the run).
 3. Emits **LaTeX tables** (mean$_{\text{std}}$, best bolded, Holm-corrected Wilcoxon vs. NSGA-II) at the `metric_checkpoints` generations.
-4. Plots **convergence** curves (HV / IGD+ vs. generation, mean ± std) organized into subdirectories:
-   - `plots/hv_convergence/` — HV curves per problem
-   - `plots/igd_convergence/` — IGD+ curves per problem
-   - `plots/hv_convergence/*_combined.png` — Combined HV plot with subplots for all n_obj (2, 3, 4)
-   - `plots/igd_convergence/*_combined.png` — Combined IGD+ plot with subplots for all n_obj
+4. Plots **convergence** curves (HV / IGD+ vs. generation, mean +/- std) organized into subdirectories:
+   - `plots/hv_convergence/` --- HV curves per problem
+   - `plots/igd_convergence/` --- IGD+ curves per problem
+   - `plots/hv_convergence/*_combined.png` --- Combined HV plot with subplots for all n_obj (2, 3, 4)
+   - `plots/igd_convergence/*_combined.png` --- Combined IGD+ plot with subplots for all n_obj
 5. Plots **50% attainment surfaces** (via `moocore`) for 2-objective problems only, in `plots/attainment/`.
 
 Pass `--force` to rebuild cached Pareto approximations.
@@ -146,39 +162,49 @@ Each per-seed pickle holds, with one entry per generation:
 
 ```
 SAMOS-NAS-TEVC/
-├── experiment_obj_ga.py            # per-run driver (one method × problem × seed)
-├── analyse_obj_ga.py               # Pareto approx, indicators, tables, plots
-├── seed_coverage.py                # seed-completion reporting tool
-├── config/experiment_obj_ga.yaml   # algorithms, seeds, budget, sub-experiments
-├── OBJ_GA_WFG.sbatch               # SLURM array: WFG suite
-├── OBJ_GA_EVOXBENCH.sbatch         # SLURM array: EvoXBench suites
-├── environment.yml                 # conda environment (Python 3.11)
-│
-├── strategy/                       # algorithms, operators, samplers, callbacks
-│   ├── algorithm/algorithms.py     # RandomGA, NSGA-II wrappers
-│   ├── operations/                 # crossover, mutation
-│   ├── genetics/                   # encoding & deduplication
-│   └── sampler.py
-│
-├── problem/                        # benchmark definitions
-│   ├── pymoo/benchmark_utils.py    # build_problem, get_pareto_front, default_ref_point
-│   ├── evoxbench/                  # EvoXBench NAS wrappers
-│   └── data/                       # benchmark data (not versioned)
-│
-├── analysis/                       # plotting & reporting library
-│   ├── plotter.py                  # convergence + attainment plots
-│   ├── convergence.py              # Pareto approximation + indicator recomputation
-│   └── latex_table_generator.py    # LaTeX tables
-│
-└── depreciated/                    # retired PPSN-26 SAMOS codebase
+  experiments/                           # one self-contained package per experiment
+    obj_ga/                              # Experiment 1 - GA comparison on true objectives
+      experiment_obj_ga.py               # per-run driver
+      analyse_obj_ga.py                  # Pareto approx, indicators, tables, plots
+      seed_coverage.py                   # seed-completion reporting tool
+      config/experiment_obj_ga.yaml
+      OBJ_GA_WFG.sbatch                  # SLURM array: WFG suite
+      OBJ_GA_EVOXBENCH.sbatch            # SLURM array: EvoXBench suites
+    obj_ga_pred/                         # Experiment 2 - GA performance under fixed predictors
+      experiment_obj_ga_pred.py
+      analyse_obj_ga_pred.py
+      config/experiment_obj_ga_pred.yaml
+      OBJ_GA_PRED_WFG.sbatch
+      OBJ_GA_PRED_EVOXBENCH.sbatch
+      README.md
+  environment.yml                        # conda environment (Python 3.11)
+  strategy/                              # algorithms, operators, samplers, callbacks
+    algorithm/algorithms.py              # RandomGA, NSGA-II wrappers
+    operations/                          # crossover, mutation
+    genetics/                            # encoding + deduplication
+    surrogate/                           # surrogate models (XGBoost, RFR, RBF, ...) + SAMOSMinimal
+    sampler.py
+  problem/                               # benchmark definitions
+    pymoo/benchmark_utils.py             # build_problem, get_pareto_front, default_ref_point
+    pymoo/surrogate_problem.py           # SurrogateProblemMOO (all-predicted, continuous)
+    evoxbench/                           # EvoXBench NAS wrappers + SurrogateProblemEvox
+    data/                                # benchmark data (not versioned)
+  analysis/                              # plotting & reporting library
+    plotter.py                           # convergence + attainment plots
+    convergence.py                       # Pareto approximation + indicator recomputation
+    latex_table_generator.py             # LaTeX tables
+  depreciated/                           # retired PPSN-26 SAMOS codebase
 ```
+
+See [`experiments/obj_ga_pred/README.md`](experiments/obj_ga_pred/README.md) for the
+full Experiment 2 protocol, predictor configuration, and results layout.
 
 ## Key dependencies
 
-- **[pymoo](https://pymoo.org/) 0.6.1.x** — multi-objective optimization framework
-- **[moocore](https://github.com/multi-objective/moocore)** — empirical attainment functions / HV
-- **[EvoXBench](https://github.com/EMI-Group/evoxbench)** — NAS benchmark suites
-- **scipy** — Wilcoxon significance testing
-- **matplotlib** — visualization
+- **[pymoo](https://pymoo.org/) 0.6.1.x** --- multi-objective optimization framework
+- **[moocore](https://github.com/multi-objective/moocore)** --- empirical attainment functions / HV
+- **[EvoXBench](https://github.com/EMI-Group/evoxbench)** --- NAS benchmark suites
+- **scipy** --- Wilcoxon significance testing
+- **matplotlib** --- visualization
 
 See `environment.yml` for the full list.

@@ -66,7 +66,7 @@ def scan_results(results_root):
 
     results_path = Path(results_root)
 
-    # ─── WFG scanning ─────────────────────────────────────────────────────────
+    # --------- WFG scanning ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     wfg_root = results_path / 'wfg'
     if wfg_root.exists():
         for n_obj_dir in wfg_root.iterdir():
@@ -107,7 +107,7 @@ def scan_results(results_root):
                             'count': len(seeds)
                         }
 
-    # ─── EvoXBench scanning ───────────────────────────────────────────────────
+    # --------- EvoXBench scanning ---------------------------------------------------------------------------------------------------------------------------------------------------------
     evoxbench_root = results_path / 'evoxbench'
     if evoxbench_root.exists():
         for suite_dir in evoxbench_root.iterdir():
@@ -174,7 +174,7 @@ def format_table(coverage):
     """Format coverage as human-readable ASCII table grouped by benchmark."""
     lines = []
 
-    # ─── WFG tables ───────────────────────────────────────────────────────────
+    # --------- WFG tables ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     if 'wfg' in coverage and coverage['wfg'].get('wfg'):
         lines.append('\n' + '='*100)
         lines.append('WFG Results')
@@ -237,7 +237,7 @@ def format_table(coverage):
                 row += f"  {status}"
                 lines.append(row)
 
-    # ─── EvoXBench tables ─────────────────────────────────────────────────────
+    # --------- EvoXBench tables ---------------------------------------------------------------------------------------------------------------------------------------------------------------
     if 'evoxbench' in coverage:
         for suite in sorted(coverage['evoxbench'].keys()):
             lines.append('\n' + '='*100)
