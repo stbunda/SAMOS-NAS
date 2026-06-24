@@ -97,8 +97,8 @@ case "${BENCHMARK}_${N_OBJ}" in
     c10mop_2)  PIDS=(1 8) ;;
     c10mop_3)  PIDS=(2 3 9) ;;
     c10mop_4)  PIDS=(4 5 6 7) ;;
-    in1kmop_2) PIDS=(1 4 7) ;;
-    in1kmop_3) PIDS=(3 6) ;;
+    in1kmop_2) PIDS=(1 2 4 5 7) ;;
+    in1kmop_3) PIDS=(3 6 8) ;;
     in1kmop_4) PIDS=(9) ;;
     *)
         echo "ERROR: unsupported BENCHMARK/N_OBJ combination: ${BENCHMARK}_${N_OBJ}" >&2
