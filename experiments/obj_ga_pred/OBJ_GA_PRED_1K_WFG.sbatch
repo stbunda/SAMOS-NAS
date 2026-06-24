@@ -25,11 +25,11 @@
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
 #SBATCH --time=12:00:00
-#SBATCH --output=slurm/slurm_logs_obj_ga_pred_1k_wfg/%x_%A_%a.log
+#SBATCH --output=slurm/slurm_logs_obj_ga_pred_wfg/%x_%A_%a.log
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline
 
-mkdir -p slurm/slurm_logs_obj_ga_pred_1k_wfg
+mkdir -p slurm/slurm_logs_obj_ga_pred_wfg
 
 # --------- scratch setup ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
