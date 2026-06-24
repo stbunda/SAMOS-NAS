@@ -1,0 +1,62 @@
+# Experiment 2 variant: GA performance under fixed predictors with 1000-sample DOE
+# Consumed by experiment_obj_ga_pred.py (per-run driver) and analyse_obj_ga_pred.py.
+#
+# Protocol: sample n_doe=1000 random configs (vs. 100 in the baseline), evaluate their TRUE
+# objectives, fit one frozen surrogate per objective (per predictor below), then warm-start
+# each GA and run it for n_gen generations against the frozen surrogate. GAs are scored on
+# the TRUE objectives of their final (predicted-space) non-dominated front.
+
+# --- algorithm set (8) ---
+algorithms:
+  - {name: random,    label: "Random"}
+  - {name: nsga2,     label: "NSGA-II"}
+  - {name: nsga3,     label: "NSGA-III"}
+  - {name: moead,     label: "MOEA/D"}
+  - {name: sms-emoa,  label: "SMS-EMOA"}
+  - {name: rvea,      label: "RVEA"}
+  - {name: age-moea,  label: "AGE-MOEA"}
+  - {name: age-moea2, label: "AGE-MOEA-II"}
+
+# --- predictor set (3) ---
+# `builder` is a class key in strategy.surrogate.models.SURROGATE_MODELS.
+# Tree models receive a `seed`; RBF models receive only their params.
+predictors:
+  - {name: xgboost, label: "XGBoost",       builder: XGBoost,   params: {n_estimators: 100}}
+  - {name: rf,      label: "Random Forest", builder: RFR,       params: {n_estimators: 100}}
+  - {name: rbf,     label: "RBF",           builder: RBF_Cubic, params: {smoothing: 1.0e-3}}
+
+# --- shared budget / protocol ---
+seeds: 20
+n_gen: 100
+n_doe: 1000              # enlarged DOE (from 100) for better surrogate training
+pop_size_floor: 12
+metric_checkpoints: [10, 20, 50, 100]
+results_root: "results/obj_ga_pred"
+
+# --- sub-experiments (keyed by n_obj) ---
+# Each block lists the WFG and EvoXBench problems for that objective count.
+experiments:
+  "2.1":
+    n_obj: 2
+    wfg:
+      n_var: 12
+      problems: [wfg1, wfg2, wfg3, wfg4, wfg5, wfg6, wfg7, wfg8, wfg9]
+    evoxbench:
+      c10mop:  [1, 8]
+      in1kmop: [1, 2, 4, 5, 7]
+  "2.2":
+    n_obj: 3
+    wfg:
+      n_var: 14
+      problems: [wfg1, wfg2, wfg3, wfg4, wfg5, wfg6, wfg7, wfg8, wfg9]
+    evoxbench:
+      c10mop:  [2, 3, 9]
+      in1kmop: [3, 6, 8]
+  "2.3":
+    n_obj: 4
+    wfg:
+      n_var: 16
+      problems: [wfg1, wfg2, wfg3, wfg4, wfg5, wfg6, wfg7, wfg8, wfg9]
+    evoxbench:
+      c10mop:  [4, 5, 6, 7]
+      in1kmop: [9]

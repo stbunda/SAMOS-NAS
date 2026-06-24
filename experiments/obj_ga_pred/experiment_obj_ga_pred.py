@@ -71,8 +71,14 @@ from strategy.surrogate.models import SURROGATE_MODELS
 EVOXBENCH_SUITES = ('c10mop', 'in1kmop')
 REF_DIR_METHODS = ('nsga3', 'moead', 'rvea')
 
-# Subdirectory segment for this experiment (kept literal so the layout is fixed).
-EXPERIMENT_SUBDIR = 'ga_obj_pred'
+def get_experiment_subdir(n_doe):
+    """Encode DOE size in result subfolder: ga_obj_pred (100) or ga_obj_pred_1k (1000), etc."""
+    if n_doe == 100:
+        return 'ga_obj_pred'
+    elif n_doe == 1000:
+        return 'ga_obj_pred_1k'
+    else:
+        return f'ga_obj_pred_{n_doe // 100}k'
 
 
 # --------- ref_dirs sizing ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -348,16 +354,16 @@ class ObjGAPredCallback(Callback):
 
 # --------- path helper ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-def build_out_path(results_root, benchmark, n_obj, problem, pid, predictor, method, seed):
+def build_out_path(results_root, benchmark, n_obj, problem, pid, predictor, method, seed, experiment_subdir):
     if benchmark == 'wfg':
         return os.path.join(
             results_root, 'wfg', f'{n_obj}_obj', problem, predictor, method,
-            EXPERIMENT_SUBDIR, f'seed_{seed}.pkl',
+            experiment_subdir, f'seed_{seed}.pkl',
         )
     # EvoXBench: benchmark is the suite name (c10mop / in1kmop)
     return os.path.join(
         results_root, 'evoxbench', benchmark, f'pid{pid}', predictor, method,
-        EXPERIMENT_SUBDIR, f'seed_{seed}.pkl',
+        experiment_subdir, f'seed_{seed}.pkl',
     )
 
 
@@ -401,13 +407,14 @@ def main(args):
     n_doe = config['n_doe']
     pop_size_floor = config['pop_size_floor']
     predictor_cfg = _predictor_cfg(config, args.predictor)
+    experiment_subdir = get_experiment_subdir(n_doe)
 
     is_evoxbench = args.benchmark in EVOXBENCH_SUITES
 
     # ------ resolve output path + skip logic ---------------------------------------------------------------------------------------------------------------------
     out_path = build_out_path(
         results_root, args.benchmark, args.n_obj,
-        args.problem, args.pid, args.predictor, args.method, args.seed,
+        args.problem, args.pid, args.predictor, args.method, args.seed, experiment_subdir,
     )
     if os.path.exists(out_path) and not args.overwrite:
         print(f'[SKIP] {out_path} already exists (use --overwrite to replace)')
