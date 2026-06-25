@@ -40,6 +40,11 @@ class XGBoost:
             'colsample_bytree': 0.8,
             'objective': 'reg:squarederror',
             'random_state': self.seed,
+            # Force CPU: the pip xgboost wheel is a CUDA build, and on a node
+            # whose GPUs aren't masked it would otherwise create a CUDA context
+            # and reserve VRAM. Keep training on CPU regardless of node type.
+            'device': 'cpu',
+            'tree_method': 'hist',
         }
         default_params.update(kwargs)
 

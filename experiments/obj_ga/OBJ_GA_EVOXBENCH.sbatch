@@ -75,11 +75,14 @@ echo "Copied structure:"
 find "${SCRATCH_DIRECTORY}" -maxdepth 4 -type d 2>/dev/null | head -20
 
 # --------- environment ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-module load nvidia/nvhpc/26.3
 module load anaconda3/2023.09
 source activate
 conda deactivate
 conda activate SAMOS311
+
+# CPU-only job: hide all GPUs so CUDA-enabled builds (xgboost, torch via
+# evoxbench) cannot create a CUDA context / reserve VRAM on this shared node.
+export CUDA_VISIBLE_DEVICES=""
 
 echo "Activated: SAMOS311"
 
