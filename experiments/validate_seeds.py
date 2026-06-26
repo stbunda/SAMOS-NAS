@@ -37,6 +37,38 @@ import json
 from typing import Optional, List, Dict
 
 
+def infer_n_obj_from_pid(benchmark: str, pid: int) -> Optional[int]:
+    """Infer N_OBJ from BENCHMARK and PID using sbatch script mappings.
+
+    The sbatch scripts hardcode PID sets per (BENCHMARK, N_OBJ) combo.
+    This function reverses that mapping to find which N_OBJ contains a given PID.
+
+    Returns the inferred N_OBJ, or None if not found.
+    """
+    # Mappings from OBJ_GA_EVOXBENCH.sbatch lines 100-105
+    pid_sets = {
+        'c10mop': {
+            2: (1, 8),
+            3: (2, 3, 9),
+            4: (4, 5, 6, 7),
+        },
+        'in1kmop': {
+            2: (1, 2, 4, 5, 7),
+            3: (3, 6, 8),
+            4: (9,),
+        },
+    }
+
+    if benchmark not in pid_sets:
+        return None
+
+    for n_obj, pids in pid_sets[benchmark].items():
+        if pid in pids:
+            return n_obj
+
+    return None
+
+
 def parse_incomplete_path(relative_path: str, experiment: str) -> Optional[Dict]:
     """Parse an incomplete directory path and extract parameters for rerunning.
 
@@ -75,9 +107,14 @@ def parse_incomplete_path(relative_path: str, experiment: str) -> Optional[Dict]
                 # Skip if ga is 'ga_obj' (aggregate file)
                 if ga == 'ga_obj':
                     return None
+                # Infer N_OBJ from benchmark and PID
+                n_obj = infer_n_obj_from_pid(suite, pid)
+                if n_obj is None:
+                    return None
                 return {
                     'benchmark': suite,
                     'pid': pid,
+                    'n_obj': n_obj,
                     'ga': ga,
                 }
 
@@ -108,9 +145,14 @@ def parse_incomplete_path(relative_path: str, experiment: str) -> Optional[Dict]
                 # Skip if ga is 'ga_obj_pred' (aggregate file)
                 if ga == 'ga_obj_pred' or ga == 'ga_obj_pred_1k':
                     return None
+                # Infer N_OBJ from benchmark and PID
+                n_obj = infer_n_obj_from_pid(suite, pid)
+                if n_obj is None:
+                    return None
                 return {
                     'benchmark': suite,
                     'pid': pid,
+                    'n_obj': n_obj,
                     'ga': ga,
                     'predictor': pred,
                 }
@@ -136,6 +178,9 @@ def generate_sbatch_command(experiment: str, params: Dict, array_spec: Optional[
     -------
     str or None
         sbatch command, or None if can't generate
+
+    NOTE: EvoXBench sbatch scripts use (BENCHMARK, N_OBJ) not PID in exports,
+    because PIDs are hardcoded in the script based on that combo.
     """
     array_part = f"--array={array_spec} " if array_spec else ""
 
@@ -145,8 +190,9 @@ def generate_sbatch_command(experiment: str, params: Dict, array_spec: Optional[
             return (f"sbatch {array_part}--export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
                    f"N_OBJ={params['n_obj']} experiments/obj_ga/OBJ_GA_WFG.sbatch")
         else:
-            # EvoXBench: needs benchmark and pid
-            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']} "
+            # EvoXBench: needs benchmark and n_obj (PID is hardcoded based on these)
+            # NOTE: Do NOT export PID — the sbatch script uses hardcoded mappings
+            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},N_OBJ={params.get('n_obj', 2)} "
                    f"experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch")
 
     elif experiment == 'obj_ga_pred':
@@ -157,8 +203,9 @@ def generate_sbatch_command(experiment: str, params: Dict, array_spec: Optional[
                    f"N_OBJ={params['n_obj']},PREDICTORS={pred} "
                    f"experiments/obj_ga_pred/OBJ_GA_PRED_WFG.sbatch")
         else:
-            # EvoXBench: needs benchmark, pid, predictor
-            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']},"
+            # EvoXBench: needs benchmark, n_obj, predictor (PID is hardcoded based on benchmark+n_obj)
+            # NOTE: Do NOT export PID — the sbatch script uses hardcoded mappings
+            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},N_OBJ={params.get('n_obj', 2)},"
                    f"PREDICTORS={pred} experiments/obj_ga_pred/OBJ_GA_PRED_EVOXBENCH.sbatch")
 
     return None
