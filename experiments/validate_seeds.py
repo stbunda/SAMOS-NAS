@@ -34,6 +34,129 @@ import json
 from typing import Optional, List, Dict
 
 
+def parse_incomplete_path(relative_path: str, experiment: str) -> Optional[Dict]:
+    """Parse an incomplete directory path and extract parameters for rerunning.
+
+    Returns dict with keys needed for sbatch export, or None if can't parse.
+
+    Path formats:
+      obj_ga/wfg/{n_obj}_obj/{problem}/{ga}/ga_obj
+      obj_ga/evoxbench/{suite}/pid{pid}/{ga}/ga_obj
+      obj_ga_pred/wfg/{n_obj}_obj/{problem}/{pred}/{ga}/ga_obj_pred[_1k]
+      obj_ga_pred/evoxbench/{suite}/pid{pid}/{pred}/{ga}/ga_obj_pred[_1k]
+    """
+    parts = relative_path.replace('\\', '/').split('/')
+
+    try:
+        if experiment == 'obj_ga':
+            if 'wfg' in parts:
+                idx = parts.index('wfg')
+                # obj_ga/wfg/{n_obj}_obj/{problem}/{ga}/ga_obj
+                n_obj_str = parts[idx + 1]  # e.g., '2_obj'
+                n_obj = int(n_obj_str.split('_')[0])
+                problem = parts[idx + 2]
+                ga = parts[idx + 3]
+                return {
+                    'benchmark': 'wfg',
+                    'problem': problem,
+                    'n_obj': n_obj,
+                    'ga': ga,
+                }
+            elif 'evoxbench' in parts:
+                idx = parts.index('evoxbench')
+                # obj_ga/evoxbench/{suite}/pid{pid}/{ga}/ga_obj
+                suite = parts[idx + 1]
+                pid_str = parts[idx + 2]  # e.g., 'pid1'
+                pid = int(pid_str.replace('pid', ''))
+                ga = parts[idx + 3]
+                # Skip if ga is 'ga_obj' (aggregate file)
+                if ga == 'ga_obj':
+                    return None
+                return {
+                    'benchmark': suite,
+                    'pid': pid,
+                    'ga': ga,
+                }
+
+        elif experiment == 'obj_ga_pred':
+            if 'wfg' in parts:
+                idx = parts.index('wfg')
+                # obj_ga_pred/wfg/{n_obj}_obj/{problem}/{pred}/{ga}/ga_obj_pred[_1k]
+                n_obj_str = parts[idx + 1]
+                n_obj = int(n_obj_str.split('_')[0])
+                problem = parts[idx + 2]
+                pred = parts[idx + 3]
+                ga = parts[idx + 4]
+                return {
+                    'benchmark': 'wfg',
+                    'problem': problem,
+                    'n_obj': n_obj,
+                    'ga': ga,
+                    'predictor': pred,
+                }
+            elif 'evoxbench' in parts:
+                idx = parts.index('evoxbench')
+                # obj_ga_pred/evoxbench/{suite}/pid{pid}/{pred}/{ga}/ga_obj_pred[_1k]
+                suite = parts[idx + 1]
+                pid_str = parts[idx + 2]
+                pid = int(pid_str.replace('pid', ''))
+                pred = parts[idx + 3]
+                ga = parts[idx + 4]
+                # Skip if ga is 'ga_obj_pred' (aggregate file)
+                if ga == 'ga_obj_pred' or ga == 'ga_obj_pred_1k':
+                    return None
+                return {
+                    'benchmark': suite,
+                    'pid': pid,
+                    'ga': ga,
+                    'predictor': pred,
+                }
+    except (IndexError, ValueError):
+        return None
+
+    return None
+
+
+def generate_sbatch_command(experiment: str, params: Dict) -> Optional[str]:
+    """Generate sbatch command to rerun an incomplete experiment.
+
+    Parameters
+    ----------
+    experiment : str
+        'obj_ga' or 'obj_ga_pred'
+    params : dict
+        Extracted parameters from parse_incomplete_path
+
+    Returns
+    -------
+    str or None
+        sbatch command, or None if can't generate
+    """
+    if experiment == 'obj_ga':
+        if params.get('benchmark') == 'wfg':
+            # WFG: needs problem and n_obj
+            return (f"sbatch --export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
+                   f"N_OBJ={params['n_obj']} experiments/obj_ga/OBJ_GA_WFG.sbatch")
+        else:
+            # EvoXBench: needs benchmark and pid
+            return (f"sbatch --export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']} "
+                   f"experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch")
+
+    elif experiment == 'obj_ga_pred':
+        pred = params.get('predictor', 'xgboost')
+        if params.get('benchmark') == 'wfg':
+            # WFG: needs problem, n_obj, predictor
+            return (f"sbatch --export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
+                   f"N_OBJ={params['n_obj']},PREDICTORS={pred} "
+                   f"experiments/obj_ga_pred/OBJ_GA_PRED_WFG.sbatch")
+        else:
+            # EvoXBench: needs benchmark, pid, predictor
+            return (f"sbatch --export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']},"
+                   f"PREDICTORS={pred} experiments/obj_ga_pred/OBJ_GA_PRED_EVOXBENCH.sbatch")
+
+    return None
+
+
 def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None) -> List[Dict]:
     """Find all leaf directories (directories containing .pkl files).
 
@@ -133,6 +256,10 @@ def main():
         '--output_dir', default=None,
         help='Save detailed report to this directory (optional).'
     )
+    parser.add_argument(
+        '--print_commands', action='store_true',
+        help='Print sbatch commands to rerun incomplete experiments.'
+    )
     args = parser.parse_args()
 
     print(f'\n{"=" * 70}')
@@ -193,6 +320,27 @@ def main():
         for issue in sorted(issues, key=lambda x: (x['experiment'], x['relative_path'])):
             status_str = f"{issue['n_seeds']:2d} seeds" if issue['n_seeds'] > 0 else "MISSING"
             print(f'  {issue["experiment"]:12s} | {status_str:12s} | {issue["relative_path"]}')
+
+        # Generate and print sbatch commands if requested
+        if args.print_commands:
+            print(f'\n{"=" * 70}')
+            print('  Commands to rerun incomplete experiments')
+            print(f'{"=" * 70}')
+
+            commands = []
+            for issue in sorted(issues, key=lambda x: (x['experiment'], x['relative_path'])):
+                params = parse_incomplete_path(issue['relative_path'], issue['experiment'])
+                if params:  # Skip aggregate files and unparseable paths
+                    cmd = generate_sbatch_command(issue['experiment'], params)
+                    if cmd:
+                        commands.append(cmd)
+
+            # Deduplicate commands (same experiment params may appear multiple times)
+            unique_commands = sorted(set(commands))
+            for cmd in unique_commands:
+                print(f'  {cmd}')
+
+            print(f'\n  Total commands: {len(unique_commands)}')
 
         if args.output_dir:
             os.makedirs(args.output_dir, exist_ok=True)
