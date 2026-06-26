@@ -190,10 +190,15 @@ def generate_sbatch_command(experiment: str, params: Dict, array_spec: Optional[
             return (f"sbatch {array_part}--export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
                    f"N_OBJ={params['n_obj']} experiments/obj_ga/OBJ_GA_WFG.sbatch")
         else:
-            # EvoXBench: needs benchmark and n_obj (PID is hardcoded based on these)
-            # NOTE: Do NOT export PID — the sbatch script uses hardcoded mappings
-            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},N_OBJ={params.get('n_obj', 2)} "
-                   f"experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch")
+            # EvoXBench: can use N_OBJ (hardcoded mapping) or explicit PID
+            if 'pid' in params:
+                # Explicit PID: more targeted, for single-PID reruns
+                return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']} "
+                       f"experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch")
+            else:
+                # N_OBJ: uses hardcoded mapping, for multi-PID reruns
+                return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},N_OBJ={params.get('n_obj', 2)} "
+                       f"experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch")
 
     elif experiment == 'obj_ga_pred':
         pred = params.get('predictor', 'xgboost')
@@ -203,10 +208,15 @@ def generate_sbatch_command(experiment: str, params: Dict, array_spec: Optional[
                    f"N_OBJ={params['n_obj']},PREDICTORS={pred} "
                    f"experiments/obj_ga_pred/OBJ_GA_PRED_WFG.sbatch")
         else:
-            # EvoXBench: needs benchmark, n_obj, predictor (PID is hardcoded based on benchmark+n_obj)
-            # NOTE: Do NOT export PID — the sbatch script uses hardcoded mappings
-            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},N_OBJ={params.get('n_obj', 2)},"
-                   f"PREDICTORS={pred} experiments/obj_ga_pred/OBJ_GA_PRED_EVOXBENCH.sbatch")
+            # EvoXBench: can use N_OBJ (hardcoded mapping) or explicit PID
+            if 'pid' in params:
+                # Explicit PID: more targeted, for single-PID reruns
+                return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']},"
+                       f"PREDICTORS={pred} experiments/obj_ga_pred/OBJ_GA_PRED_EVOXBENCH.sbatch")
+            else:
+                # N_OBJ: uses hardcoded mapping, for multi-PID reruns
+                return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},N_OBJ={params.get('n_obj', 2)},"
+                       f"PREDICTORS={pred} experiments/obj_ga_pred/OBJ_GA_PRED_EVOXBENCH.sbatch")
 
     return None
 
@@ -527,56 +537,96 @@ def main():
         if args.print_commands:
             print(f'\n{"=" * 70}')
             print('  Commands to rerun incomplete experiments')
-            print(f'  (with specific seeds to rerun)')
+            print(f'  (optimized: N_OBJ for multi-PID, PID for single-PID)')
             print(f'{"=" * 70}')
 
-            # Group actual issues (not aggregates) by parameters to collect all missing seeds
-            grouped = defaultdict(list)
+            # Group by (exp, benchmark, n_obj, problem, predictor) to find which PIDs need seeds
+            grouped_by_config = defaultdict(lambda: defaultdict(set))
 
             for issue in actual_issues:
                 params = parse_incomplete_path(issue['relative_path'], issue['experiment'])
-                if params:  # Skip aggregate files and unparseable paths
-                    # Create a hashable key from params
+                if params:
                     exp = issue['experiment']
-                    key_parts = [exp, params.get('benchmark')]
-                    if 'problem' in params:
-                        key_parts.append(params['problem'])
-                    if 'pid' in params:
-                        key_parts.append(str(params['pid']))
-                    if 'predictor' in params:
-                        key_parts.append(params['predictor'])
-                    key = tuple(key_parts)
+                    bench = params.get('benchmark')
+                    n_obj = params.get('n_obj')
+                    problem = params.get('problem')
+                    pred = params.get('predictor')
+                    pid = params.get('pid')
 
-                    grouped[key].append((params, issue['missing_seeds']))
+                    # Create config key (without pid)
+                    config_key = (exp, bench, n_obj, problem, pred)
 
-            # Generate commands with array specs
+                    # Collect PIDs and their missing seeds
+                    if pid is not None:
+                        grouped_by_config[config_key][pid].update(issue['missing_seeds'])
+
+            # Generate optimized commands
             commands_with_seeds = []
-            for key in sorted(grouped.keys()):
-                items = grouped[key]
-                exp = items[0][0]  # Use first item's experiment type
-                params = items[0][0]  # Use first item's params
-                experiment_type = key[0]
+            for config_key in sorted(grouped_by_config.keys()):
+                exp, bench, n_obj, problem, pred = config_key
+                pids_missing = grouped_by_config[config_key]
 
-                # Collect all missing seeds for this parameter combo
-                all_missing = set()
-                for _, missing_seeds in items:
-                    all_missing.update(missing_seeds)
+                # Decision: use N_OBJ if multiple PIDs, or PID if just one
+                if len(pids_missing) > 1:
+                    # Multiple PIDs missing: use N_OBJ approach (more efficient)
+                    all_missing = set()
+                    for pid, seeds in pids_missing.items():
+                        all_missing.update(seeds)
 
-                if all_missing:
                     all_missing = sorted(all_missing)
                     array_spec = format_array_spec(all_missing)
-                    cmd = generate_sbatch_command(experiment_type, params, array_spec)
+
+                    params = {
+                        'benchmark': bench,
+                        'n_obj': n_obj,
+                    }
+                    if problem:
+                        params['problem'] = problem
+                    if pred:
+                        params['predictor'] = pred
+
+                    cmd = generate_sbatch_command(exp, params, array_spec)
                     if cmd:
+                        pids_list = sorted(pids_missing.keys())
                         commands_with_seeds.append({
                             'cmd': cmd,
                             'missing_seeds': all_missing,
+                            'pids': pids_list,
+                            'method': 'N_OBJ (multiple PIDs)',
+                        })
+                else:
+                    # Single PID missing: use PID export (more targeted)
+                    pid = list(pids_missing.keys())[0]
+                    missing_seeds = sorted(pids_missing[pid])
+                    array_spec = format_array_spec(missing_seeds)
+
+                    params = {
+                        'benchmark': bench,
+                        'pid': pid,
+                    }
+                    if n_obj:
+                        params['n_obj'] = n_obj
+                    if problem:
+                        params['problem'] = problem
+                    if pred:
+                        params['predictor'] = pred
+
+                    cmd = generate_sbatch_command(exp, params, array_spec)
+                    if cmd:
+                        commands_with_seeds.append({
+                            'cmd': cmd,
+                            'missing_seeds': missing_seeds,
+                            'pids': [pid],
+                            'method': 'PID (single)',
                         })
 
             for item in commands_with_seeds:
                 cmd = item['cmd']
                 seeds = item['missing_seeds']
+                method = item['method']
+                pids = item['pids']
                 print(f'  {cmd}')
-                print(f'    # Seeds: {seeds}')
+                print(f'    # Method: {method} | PIDs: {pids} | Seeds: {seeds}')
 
             print(f'\n  Total commands: {len(commands_with_seeds)}')
 

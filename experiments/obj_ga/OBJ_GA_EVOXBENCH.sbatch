@@ -95,20 +95,29 @@ CONFIG=experiments/obj_ga/config/experiment_obj_ga.yaml
 # --------- method set ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 METHODS=(random nsga2 nsga3 moead sms-emoa rvea age-moea age-moea2)
 
-# --------- PID set: depends on (BENCHMARK, N_OBJ) ---------------------------------------------------------------------------------------------------------
-case "${BENCHMARK}_${N_OBJ}" in
-    c10mop_2)  PIDS=(1 8) ;;
-    c10mop_3)  PIDS=(2 3 9) ;;
-    c10mop_4)  PIDS=(4 5 6 7) ;;
-    in1kmop_2) PIDS=(1 2 4 5 7) ;;
-    in1kmop_3) PIDS=(3 6 8) ;;
-    in1kmop_4) PIDS=(9) ;;
-    *)
-        echo "ERROR: unsupported BENCHMARK/N_OBJ combination: ${BENCHMARK}_${N_OBJ}" >&2
-        echo "       Expected BENCHMARK in {c10mop,in1kmop} and N_OBJ in {2,3,4}." >&2
-        exit 1
-        ;;
-esac
+# --------- PID set: hardcoded mapping OR explicit export -----
+# If PID is explicitly exported (space or comma-separated), use that.
+# Otherwise, use hardcoded mapping based on (BENCHMARK, N_OBJ).
+if [ -z "$PID" ]; then
+    # Use hardcoded case statement
+    case "${BENCHMARK}_${N_OBJ}" in
+        c10mop_2)  PIDS=(1 8) ;;
+        c10mop_3)  PIDS=(2 3 9) ;;
+        c10mop_4)  PIDS=(4 5 6 7) ;;
+        in1kmop_2) PIDS=(1 2 4 5 7) ;;
+        in1kmop_3) PIDS=(3 6 8) ;;
+        in1kmop_4) PIDS=(9) ;;
+        *)
+            echo "ERROR: unsupported BENCHMARK/N_OBJ combination: ${BENCHMARK}_${N_OBJ}" >&2
+            echo "       Expected BENCHMARK in {c10mop,in1kmop} and N_OBJ in {2,3,4}." >&2
+            exit 1
+            ;;
+    esac
+else
+    # PID was explicitly exported: convert to array, handling both space and comma-separated lists
+    PIDS=($PID)
+    echo "INFO: Using explicitly exported PID(s): ${PIDS[*]}"
+fi
 
 # --------- logging ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 echo "Date              = $(date)"
