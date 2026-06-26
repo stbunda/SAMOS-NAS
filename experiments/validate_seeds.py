@@ -117,7 +117,7 @@ def parse_incomplete_path(relative_path: str, experiment: str) -> Optional[Dict]
     return None
 
 
-def generate_sbatch_command(experiment: str, params: Dict) -> Optional[str]:
+def generate_sbatch_command(experiment: str, params: Dict, array_spec: Optional[str] = None) -> Optional[str]:
     """Generate sbatch command to rerun an incomplete experiment.
 
     Parameters
@@ -126,35 +126,81 @@ def generate_sbatch_command(experiment: str, params: Dict) -> Optional[str]:
         'obj_ga' or 'obj_ga_pred'
     params : dict
         Extracted parameters from parse_incomplete_path
+    array_spec : str or None
+        Array specification (e.g., "0-19" or "5,10,15")
 
     Returns
     -------
     str or None
         sbatch command, or None if can't generate
     """
+    array_part = f"--array={array_spec} " if array_spec else ""
+
     if experiment == 'obj_ga':
         if params.get('benchmark') == 'wfg':
             # WFG: needs problem and n_obj
-            return (f"sbatch --export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
+            return (f"sbatch {array_part}--export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
                    f"N_OBJ={params['n_obj']} experiments/obj_ga/OBJ_GA_WFG.sbatch")
         else:
             # EvoXBench: needs benchmark and pid
-            return (f"sbatch --export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']} "
+            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']} "
                    f"experiments/obj_ga/OBJ_GA_EVOXBENCH.sbatch")
 
     elif experiment == 'obj_ga_pred':
         pred = params.get('predictor', 'xgboost')
         if params.get('benchmark') == 'wfg':
             # WFG: needs problem, n_obj, predictor
-            return (f"sbatch --export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
+            return (f"sbatch {array_part}--export=ALL,BENCHMARK=wfg,PROBLEM={params['problem']},"
                    f"N_OBJ={params['n_obj']},PREDICTORS={pred} "
                    f"experiments/obj_ga_pred/OBJ_GA_PRED_WFG.sbatch")
         else:
             # EvoXBench: needs benchmark, pid, predictor
-            return (f"sbatch --export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']},"
+            return (f"sbatch {array_part}--export=ALL,BENCHMARK={params['benchmark']},PID={params['pid']},"
                    f"PREDICTORS={pred} experiments/obj_ga_pred/OBJ_GA_PRED_EVOXBENCH.sbatch")
 
     return None
+
+
+def get_missing_seeds(seed_dir: str) -> List[int]:
+    """Get list of missing seed indices (0-19) in a directory.
+
+    Assumes 20 total seeds indexed 0-19 in format seed_{i}.pkl.
+    """
+    if not os.path.isdir(seed_dir):
+        return list(range(20))  # All missing if dir doesn't exist
+
+    existing_seeds = set()
+    for fname in os.listdir(seed_dir):
+        if fname.startswith('seed_') and fname.endswith('.pkl'):
+            try:
+                seed_num = int(fname.replace('seed_', '').replace('.pkl', ''))
+                existing_seeds.add(seed_num)
+            except ValueError:
+                pass
+
+    return sorted([i for i in range(20) if i not in existing_seeds])
+
+
+def format_array_spec(missing_seeds: List[int]) -> str:
+    """Format missing seed indices as sbatch --array specification.
+
+    Examples:
+        [0,1,2] -> "0-2"
+        [5,10,15] -> "5,10,15"
+        [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19] -> "0-19"
+    """
+    if not missing_seeds:
+        return None
+
+    if len(missing_seeds) == 20:
+        return "0-19"
+
+    # Check if it's a continuous range
+    if missing_seeds[-1] - missing_seeds[0] + 1 == len(missing_seeds):
+        return f"{missing_seeds[0]}-{missing_seeds[-1]}"
+
+    # Otherwise list them explicitly
+    return ",".join(map(str, missing_seeds))
 
 
 def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None) -> List[Dict]:
@@ -219,12 +265,15 @@ def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None) -> L
 
             status = 'complete' if pkl_count == 20 else ('incomplete' if pkl_count > 0 else 'missing')
 
+            missing = get_missing_seeds(dirpath)
+
             leaf_dirs.append({
                 'path': dirpath,
                 'relative_path': rel_path,
                 'n_seeds': pkl_count,
                 'status': status,
                 'experiment': exp_type,
+                'missing_seeds': missing,
             })
 
     return leaf_dirs
@@ -325,22 +374,58 @@ def main():
         if args.print_commands:
             print(f'\n{"=" * 70}')
             print('  Commands to rerun incomplete experiments')
+            print(f'  (with specific seeds to rerun)')
             print(f'{"=" * 70}')
 
-            commands = []
-            for issue in sorted(issues, key=lambda x: (x['experiment'], x['relative_path'])):
+            # Group issues by parameters to collect all missing seeds for each combo
+            grouped = defaultdict(list)
+
+            for issue in issues:
                 params = parse_incomplete_path(issue['relative_path'], issue['experiment'])
                 if params:  # Skip aggregate files and unparseable paths
-                    cmd = generate_sbatch_command(issue['experiment'], params)
+                    # Create a hashable key from params
+                    exp = issue['experiment']
+                    key_parts = [exp, params.get('benchmark')]
+                    if 'problem' in params:
+                        key_parts.append(params['problem'])
+                    if 'pid' in params:
+                        key_parts.append(str(params['pid']))
+                    if 'predictor' in params:
+                        key_parts.append(params['predictor'])
+                    key = tuple(key_parts)
+
+                    grouped[key].append((params, issue['missing_seeds']))
+
+            # Generate commands with array specs
+            commands_with_seeds = []
+            for key in sorted(grouped.keys()):
+                items = grouped[key]
+                exp = items[0][0]  # Use first item's experiment type
+                params = items[0][0]  # Use first item's params
+                experiment_type = key[0]
+
+                # Collect all missing seeds for this parameter combo
+                all_missing = set()
+                for _, missing_seeds in items:
+                    all_missing.update(missing_seeds)
+
+                if all_missing:
+                    all_missing = sorted(all_missing)
+                    array_spec = format_array_spec(all_missing)
+                    cmd = generate_sbatch_command(experiment_type, params, array_spec)
                     if cmd:
-                        commands.append(cmd)
+                        commands_with_seeds.append({
+                            'cmd': cmd,
+                            'missing_seeds': all_missing,
+                        })
 
-            # Deduplicate commands (same experiment params may appear multiple times)
-            unique_commands = sorted(set(commands))
-            for cmd in unique_commands:
+            for item in commands_with_seeds:
+                cmd = item['cmd']
+                seeds = item['missing_seeds']
                 print(f'  {cmd}')
+                print(f'    # Seeds: {seeds}')
 
-            print(f'\n  Total commands: {len(unique_commands)}')
+            print(f'\n  Total commands: {len(commands_with_seeds)}')
 
         if args.output_dir:
             os.makedirs(args.output_dir, exist_ok=True)
