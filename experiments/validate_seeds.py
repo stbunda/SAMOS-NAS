@@ -1,33 +1,36 @@
-"""validate_seeds.py — Check seed completeness across all experiments.
+"""validate_seeds.py — Check seed completeness and integrity across all experiments.
 
 Recursively searches all experiment result directories and checks whether each
 leaf folder (where actual result files are stored) has exactly 20 seeds.
 
+Can optionally detect corrupt pickle files (indicates crashed runs).
+
 Supports filtering by experiment type for focused validation.
 
 Usage:
-    # Check all experiments
+    # Check all experiments (fast)
     python experiments/validate_seeds.py
 
     # Check only obj_ga (Exp1)
     python experiments/validate_seeds.py --experiments obj_ga
 
-    # Check only obj_ga_pred (Exp2)
-    python experiments/validate_seeds.py --experiments obj_ga_pred
+    # Check for corrupt pickle files (SLOW, ~1-2 min)
+    python experiments/validate_seeds.py --check_corruption
 
-    # Multiple experiments
-    python experiments/validate_seeds.py --experiments obj_ga obj_ga_pred
+    # Show sbatch commands to rerun incomplete seeds
+    python experiments/validate_seeds.py --print_commands
 
     # Verbose output (show all leaf dirs)
     python experiments/validate_seeds.py --verbose
 
-    # Show only incomplete (default if issues found)
-    python experiments/validate_seeds.py --incomplete_only
+    # Comprehensive check with commands (saves to file)
+    python experiments/validate_seeds.py --check_corruption --print_commands --output_dir results/validation
 """
 
 import argparse
 import os
 import sys
+import pickle
 from pathlib import Path
 from collections import defaultdict
 import json
@@ -161,24 +164,80 @@ def generate_sbatch_command(experiment: str, params: Dict, array_spec: Optional[
     return None
 
 
+def check_pkl_integrity(filepath: str) -> tuple[bool, Optional[str]]:
+    """Check if a pickle file is readable and valid.
+
+    Returns: (is_valid, error_message)
+        is_valid: True if file is readable, False if corrupt or error
+        error_message: None if valid, otherwise error description
+    """
+    if not os.path.isfile(filepath):
+        return False, "File not found"
+
+    try:
+        with open(filepath, 'rb') as f:
+            pickle.load(f)
+        return True, None
+    except EOFError:
+        return False, "EOF error (incomplete write)"
+    except pickle.UnpicklingError as e:
+        return False, f"Unpickling error: {str(e)[:50]}"
+    except Exception as e:
+        return False, f"Error: {type(e).__name__}: {str(e)[:50]}"
+
+
+def get_seed_status(seed_dir: str) -> Dict:
+    """Get detailed status of all seeds in a directory.
+
+    Returns dict with:
+        valid: list of valid seed indices
+        corrupt: list of (seed_index, error_msg) tuples
+        missing: list of missing seed indices
+    """
+    if not os.path.isdir(seed_dir):
+        return {
+            'valid': [],
+            'corrupt': [],
+            'missing': list(range(20)),
+        }
+
+    valid = []
+    corrupt = []
+    existing = set()
+
+    for fname in sorted(os.listdir(seed_dir)):
+        if fname.startswith('seed_') and fname.endswith('.pkl'):
+            try:
+                seed_num = int(fname.replace('seed_', '').replace('.pkl', ''))
+                existing.add(seed_num)
+
+                filepath = os.path.join(seed_dir, fname)
+                is_valid, error = check_pkl_integrity(filepath)
+
+                if is_valid:
+                    valid.append(seed_num)
+                else:
+                    corrupt.append((seed_num, error))
+            except ValueError:
+                pass
+
+    missing = sorted([i for i in range(20) if i not in existing])
+
+    return {
+        'valid': valid,
+        'corrupt': corrupt,
+        'missing': missing,
+    }
+
+
 def get_missing_seeds(seed_dir: str) -> List[int]:
     """Get list of missing seed indices (0-19) in a directory.
 
     Assumes 20 total seeds indexed 0-19 in format seed_{i}.pkl.
+    Returns missing + corrupt seeds.
     """
-    if not os.path.isdir(seed_dir):
-        return list(range(20))  # All missing if dir doesn't exist
-
-    existing_seeds = set()
-    for fname in os.listdir(seed_dir):
-        if fname.startswith('seed_') and fname.endswith('.pkl'):
-            try:
-                seed_num = int(fname.replace('seed_', '').replace('.pkl', ''))
-                existing_seeds.add(seed_num)
-            except ValueError:
-                pass
-
-    return sorted([i for i in range(20) if i not in existing_seeds])
+    status = get_seed_status(seed_dir)
+    return sorted(status['missing'] + [s for s, _ in status['corrupt']])
 
 
 def format_array_spec(missing_seeds: List[int]) -> str:
@@ -203,7 +262,7 @@ def format_array_spec(missing_seeds: List[int]) -> str:
     return ",".join(map(str, missing_seeds))
 
 
-def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None) -> List[Dict]:
+def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None, check_corruption: bool = False) -> List[Dict]:
     """Find all leaf directories (directories containing .pkl files).
 
     A leaf directory is one that contains .pkl files and is not a parent of other
@@ -267,6 +326,11 @@ def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None) -> L
 
             missing = get_missing_seeds(dirpath)
 
+            # Optionally check for corruption
+            seed_status = {}
+            if check_corruption:
+                seed_status = get_seed_status(dirpath)
+
             leaf_dirs.append({
                 'path': dirpath,
                 'relative_path': rel_path,
@@ -274,6 +338,7 @@ def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None) -> L
                 'status': status,
                 'experiment': exp_type,
                 'missing_seeds': missing,
+                'seed_status': seed_status,  # Only populated if check_corruption=True
             })
 
     return leaf_dirs
@@ -309,6 +374,11 @@ def main():
         '--print_commands', action='store_true',
         help='Print sbatch commands to rerun incomplete experiments.'
     )
+    parser.add_argument(
+        '--check_corruption', action='store_true',
+        help='Check for corrupt pickle files (SLOW: ~1-2 min for full dataset; '
+             'useful for detecting crashed runs).'
+    )
     args = parser.parse_args()
 
     print(f'\n{"=" * 70}')
@@ -316,10 +386,12 @@ def main():
     print(f'{"=" * 70}')
     print(f'  Root:        {args.root}')
     print(f'  Experiments: {", ".join(args.experiments)}')
+    if args.check_corruption:
+        print(f'  Corruption:  Enabled (may take 1-2 min on full dataset)')
     print()
 
     # Find all leaf directories
-    leaf_dirs = find_leaf_dirs(args.root, target_dirs=args.experiments)
+    leaf_dirs = find_leaf_dirs(args.root, target_dirs=args.experiments, check_corruption=args.check_corruption)
 
     if not leaf_dirs:
         print(f'[WARN] No leaf directories found.')
@@ -363,12 +435,46 @@ def main():
     # Print detailed issues if found
     if issues:
         print(f'\n{"=" * 70}')
-        print('  Incomplete Directories (need to rerun)')
+        print('  Incomplete Directories')
         print(f'{"=" * 70}')
 
+        # Separate aggregate files from actual experiments
+        actual_issues = []
+        aggregate_files = []
+
         for issue in sorted(issues, key=lambda x: (x['experiment'], x['relative_path'])):
-            status_str = f"{issue['n_seeds']:2d} seeds" if issue['n_seeds'] > 0 else "MISSING"
-            print(f'  {issue["experiment"]:12s} | {status_str:12s} | {issue["relative_path"]}')
+            # Check if this is an aggregate file (no GA, just 1 seed at pid level)
+            parts = issue['relative_path'].replace('\\', '/').split('/')
+            is_aggregate = (
+                (issue['n_seeds'] == 1) and
+                ('ga_obj' in parts[-1] or 'ga_obj_pred' in parts[-1])
+            )
+
+            if is_aggregate:
+                aggregate_files.append(issue)
+            else:
+                actual_issues.append(issue)
+
+        # Print actual experiments that need rerun
+        if actual_issues:
+            print('  [NEED RERUN] Actual experiments:')
+            for issue in actual_issues:
+                status_str = f"{issue['n_seeds']:2d} seeds" if issue['n_seeds'] > 0 else "MISSING"
+                print(f'    {issue["experiment"]:12s} | {status_str:12s} | {issue["relative_path"]}')
+
+                # Show corruption details if available
+                if issue.get('seed_status'):
+                    status = issue['seed_status']
+                    if status.get('corrupt'):
+                        print(f'      WARNING: Corrupt seeds: {[s for s, _ in status["corrupt"]]}')
+                        for seed_num, error in status['corrupt']:
+                            print(f'        Seed {seed_num}: {error}')
+
+        # Print aggregate files (can be ignored)
+        if aggregate_files:
+            print(f'\n  [CAN IGNORE] Aggregate/pool files (computed, not run):')
+            for issue in aggregate_files:
+                print(f'    {issue["experiment"]:12s} | {issue["n_seeds"]:2d} seed      | {issue["relative_path"]}')
 
         # Generate and print sbatch commands if requested
         if args.print_commands:
@@ -377,10 +483,10 @@ def main():
             print(f'  (with specific seeds to rerun)')
             print(f'{"=" * 70}')
 
-            # Group issues by parameters to collect all missing seeds for each combo
+            # Group actual issues (not aggregates) by parameters to collect all missing seeds
             grouped = defaultdict(list)
 
-            for issue in issues:
+            for issue in actual_issues:
                 params = parse_incomplete_path(issue['relative_path'], issue['experiment'])
                 if params:  # Skip aggregate files and unparseable paths
                     # Create a hashable key from params
