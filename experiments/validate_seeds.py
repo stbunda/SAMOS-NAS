@@ -1,9 +1,12 @@
 """validate_seeds.py — Check seed completeness and integrity across all experiments.
 
 Recursively searches all experiment result directories and checks whether each
-leaf folder (where actual result files are stored) has exactly 20 seeds.
+leaf folder (where actual result files are stored) has exactly 20 valid seeds.
 
-Can optionally detect corrupt pickle files (indicates crashed runs).
+Empty (0-byte) seed pickles — left behind by crashed/timed-out runs — are ALWAYS
+detected (a fast size check) and counted as missing, so they no longer masquerade
+as complete. ``--check_corruption`` additionally unpickles each non-empty file to
+catch truncated writes (slow).
 
 Supports filtering by experiment type for focused validation.
 
@@ -14,7 +17,7 @@ Usage:
     # Check only obj_ga (Exp1)
     python experiments/validate_seeds.py --experiments obj_ga
 
-    # Check for corrupt pickle files (SLOW, ~1-2 min)
+    # Deep integrity check — also unpickle non-empty files (SLOW, ~1-2 min)
     python experiments/validate_seeds.py --check_corruption
 
     # Show sbatch commands to rerun incomplete seeds
@@ -231,6 +234,9 @@ def check_pkl_integrity(filepath: str) -> tuple[bool, Optional[str]]:
     if not os.path.isfile(filepath):
         return False, "File not found"
 
+    if os.path.getsize(filepath) == 0:
+        return False, "empty (0 bytes)"
+
     try:
         with open(filepath, 'rb') as f:
             pickle.load(f)
@@ -243,8 +249,16 @@ def check_pkl_integrity(filepath: str) -> tuple[bool, Optional[str]]:
         return False, f"Error: {type(e).__name__}: {str(e)[:50]}"
 
 
-def get_seed_status(seed_dir: str) -> Dict:
+def get_seed_status(seed_dir: str, deep: bool = False) -> Dict:
     """Get detailed status of all seeds in a directory.
+
+    Parameters
+    ----------
+    deep : bool
+        ``False`` (default, fast): a seed is "valid" if its file is non-empty —
+        just an ``os.path.getsize`` per file, no unpickling.  ``True`` (slow):
+        also fully unpickle each non-empty file to catch truncated/corrupt writes.
+        Empty (0-byte) files are flagged as corrupt in BOTH modes.
 
     Returns dict with:
         valid: list of valid seed indices
@@ -266,17 +280,21 @@ def get_seed_status(seed_dir: str) -> Dict:
         if fname.startswith('seed_') and fname.endswith('.pkl'):
             try:
                 seed_num = int(fname.replace('seed_', '').replace('.pkl', ''))
-                existing.add(seed_num)
+            except ValueError:
+                continue
+            existing.add(seed_num)
 
-                filepath = os.path.join(seed_dir, fname)
+            filepath = os.path.join(seed_dir, fname)
+            if os.path.getsize(filepath) == 0:
+                corrupt.append((seed_num, "empty (0 bytes)"))
+            elif deep:
                 is_valid, error = check_pkl_integrity(filepath)
-
                 if is_valid:
                     valid.append(seed_num)
                 else:
                     corrupt.append((seed_num, error))
-            except ValueError:
-                pass
+            else:
+                valid.append(seed_num)   # non-empty; assume OK without unpickling
 
     missing = sorted([i for i in range(20) if i not in existing])
 
@@ -379,23 +397,31 @@ def find_leaf_dirs(root_path: str, target_dirs: Optional[List[str]] = None, chec
             if target_dirs and exp_type not in target_dirs:
                 continue
 
-            status = 'complete' if pkl_count == 20 else ('incomplete' if pkl_count > 0 else 'missing')
+            # Seed validity (fast: size-only by default; deep unpickle if asked).
+            # A 0-byte / corrupt seed_*.pkl does NOT count toward completeness.
+            seed_status = get_seed_status(dirpath, deep=check_corruption)
+            n_valid = len(seed_status['valid'])
+            n_seed_files = n_valid + len(seed_status['corrupt'])
 
-            missing = get_missing_seeds(dirpath)
-
-            # Optionally check for corruption
-            seed_status = {}
-            if check_corruption:
-                seed_status = get_seed_status(dirpath)
+            if n_seed_files == 0:
+                # No seed_*.pkl here (e.g. an aggregate pareto_approx.pkl) — fall
+                # back to the raw .pkl count so aggregate detection still works.
+                n_seeds = pkl_count
+                status = 'complete' if pkl_count == 20 else ('incomplete' if pkl_count > 0 else 'missing')
+                missing = []
+            else:
+                n_seeds = n_valid
+                status = 'complete' if n_valid == 20 else ('incomplete' if n_valid > 0 else 'missing')
+                missing = sorted(seed_status['missing'] + [s for s, _ in seed_status['corrupt']])
 
             leaf_dirs.append({
                 'path': dirpath,
                 'relative_path': rel_path,
-                'n_seeds': pkl_count,
+                'n_seeds': n_seeds,
                 'status': status,
                 'experiment': exp_type,
                 'missing_seeds': missing,
-                'seed_status': seed_status,  # Only populated if check_corruption=True
+                'seed_status': seed_status,
             })
 
     return leaf_dirs
@@ -433,8 +459,9 @@ def main():
     )
     parser.add_argument(
         '--check_corruption', action='store_true',
-        help='Check for corrupt pickle files (SLOW: ~1-2 min for full dataset; '
-             'useful for detecting crashed runs).'
+        help='Deep integrity check: fully unpickle every non-empty seed to catch '
+             'truncated/corrupt writes (SLOW). Empty 0-byte files are ALWAYS '
+             'detected and counted as missing, even without this flag (fast).'
     )
     args = parser.parse_args()
 
@@ -454,12 +481,27 @@ def main():
         print(f'[WARN] No leaf directories found.')
         return
 
-    # Organize by experiment type
-    by_experiment = defaultdict(list)
+    # Separate aggregate files from actual experiments
+    actual_leaves = []
+    aggregate_leaves = []
+
     for leaf in leaf_dirs:
+        parts = leaf['relative_path'].replace('\\', '/').split('/')
+        is_aggregate = (
+            (leaf['n_seeds'] == 1) and
+            ('ga_obj' in parts[-1] or 'ga_obj_pred' in parts[-1])
+        )
+        if is_aggregate:
+            aggregate_leaves.append(leaf)
+        else:
+            actual_leaves.append(leaf)
+
+    # Organize actual experiments by type
+    by_experiment = defaultdict(list)
+    for leaf in actual_leaves:
         by_experiment[leaf['experiment']].append(leaf)
 
-    # Summary statistics
+    # Summary statistics (excluding aggregate files)
     summary = {}
     issues = []
 
@@ -468,6 +510,7 @@ def main():
         complete = sum(1 for l in leaves if l['status'] == 'complete')
         incomplete = sum(1 for l in leaves if l['status'] == 'incomplete')
         missing = sum(1 for l in leaves if l['status'] == 'missing')
+        corrupt_seeds = sum(len(l['seed_status'].get('corrupt', [])) for l in leaves)
         total = len(leaves)
 
         pct_complete = 100 * complete / total if total > 0 else 0
@@ -478,11 +521,14 @@ def main():
             'complete': complete,
             'incomplete': incomplete,
             'missing': missing,
+            'corrupt_seeds': corrupt_seeds,
             'pct_complete': pct_complete,
+            'aggregate_files': sum(1 for l in aggregate_leaves if l['experiment'] == exp_type),
         }
 
         print(f'  {status_icon} {exp_type:12s}: {complete:4d}/{total:4d} complete '
-              f'({pct_complete:5.1f}%) | {incomplete} incomplete | {missing} missing')
+              f'({pct_complete:5.1f}%) | {incomplete} incomplete | {missing} missing '
+              f'| {corrupt_seeds} empty/corrupt seeds')
 
         # Collect issues
         for leaf in leaves:
@@ -495,22 +541,8 @@ def main():
         print('  Incomplete Directories')
         print(f'{"=" * 70}')
 
-        # Separate aggregate files from actual experiments
-        actual_issues = []
-        aggregate_files = []
-
-        for issue in sorted(issues, key=lambda x: (x['experiment'], x['relative_path'])):
-            # Check if this is an aggregate file (no GA, just 1 seed at pid level)
-            parts = issue['relative_path'].replace('\\', '/').split('/')
-            is_aggregate = (
-                (issue['n_seeds'] == 1) and
-                ('ga_obj' in parts[-1] or 'ga_obj_pred' in parts[-1])
-            )
-
-            if is_aggregate:
-                aggregate_files.append(issue)
-            else:
-                actual_issues.append(issue)
+        # Sort issues for display
+        actual_issues = sorted(issues, key=lambda x: (x['experiment'], x['relative_path']))
 
         # Print actual experiments that need rerun
         if actual_issues:
@@ -528,10 +560,10 @@ def main():
                             print(f'        Seed {seed_num}: {error}')
 
         # Print aggregate files (can be ignored)
-        if aggregate_files:
+        if aggregate_leaves:
             print(f'\n  [CAN IGNORE] Aggregate/pool files (computed, not run):')
-            for issue in aggregate_files:
-                print(f'    {issue["experiment"]:12s} | {issue["n_seeds"]:2d} seed      | {issue["relative_path"]}')
+            for agg in sorted(aggregate_leaves, key=lambda x: (x['experiment'], x['relative_path'])):
+                print(f'    {agg["experiment"]:12s} | {agg["n_seeds"]:2d} seed      | {agg["relative_path"]}')
 
         # Generate and print sbatch commands if requested
         if args.print_commands:
@@ -674,7 +706,7 @@ def main():
         print(f'{"=" * 70}\n')
         sys.exit(1)
     else:
-        print(f'[RESULT] ✓ All directories validated successfully!')
+        print(f'[RESULT] [OK] All directories validated successfully!')
         print(f'{"=" * 70}\n')
         sys.exit(0)
 
