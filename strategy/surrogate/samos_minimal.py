@@ -49,6 +49,17 @@ class SAMOSMinimal(Algorithm):
         ``factory(surrogates) -> pymoo Problem``
         Called each infill step; the returned problem is used as the inner
         NSGA-II objective.  Must share n_var / xl / xu with the real problem.
+    predict_obj_indices : list[int] or None
+        Column (in the outer problem's F) that each entry of ``surrogates``
+        predicts, in the same order as ``surrogates`` -- must match the
+        mapping passed to ``surrogate_problem_factory`` (e.g.
+        SurrogateProblemEvox's ``predict_obj_indices``). Defaults to
+        ``range(len(surrogates))`` for backward compatibility, which is only
+        correct when the predicted objectives are exactly the first
+        ``len(surrogates)`` columns of F -- true for every c10mop/in1kmop PID
+        with a single predicted objective, but WRONG for MOP4/5/6/7 (c10mop)
+        and MOP9 (in1kmop), where predicted objectives are interleaved with
+        cheap ones. Pass this explicitly for those PIDs.
     crossover, mutation : pymoo operators
         Used by the inner NSGA-II.
     n_doe : int
@@ -67,6 +78,7 @@ class SAMOSMinimal(Algorithm):
                  sampling,
                  surrogates,
                  surrogate_problem_factory,
+                 predict_obj_indices=None,
                  crossover=None,
                  mutation=None,
                  n_doe=20,
@@ -76,10 +88,15 @@ class SAMOSMinimal(Algorithm):
                  use_subset_selection=True,
                  eliminate_duplicates=True,
                  dedup_key_fn=None,
+                 inner_algorithm=None,
                  **kwargs):
         super().__init__(eliminate_duplicates=False, **kwargs)
         self.sampling                 = sampling
         self.surrogates               = surrogates
+        self.predict_obj_indices      = (
+            list(predict_obj_indices) if predict_obj_indices is not None
+            else list(range(len(surrogates)))
+        )
         self.surrogate_problem_factory = surrogate_problem_factory
         self.crossover                = crossover
         self.mutation                 = mutation
@@ -89,6 +106,12 @@ class SAMOSMinimal(Algorithm):
         self.ga_pop_size              = ga_pop_size if ga_pop_size is not None else n_infill * 10
         self.use_subset_selection     = use_subset_selection
         self.eliminate_duplicates     = eliminate_duplicates
+        # Inner multi-objective GA class run on the surrogate problem each infill
+        # step. Defaults to NSGA-II. Any pymoo MOO algorithm accepting
+        # (pop_size, sampling, crossover, mutation, eliminate_duplicates) works,
+        # e.g. SMSEMOA, AGEMOEA. Ref-direction methods (NSGA3/MOEAD/RVEA) need
+        # extra args and are not supported through this hook.
+        self.inner_algorithm          = inner_algorithm if inner_algorithm is not None else NSGA2
         # dedup_key_fn(x: np.ndarray) -> hashable: maps a decision vector to a
         # key used for archive deduplication. Defaults to a tuple of rounded ints
         # (raw-vector comparison). Override to deduplicate by canonical phenotype
@@ -134,8 +157,8 @@ class SAMOSMinimal(Algorithm):
         F_arc = self._archive.get('F')   # (N, n_obj) float
 
         # 1. Fit one surrogate per predicted objective
-        for s, surrogate in enumerate(self.surrogates):
-            surrogate.fit(X_arc, F_arc[:, s])
+        for surrogate, orig_idx in zip(self.surrogates, self.predict_obj_indices):
+            surrogate.fit(X_arc, F_arc[:, orig_idx])
 
         top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=self.ga_pop_size)
         n_rand   = self.ga_pop_size - len(top_pop)
@@ -146,9 +169,9 @@ class SAMOSMinimal(Algorithm):
             inner_X  = top_pop.get('X')
         inner_init = Population.new('X', inner_X)   # X-only → surrogate re-evaluates
 
-        # 2. Inner NSGA-II on the surrogate problem
+        # 2. Inner MOO GA (NSGA-II by default) on the surrogate problem
         surr_problem = self.surrogate_problem_factory(self.surrogates)
-        inner_alg = NSGA2(
+        inner_alg = self.inner_algorithm(
             pop_size=self.ga_pop_size,
             sampling=inner_init,
             crossover=self.crossover,
