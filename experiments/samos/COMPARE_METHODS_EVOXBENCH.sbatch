@@ -31,7 +31,7 @@
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=slurm/slurm_logs_samos2_compare/%x_%A_%a.log
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline

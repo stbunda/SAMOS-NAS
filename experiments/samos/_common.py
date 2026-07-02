@@ -31,6 +31,8 @@ import random
 import sys
 import time
 
+sys.stdout.reconfigure(line_buffering=True)
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import numpy as np
