@@ -5,9 +5,15 @@
 # c10mop + in1kmop pid, 20 seeds each, at the depreciated/main_evoxbench.py
 # budget (pop_size=20, n_gen=60, n_gen_inner=20, ga_pop_size=pop_size*10).
 #
-# One array task == one (suite, pid, method) triplet; each task loops over
-# all 20 seeds internally (compare_methods.py already skips seeds whose
-# output pkl exists, so re-submitting is safe without --overwrite).
+# One array task == one (suite, pid, method) triplet, looping over all 20
+# seeds with one compare_methods.py call + one results rsync-back PER SEED
+# (not one call for all 20 seeds). The scratch directory is destroyed when a
+# task ends for any reason -- normal exit, walltime, preemption, node
+# failure -- so per-seed rsync-back means a killed task only ever loses its
+# current in-flight seed, not every seed it had already finished. Combined
+# with compare_methods.py's own skip-if-exists check and the results
+# pre-copy below, re-submitting a killed/interrupted array index resumes
+# from the next missing seed rather than seed 0.
 #
 # Task count: 2 suites x 9 pids x 5 methods, plus samos2-encoding restricted
 # to the 7 c10mop pids with a categorical-op search space (NB101/NB201/NATS;
@@ -42,7 +48,6 @@ mkdir -p slurm/slurm_logs_samos2_compare
 POP_SIZE=${POP_SIZE:-20}
 N_GEN=${N_GEN:-60}
 N_GEN_INNER=${N_GEN_INNER:-20}
-SEEDS=$(seq 0 19)
 
 # --------- (suite, pid, method) task table -----------------------------------------------------------------------------------------------------------
 # Mirrors compare_methods.py's METHODS list and its samos2-encoding
@@ -122,21 +127,27 @@ echo "N_GEN_INNER       = $N_GEN_INNER"
 echo "BUDGET            = $(( N_GEN * POP_SIZE ))"
 echo "OVERWRITE         = ${OVERWRITE:-<unset>}"
 
-# --------- run -------------------------------------------------------------------------------------------------------------------------------------------------
-python experiments/samos/compare_methods.py \
-    --suites        "$SUITE" \
-    --pids          "$PID" \
-    --methods       "$METHOD" \
-    --seeds         $SEEDS \
-    --pop_size      "$POP_SIZE" \
-    --n_gen         "$N_GEN" \
-    --n_gen_inner   "$N_GEN_INNER" \
-    ${OVERWRITE:+--overwrite}
-
-# --------- copy results back --------------------------------------------------------------------------------------------------------------------------------
+# --------- run: one seed at a time, rsync-back after each ------------------------------------------------------------------------------------------------
 DEST="${SLURM_SUBMIT_DIR}/results/samos/compare/${SUITE}/pid${PID}/${BUDGET_FOLDER}/${METHOD}"
 mkdir -p "$DEST"
-rsync -a "${SCRATCH_DIRECTORY}/results/samos/compare/${SUITE}/pid${PID}/${BUDGET_FOLDER}/${METHOD}/" "$DEST/" 2>/dev/null || true
+
+for SEED in $(seq 0 19); do
+    echo ""
+    echo "--------- SUITE: $SUITE  PID: $PID  METHOD: $METHOD  seed: $SEED"
+
+    python experiments/samos/compare_methods.py \
+        --suites        "$SUITE" \
+        --pids          "$PID" \
+        --methods       "$METHOD" \
+        --seeds         "$SEED" \
+        --pop_size      "$POP_SIZE" \
+        --n_gen         "$N_GEN" \
+        --n_gen_inner   "$N_GEN_INNER" \
+        ${OVERWRITE:+--overwrite}
+
+    rsync -a "${SCRATCH_DIRECTORY}/results/samos/compare/${SUITE}/pid${PID}/${BUDGET_FOLDER}/${METHOD}/" "$DEST/" 2>/dev/null || true
+done
+echo ""
 echo "Results copied to $DEST"
 
 echo ""
