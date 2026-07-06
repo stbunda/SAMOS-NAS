@@ -32,7 +32,7 @@ class DiversitySelector:
     def __init__(self, use_subset_selection: bool = True):
         self.use_subset_selection = use_subset_selection
 
-    def select(self, cand_pop, F_arc, n_infill, surrogates=None):
+    def select(self, cand_pop, F_arc, n_infill, surrogates=None, **kwargs):
         if len(cand_pop) == 0:
             return Population.empty()
         F_cand = cand_pop.get('F')
@@ -73,28 +73,51 @@ class AcquisitionSelector:
     ref_point : np.ndarray or None
         Hypervolume reference point (normalised objective space); required
         for kind='hvi'.
+    kappa_schedule : None or 'linear'
+        'linear' decays the effective kappa from *kappa* at the first infill
+        step down to 0 at the final outer generation (explore early, exploit
+        late). Requires ``total_gens``. None (default) keeps kappa constant.
+    total_gens : int or None
+        Total outer generations of the run; required when kappa_schedule is
+        set (the algorithm itself does not know its termination).
     """
 
     def __init__(self, predict_obj_indices, kind: str = 'lcb', kappa: float = 2.0,
-                 ref_point=None, use_subset_selection: bool = True):
+                 ref_point=None, use_subset_selection: bool = True,
+                 kappa_schedule: str = None, total_gens: int = None):
         if kind not in ('lcb', 'hvi'):
             raise ValueError(f"kind must be 'lcb' or 'hvi', got {kind!r}")
         if kind == 'hvi' and ref_point is None:
             raise ValueError("kind='hvi' requires ref_point")
+        if kappa_schedule not in (None, 'linear'):
+            raise ValueError(f"kappa_schedule must be None or 'linear', got {kappa_schedule!r}")
+        if kappa_schedule is not None and total_gens is None:
+            raise ValueError("kappa_schedule requires total_gens")
         self.predict_obj_indices = list(predict_obj_indices)
         self.kind = kind
         self.kappa = kappa
         self.ref_point = None if ref_point is None else np.asarray(ref_point, dtype=float)
         self.use_subset_selection = use_subset_selection
+        self.kappa_schedule = kappa_schedule
+        self.total_gens = total_gens
 
-    def _lcb(self, X_cand, F_cand, surrogates):
+    def _effective_kappa(self, n_gen):
+        """kappa at outer generation *n_gen*. The first infill happens at
+        outer gen 2 (gen 1 is the DOE), so 'linear' maps gen 2 -> kappa and
+        gen total_gens -> 0."""
+        if self.kappa_schedule is None or n_gen is None:
+            return self.kappa
+        t = (n_gen - 2) / max(self.total_gens - 2, 1)
+        return self.kappa * float(np.clip(1.0 - t, 0.0, 1.0))
+
+    def _lcb(self, X_cand, F_cand, surrogates, kappa):
         F_lcb = F_cand.copy()
         for s, orig_idx in zip(surrogates, self.predict_obj_indices):
             sigma = s.predict_std(X_cand)
-            F_lcb[:, orig_idx] = F_cand[:, orig_idx] - self.kappa * sigma
+            F_lcb[:, orig_idx] = F_cand[:, orig_idx] - kappa * sigma
         return F_lcb
 
-    def select(self, cand_pop, F_arc, n_infill, surrogates=None):
+    def select(self, cand_pop, F_arc, n_infill, surrogates=None, n_gen=None, **kwargs):
         if len(cand_pop) == 0:
             return Population.empty()
         if surrogates is None:
@@ -102,7 +125,7 @@ class AcquisitionSelector:
 
         X_cand = cand_pop.get('X')
         F_cand = cand_pop.get('F')
-        F_lcb  = self._lcb(X_cand, F_cand, surrogates)
+        F_lcb  = self._lcb(X_cand, F_cand, surrogates, self._effective_kappa(n_gen))
 
         if self.kind == 'lcb':
             front = NonDominatedSorting().do(F_arc, only_non_dominated_front=True)

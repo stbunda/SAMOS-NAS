@@ -76,3 +76,51 @@ class SurrogateProblemEvox(Problem):
             F[:, orig_idx] = preds.squeeze()
 
         out['F'] = F
+
+
+class SurrogateProblemEvoxUncertainty(Problem):
+    """SurrogateProblemEvox plus an extra (n_obj+1-th) minimisation objective
+    ``-sigma(x)``: the summed ``predict_std`` of the predicted-objective
+    surrogates (SAMOS2 C3 'uncertainty-as-objective' variant).
+
+    The inner GA then explores the (predicted quality, uncertainty) trade-off
+    directly -- its final population mixes exploit candidates (good predicted
+    F) and explore candidates (high surrogate disagreement) -- without
+    changing the infill selector.  SAMOS2's subset selection ranks candidates
+    on their own (n_obj+1)-column F, so the sigma column simply joins the
+    non-domination criteria; the selected X are still evaluated on the real
+    n_obj-objective problem.
+
+    Requires every surrogate to implement ``predict_std``
+    (RFR / ETR / GPR variants / EnsembleSurrogate -- not plain XGBoost).
+    """
+
+    def __init__(
+        self,
+        surrogates: list,
+        predict_obj_indices: list,
+        real_obj_indices: list,
+        benchmark,
+        no_norm: bool = False,
+    ):
+        ss = benchmark.search_space
+        base_n_obj = len(predict_obj_indices) + len(real_obj_indices)
+        super().__init__(
+            n_var=ss.n_var,
+            n_obj=base_n_obj + 1,
+            xl=np.asarray(ss.lb, dtype=float),
+            xu=np.asarray(ss.ub, dtype=float),
+        )
+        self._base = SurrogateProblemEvox(
+            surrogates, predict_obj_indices, real_obj_indices, benchmark, no_norm)
+
+    def _evaluate(self, X, out, *args, **kwargs):
+        base_out = {}
+        self._base._evaluate(X, base_out)
+
+        X_float = X.astype(float)
+        sigma = np.zeros(len(X))
+        for surrogate in self._base.surrogates:
+            sigma += np.asarray(surrogate.predict_std(X_float)).ravel()
+
+        out['F'] = np.column_stack([base_out['F'], -sigma])

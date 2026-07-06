@@ -31,6 +31,25 @@ Methods
   samos2-uncertainty  : samos2-baseline + C3 (acquisition-based infill
                          selection). Forces an ensemble/quantile surrogate
                          (RFR by default) since XGBoost has no predict_std.
+  samos2-rfr          : samos2-baseline with the RFR surrogate. De-confounds
+                         C3: samos2-uncertainty differs from samos2-baseline
+                         in surrogate family AND selection policy; this is
+                         the matched control (RFR + diversity selection).
+  samos2-xgb10        : samos2-baseline with an EnsembleSurrogate of 10
+                         XGBoosts (different random_state -> subsample
+                         disagreement gives predict_std). Diversity
+                         selection -- the XGB-family control arm.
+  samos2-xgb10-uncertainty : samos2-xgb10 + acquisition-based infill
+                         selection. C3 within the XGBoost family, matched
+                         against samos2-xgb10.
+  samos2-uncertainty-lin_annealing : samos2-uncertainty with kappa decayed
+                         linearly from --kappa at the first infill to 0 at
+                         the final generation (explore early, exploit late).
+  samos2-uncertainty-obj : C3 as an extra inner-GA objective instead of a
+                         selection rule: the inner surrogate problem gets an
+                         (n_obj+1)-th objective -sigma(x), so the candidate
+                         pool mixes exploit/explore; infill selection stays
+                         the diversity default. RFR surrogate.
 
 The loop nests seed (outermost) > suite > pid > method, and each run is
 skipped if its output pkl already exists (unless --overwrite), so an
@@ -60,7 +79,10 @@ from _common import _make_surrogate
 from problem.evoxbench.baseline_problem import EvoXBenchProblem
 from problem.evoxbench.benchmark_meta import BENCHMARK_META, get_op_var_group
 from problem.evoxbench.callbacks import EvoxBenchCallback
-from problem.evoxbench.surrogate_problem import SurrogateProblemEvox
+from problem.evoxbench.surrogate_problem import (
+    SurrogateProblemEvox,
+    SurrogateProblemEvoxUncertainty,
+)
 from problem.evoxbench.utils import get_benchmark
 from strategy.algorithm.algorithms import RandomGA
 from strategy.genetics.duplicate import IntegerVectorDuplicateElimination
@@ -70,14 +92,18 @@ from strategy.sampler import EvoxBenchSampler
 from strategy.surrogate.canonical import Canonicalizer
 from strategy.surrogate.encoding import EncodingSpec
 from strategy.surrogate.infill import AcquisitionSelector
-from strategy.surrogate.models import XGBoost, get_surrogate_model
+from strategy.surrogate.models import EnsembleSurrogate, XGBoost, get_surrogate_model
 from strategy.surrogate.samos2 import SAMOS2
 from strategy.surrogate.samos_minimal import SAMOSMinimal
 
 METHODS = [
     'random', 'samos-xgb',
-    'samos2-baseline', 'samos2-encoding', 'samos2-isomorphism', 'samos2-uncertainty',
+    'samos2-baseline', 'samos2-rfr', 'samos2-xgb10',
+    'samos2-encoding', 'samos2-isomorphism',
+    'samos2-uncertainty', 'samos2-uncertainty-lin_annealing',
+    'samos2-uncertainty-obj', 'samos2-xgb10-uncertainty',
 ]
+XGB10_MEMBERS = 10
 
 
 def _cheap_split(suite, pid, n_obj):
@@ -98,7 +124,7 @@ def _problem_scale_ref_point(benchmark):
 
 def build_algorithm(method, benchmark, suite, pid, seed, pop_size,
                      n_doe, n_infill, n_gen_inner, inner_pop_size,
-                     surrogate_name, acq_kind, kappa):
+                     surrogate_name, acq_kind, kappa, n_gen):
     xl = np.asarray(benchmark.search_space.lb, dtype=int)
     xu = np.asarray(benchmark.search_space.ub, dtype=int)
     n_obj = benchmark.evaluator.n_objs
@@ -137,6 +163,7 @@ def build_algorithm(method, benchmark, suite, pid, seed, pop_size,
 
         surr_name = surrogate_name
         samos2_kwargs = {}
+        problem_cls = SurrogateProblemEvox
 
         if method == 'samos2-encoding':
             search_space = BENCHMARK_META[suite][pid]['search_space']
@@ -152,22 +179,51 @@ def build_algorithm(method, benchmark, suite, pid, seed, pop_size,
             samos2_kwargs['canonicalizer'] = Canonicalizer(benchmark)
             samos2_kwargs['collapse_training_set'] = True
 
-        elif method == 'samos2-uncertainty':
+        elif method == 'samos2-rfr':
+            surr_name = 'RFR'
+
+        elif method in ('samos2-uncertainty', 'samos2-uncertainty-lin_annealing',
+                        'samos2-uncertainty-obj'):
             if surr_name == 'XGBoost':
                 surr_name = 'RFR'
-                print('[samos2-uncertainty] XGBoost has no predict_std -- using RFR instead.')
+                print(f'[{method}] XGBoost has no predict_std -- using RFR instead.')
+            if method == 'samos2-uncertainty-obj':
+                # sigma joins the inner GA's objectives; selection stays default
+                problem_cls = SurrogateProblemEvoxUncertainty
+            else:
+                schedule = 'linear' if method.endswith('lin_annealing') else None
+                ref_point = _problem_scale_ref_point(benchmark) if acq_kind == 'hvi' else None
+                samos2_kwargs['infill_selector'] = AcquisitionSelector(
+                    predict_idx, kind=acq_kind, kappa=kappa, ref_point=ref_point,
+                    kappa_schedule=schedule,
+                    total_gens=n_gen if schedule is not None else None)
+
+        elif method == 'samos2-xgb10-uncertainty':
             ref_point = _problem_scale_ref_point(benchmark) if acq_kind == 'hvi' else None
             samos2_kwargs['infill_selector'] = AcquisitionSelector(
                 predict_idx, kind=acq_kind, kappa=kappa, ref_point=ref_point)
 
-        elif method != 'samos2-baseline':
+        elif method not in ('samos2-baseline', 'samos2-xgb10'):
             raise ValueError(f'Unknown method: {method!r}')
 
-        surr_cls = get_surrogate_model(surr_name)
-        surrogates = [_make_surrogate(surr_cls, seed) for _ in predict_idx]
+        if method in ('samos2-xgb10', 'samos2-xgb10-uncertainty'):
+            # 10 XGBoosts per predicted objective; member disagreement from
+            # differing random_state (subsample/colsample randomness) gives
+            # predict_std while keeping the surrogate in the XGBoost family.
+            rng = np.random.RandomState(seed)
+            surrogates = [
+                EnsembleSurrogate([
+                    XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                    for _ in range(XGB10_MEMBERS)
+                ])
+                for _ in predict_idx
+            ]
+        else:
+            surr_cls = get_surrogate_model(surr_name)
+            surrogates = [_make_surrogate(surr_cls, seed) for _ in predict_idx]
 
         def factory(surrs):
-            return SurrogateProblemEvox(surrs, predict_idx, real_idx, benchmark)
+            return problem_cls(surrs, predict_idx, real_idx, benchmark)
 
         return SAMOS2(
             sampling=sampler, surrogates=surrogates, surrogate_problem_factory=factory,
@@ -192,7 +248,8 @@ def run_single(method, suite, pid, seed, pop_size, n_gen, n_doe, n_infill,
 
     algorithm = build_algorithm(
         method, benchmark, suite, pid, seed, pop_size,
-        n_doe, n_infill, n_gen_inner, inner_pop_size, surrogate_name, acq_kind, kappa)
+        n_doe, n_infill, n_gen_inner, inner_pop_size, surrogate_name, acq_kind, kappa,
+        n_gen)
 
     results = minimize(
         problem=problem, algorithm=algorithm, termination=('n_gen', n_gen),
@@ -228,7 +285,7 @@ def main(args):
 
                 run_i += 1
                 save_dir = os.path.join(
-                    'results', 'samos', 'compare', suite, f'pid{pid}', budget_folder, method)
+                    args.results_root, suite, f'pid{pid}', budget_folder, method)
                 os.makedirs(save_dir, exist_ok=True)
                 out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
 
@@ -291,6 +348,10 @@ if __name__ == '__main__':
                     help='samos2-uncertainty acquisition kind.')
     p.add_argument('--kappa', type=float, default=2.0,
                     help='samos2-uncertainty LCB exploration weight.')
+    p.add_argument('--results_root', default=os.path.join('results', 'samos', 'compare'),
+                    help='Output root for per-seed pkls. Point at a dedicated '
+                         'smoke-test folder when testing -- never write test '
+                         'data into results/ (see CLAUDE.md).')
     p.add_argument('--no_norm', action='store_true')
     p.add_argument('--no_indicators', action='store_true')
     p.add_argument('--overwrite', action='store_true')

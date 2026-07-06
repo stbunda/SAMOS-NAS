@@ -319,7 +319,8 @@ class SAMOS2(Algorithm):
         """Pick n_infill candidates via self.infill_selector; pad with
         dedup random samples if the selector returns fewer."""
         found = self.infill_selector.select(
-            cand_pop, F_arc, self.n_infill, surrogates=self.surrogates)
+            cand_pop, F_arc, self.n_infill, surrogates=self.surrogates,
+            n_gen=self.n_gen)
 
         n_found = min(len(found), self.n_infill)
         found   = found[:n_found]

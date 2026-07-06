@@ -1637,3 +1637,77 @@ def plot_attainment_surface(
     fig.savefig(out_path, bbox_inches='tight')
     print(f'  Plot saved -> {out_path}')
     plt.close(fig)
+
+
+# ─── constraint_ga: feasibility trajectory ─────────────────────────────────────
+
+def plot_feasibility_trajectory(
+    series_dict: dict,
+    methods: list,
+    method_labels: dict,
+    problem_label: str,
+    out_path: str,
+    colours: dict = None,
+    quantity: str = 'feasible_ratio',
+    font_scale: float = 1.0,
+):
+    """Line plot of a per-generation feasibility quantity, mean ± std over seeds.
+
+    Used by the constraint_analysis experiment to show how each handling
+    technique drives the population toward feasibility.
+
+    Parameters
+    ----------
+    series_dict
+        ``{method: (mean, std)}`` where each is a 1-D array over generations.
+    methods
+        Ordered technique keys to draw (subset of *series_dict* keys).
+    method_labels
+        ``{method: display label}``.
+    problem_label
+        Display name (constraint scenario / type tag) for the title.
+    quantity
+        ``'feasible_ratio'`` (y in [0,1]) or ``'mean_true_cv'`` (>= 0).
+    """
+    _colours = {**COLOURS, **(colours or {})}
+    _labels = {**LABELS, **(method_labels or {})}
+    is_ratio = (quantity == 'feasible_ratio')
+
+    matplotlib.rcParams.update({'font.size': 11 * font_scale})
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    drew_any = False
+    for m in methods:
+        entry = series_dict.get(m)
+        if entry is None:
+            continue
+        mean, std = (np.asarray(a, float) for a in entry)
+        if mean.size == 0:
+            continue
+        gens = np.arange(len(mean))
+        colour = _colours.get(m)
+        ax.plot(gens, mean, label=_labels.get(m, m), color=colour, linewidth=1.8)
+        ax.fill_between(gens, mean - std, mean + std, color=colour, alpha=0.18)
+        drew_any = True
+
+    if not drew_any:
+        print(f'  [plot_feasibility] No data; skipping {out_path}.')
+        plt.close(fig)
+        return
+
+    ax.set_xlabel('Generation', fontsize=11 * font_scale)
+    ax.set_ylabel('Feasible ratio' if is_ratio else 'Mean true CV',
+                  fontsize=11 * font_scale)
+    if is_ratio:
+        ax.set_ylim(-0.02, 1.02)
+    ax.set_title(f'{problem_label} -- '
+                 f'{"feasibility" if is_ratio else "constraint violation"}',
+                 fontsize=12 * font_scale)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=9 * font_scale, loc='best')
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig.savefig(out_path, bbox_inches='tight')
+    print(f'  Plot saved -> {out_path}')
+    plt.close(fig)

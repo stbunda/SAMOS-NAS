@@ -423,15 +423,18 @@ def generate_latex_table_nasbench101(
 
 # ─── obj-GA sweep table ───────────────────────────────────────────────────────
 
-def _format_mean_std(mean: float, std: float) -> str:
+def _format_mean_std(mean: float, std: float, sci: bool = True) -> str:
     """Format a ``mean$_{std}$`` cell, mirroring the existing table style.
 
-    Switches to scientific notation for very small magnitudes (as the IGD+
-    branch of :func:`generate_latex_table_all_datasets` already does).
+    With *sci* (default), switches to scientific notation for very small
+    magnitudes (as the IGD+ branch of
+    :func:`generate_latex_table_all_datasets` already does).  Pass ``sci=False``
+    to always use fixed 3-decimal notation -- keeps cells narrow when tiny values
+    would otherwise expand to ``e-04`` form.
     """
     if not np.isfinite(mean):
         return "--"
-    if abs(mean) < 0.01 and mean != 0.0:
+    if sci and abs(mean) < 0.01 and mean != 0.0:
         return f"{mean:.2e}$_{{{{{std:.2e}}}}}$"
     return f"{mean:.3f}$_{{{{{std:.3f}}}}}$"
 
@@ -688,10 +691,10 @@ def generate_obj_ga_nobj_comparison_table(
     Parameters
     ----------
     sections
-        Ordered list of ``(section_header, problem_keys, table_data,
-        problem_labels)`` tuples, one per (n_obj, benchmark) combination.
-        ``table_data`` has shape
-        ``{problem: {method: {'hv': arr, 'igd_plus': arr}}}``.
+        Ordered list of ``(n_obj, subsection_header, problem_keys, table_data,
+        problem_labels, hv_ceilings)`` tuples, one per (n_obj, benchmark)
+        combination.  ``hv_ceilings`` is ``{problem_key: float | None}``; HV
+        values are normalised by this ceiling when available.
     methods
         Ordered method keys (table columns).
     method_labels
@@ -713,8 +716,21 @@ def generate_obj_ga_nobj_comparison_table(
     """
     metric_key = 'hv' if metric.lower() in ('hv', 'hypervolume') else 'igd_plus'
     higher_is_better = (metric_key == 'hv')
-    metric_disp = r'HV $\uparrow$' if higher_is_better else r'IGD$^{+}$ $\downarrow$'
+    normalize_hv = (metric_key == 'hv')
+    metric_disp = (r'Normalised HV $\uparrow$' if normalize_hv
+                   else r'IGD$^{+}$ $\downarrow$')
     gi = final_gen - 1   # 0-based array index
+
+    # Group sections by n_obj, preserving encounter order (2 → 3 → 4 → …).
+    nobj_groups: dict = {}
+    nobj_order: list = []
+    for sec in sections:
+        n_obj = sec[0]
+        rest = sec[1:]   # (subsection_header, keys, table_data, labels, hv_ceilings)
+        if n_obj not in nobj_groups:
+            nobj_groups[n_obj] = []
+            nobj_order.append(n_obj)
+        nobj_groups[n_obj].append(rest)
 
     n_methods = len(methods)
     n_cols = 1 + n_methods
@@ -725,17 +741,21 @@ def generate_obj_ga_nobj_comparison_table(
         for m in methods
     ]
 
+    baseline_label = method_labels.get(baseline_method, baseline_method).replace('_', r'\_')
+    norm_note = (r' HV is normalised by the Pareto-front HV (1\,=\,ideal).'
+                 if normalize_hv else '')
     lines = [
         r'\begin{table*}[t]',
         r'\centering',
         (
-            r'\caption{' + metric_disp.split(' ')[0]
+            r'\caption{' + metric_disp.split(r' $')[0]
             + r' at generation ' + str(final_gen)
-            + r' (mean$_{\text{std}}$ over seeds). '
-            r'\textbf{Bold}: best per problem. '
-            r'$^{*}$: significantly different from '
-            + method_labels.get(baseline_method, baseline_method)
-            + r' (Holm-corrected Wilcoxon, $\alpha=' + str(alpha) + r'$).}'
+            + r' (mean$_{\text{std}}$ over seeds).'
+            + norm_note
+            + r' \textbf{Bold}: best per row.'
+            r' Superscripts vs.\ ' + baseline_label
+            + r' (Holm-corrected Wilcoxon, $\alpha=' + str(alpha) + r'$):'
+            r' $^{+}$\,better, $^{-}$\,worse, $^{\sim}$\,n.s.}'
         ),
         r'\label{tab:obj_ga_' + metric_key + r'_combined_nobj}',
         r'\resizebox{\linewidth}{!}{%',
@@ -744,76 +764,103 @@ def generate_obj_ga_nobj_comparison_table(
         ' & '.join(header_cells) + r' \\',
     ]
 
-    for section_header, problem_keys, table_data, problem_labels in sections:
-        if not problem_keys:
-            continue
-
+    for n_obj in nobj_order:
+        obj_label = f'{n_obj} objectives'
         lines.append(r'\midrule')
         lines.append(
-            r'\multicolumn{' + str(n_cols) + r'}{l}{\small\textit{'
-            + section_header + r'}} \\'
+            r'\multicolumn{' + str(n_cols) + r'}{l}{\textbf{'
+            + obj_label + r'}} \\'
         )
-        lines.append(r'\midrule')
 
-        for prob in problem_keys:
-            pdata = table_data.get(prob, {})
-            plabel = problem_labels.get(prob, prob).replace('_', r'\_')
+        for subsection_header, problem_keys, table_data, problem_labels, hv_ceilings in nobj_groups[n_obj]:
+            if not problem_keys:
+                continue
+            lines.append(r'\midrule')
+            lines.append(
+                r'\multicolumn{' + str(n_cols) + r'}{l}{\small\textit{'
+                + subsection_header + r'}} \\'
+            )
+            lines.append(r'\midrule')
 
-            # best value in this row
-            row_means = {}
-            for m in methods:
-                arr = pdata.get(m, {}).get(metric_key)
-                if arr is not None:
-                    mean, _ = _checkpoint_mean_std(arr, gi)
-                    if np.isfinite(mean):
-                        row_means[m] = mean
-            best_val = (
-                max(row_means.values()) if higher_is_better else min(row_means.values())
-            ) if row_means else None
+            for prob in problem_keys:
+                pdata = table_data.get(prob, {})
+                plabel = problem_labels.get(prob, prob).replace('_', r'\_')
+                ceiling = (hv_ceilings.get(prob) if hv_ceilings else None) if normalize_hv else None
+                valid_ceiling = ceiling and np.isfinite(ceiling) and ceiling > 0
 
-            # Holm-corrected Wilcoxon vs baseline
-            row_sig: dict = {}
-            if _SCIPY_AVAILABLE:
-                base_arr = pdata.get(baseline_method, {}).get(metric_key)
-                base_samp = _checkpoint_samples(base_arr, gi) if base_arr is not None else None
-                if base_samp is not None:
-                    base_samp = base_samp[np.isfinite(base_samp)]
-                    if len(base_samp) >= 3:
-                        compare_ms = [m for m in methods if m != baseline_method]
-                        pvals, tested = [], []
-                        for m in compare_ms:
-                            arr = pdata.get(m, {}).get(metric_key)
-                            samp = _checkpoint_samples(arr, gi) if arr is not None else None
-                            if samp is None:
-                                continue
-                            samp = samp[np.isfinite(samp)]
-                            if len(samp) < 3:
-                                continue
-                            try:
-                                _, p = ranksums(base_samp, samp)
-                                pvals.append(float(p))
-                                tested.append(m)
-                            except Exception:
-                                pass
-                        if pvals:
-                            reject = _holm_correct(pvals, alpha)
-                            row_sig = {m: r for m, r in zip(tested, reject)}
+                # Best value in this row (normalised where possible).
+                row_means = {}
+                for m in methods:
+                    arr = pdata.get(m, {}).get(metric_key)
+                    if arr is not None:
+                        mean, _ = _checkpoint_mean_std(arr, gi)
+                        if np.isfinite(mean):
+                            row_means[m] = mean / ceiling if valid_ceiling else mean
+                best_val = (
+                    max(row_means.values()) if higher_is_better else min(row_means.values())
+                ) if row_means else None
 
-            cells = [plabel]
-            for m in methods:
-                arr = pdata.get(m, {}).get(metric_key)
-                if arr is None:
-                    cells.append('--')
-                    continue
-                mean, std = _checkpoint_mean_std(arr, gi)
-                cell = _format_mean_std(mean, std)
-                if best_val is not None and np.isfinite(mean) and abs(mean - best_val) < 1e-9:
-                    cell = r'\textbf{' + cell + r'}'
-                if row_sig.get(m, False):
-                    cell += r'$^{*}$'
-                cells.append(cell)
+                # Directional Holm-corrected Wilcoxon vs baseline:
+                # '+' = significantly better, '-' = worse, '~' = not significant.
+                row_markers: dict = {}
+                if _SCIPY_AVAILABLE:
+                    base_arr = pdata.get(baseline_method, {}).get(metric_key)
+                    base_samp = _checkpoint_samples(base_arr, gi) if base_arr is not None else None
+                    if base_samp is not None:
+                        base_samp = base_samp[np.isfinite(base_samp)]
+                        if len(base_samp) >= 3:
+                            compare_ms = [m for m in methods if m != baseline_method]
+                            pvals, tested, samp_list = [], [], []
+                            for m in compare_ms:
+                                arr = pdata.get(m, {}).get(metric_key)
+                                samp = _checkpoint_samples(arr, gi) if arr is not None else None
+                                if samp is None:
+                                    continue
+                                samp = samp[np.isfinite(samp)]
+                                if len(samp) < 3:
+                                    continue
+                                try:
+                                    _, p = ranksums(base_samp, samp)
+                                    pvals.append(float(p))
+                                    tested.append(m)
+                                    samp_list.append(samp)
+                                except Exception:
+                                    pass
+                            if pvals:
+                                reject = _holm_correct(pvals, alpha)
+                                base_mean = float(np.mean(base_samp))
+                                for m, r, samp in zip(tested, reject, samp_list):
+                                    other_mean = float(np.mean(samp))
+                                    if r:
+                                        better = (other_mean > base_mean if higher_is_better
+                                                  else other_mean < base_mean)
+                                        row_markers[m] = '+' if better else '-'
+                                    else:
+                                        row_markers[m] = '~'
 
-            lines.append(' & '.join(cells) + r' \\')
+                cells = [plabel]
+                for m in methods:
+                    arr = pdata.get(m, {}).get(metric_key)
+                    if arr is None:
+                        cells.append('--')
+                        continue
+                    mean, std = _checkpoint_mean_std(arr, gi)
+                    if valid_ceiling:
+                        mean = mean / ceiling
+                        std  = std  / ceiling
+                    cell = _format_mean_std(mean, std)
+                    if best_val is not None and np.isfinite(mean) and abs(mean - best_val) < 1e-9:
+                        cell = r'\textbf{' + cell + r'}'
+                    marker = row_markers.get(m)
+                    if marker == '+':
+                        cell += r'$^{+}$'
+                    elif marker == '-':
+                        cell += r'$^{-}$'
+                    elif marker == '~':
+                        cell += r'$^{\sim}$'
+                    cells.append(cell)
+
+                lines.append(' & '.join(cells) + r' \\')
 
     lines += [
         r'\bottomrule',
@@ -829,5 +876,303 @@ def generate_obj_ga_nobj_comparison_table(
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(tex)
     print(f'[OK] Saved combined n_obj {metric_key} table: {out_path}')
+
+    return tex
+
+
+# ─── combined Experiment 1 (full, no predictor) vs Experiment 2 (GA+predictor) ──
+
+_PRED_ABBREV = {'xgboost': 'XGB', 'rf': 'RF', 'rbf': 'RBF'}
+
+
+def _final_hv_mean_std(arr, ceiling=None):
+    """Return ``(mean, std)`` of a 1-D per-seed final-gen HV array.
+
+    When *ceiling* is a finite positive number the values are normalised by it
+    (so ``1`` is the pooled-Pareto-front HV).  Returns ``(nan, 0.0)`` for empty
+    or all-non-finite input.
+    """
+    if arr is None:
+        return np.nan, 0.0
+    a = np.asarray(arr, dtype=float)
+    a = a[np.isfinite(a)]
+    if len(a) == 0:
+        return np.nan, 0.0
+    if ceiling is not None and np.isfinite(ceiling) and ceiling > 0:
+        a = a / ceiling
+    return float(np.mean(a)), float(np.std(a))
+
+
+def generate_combined_exp1_exp2_table(
+    sections: list,
+    gas: list,
+    ga_labels: dict,
+    predictors: list,
+    predictor_labels: dict,
+    n_obj_label: str,
+    out_path,
+    alpha: float = 0.05,
+    gas_per_table: int = 4,
+    variant_note: str = '',
+    label_suffix: str = '',
+    baseline_ga: str = 'random',
+    sig_baseline_ga: str = None,
+) -> str:
+    """Generate one table per objective-count group comparing every GA x
+    predictor *surrogate* combination (Experiment 2) against a single reference:
+    full-budget random search with no predictor (the Experiment-1 ``random``
+    run, shown once as the ``Rand (full)`` column).
+
+    The GAs are stacked vertically in panels of *gas_per_table* (default 4)
+    inside one ``table*`` float; the ``Rand (full)`` reference column is repeated
+    in each panel.  Each GA group shows one column per predictor (XGB/RF/RBF).
+    Rows are problems, organised into benchmark subsections.  All cells show
+    normalised HV (``mean$_{std}$``, higher is better; ``1`` = pooled-Pareto-front
+    HV).  The best predictor *within* each GA per row is **bold**.  Every
+    surrogate cell carries a directional, Holm-corrected Wilcoxon marker against
+    ``Rand (full)`` (Holm family = all surrogate cells in the row):
+    ``$^{+}$`` better, ``$^{-}$`` worse, ``$^{\\sim}$`` not significant.
+
+    Parameters
+    ----------
+    sections
+        Ordered list of ``(subsection_header, problem_keys, problem_labels,
+        prob_data)`` tuples.  ``prob_data`` maps each problem key to
+        ``{'ceiling': float | None, 'cols': {ga: {pred: arr, ..., 'full': arr}}}``
+        where every ``arr`` is a 1-D per-seed final-generation HV array (raw,
+        un-normalised) and ``'full'`` holds the Experiment-1 reference.
+    gas
+        Ordered GA keys (one column group each).
+    ga_labels
+        ``{ga: display label}``.
+    predictors
+        Ordered predictor keys (sub-columns within each GA group).
+    predictor_labels
+        ``{predictor: display label}`` (used only for the caption legend).
+    n_obj_label
+        Human label for the objective-count group, e.g. ``"2"`` or ``"4+"``.
+    out_path
+        Destination ``.tex`` file path.
+    alpha
+        Significance level (Holm-corrected).
+
+    Returns
+    -------
+    str   The LaTeX source.
+    """
+    n_pred = len(predictors)
+    group_cols = n_pred + 1                         # XGB/RF/RBF + per-GA Full
+    pred_keys = list(predictors) + ['full']         # column keys within a GA group
+    ga_groups = [g for g in gas if g != baseline_ga]  # baseline GA shown only as the reference
+    ref_label = ga_labels.get(baseline_ga, baseline_ga).replace('_', r'\_')
+    ref_col_head = ref_label + r' (full)'
+
+    # Significance baseline (which Full column the markers test against) may differ
+    # from the displayed reference column; defaults to the reference GA.
+    if sig_baseline_ga is None:
+        sig_baseline_ga = baseline_ga
+    sig_label = ga_labels.get(sig_baseline_ga, sig_baseline_ga).replace('_', r'\_') + r' (full)'
+
+    # ── caption legend mapping abbreviations -> full predictor names ────────
+    legend = ', '.join(
+        f"{_PRED_ABBREV.get(p, p.upper())}={predictor_labels.get(p, p)}"
+        for p in predictors
+    )
+
+    def _baseline_samples(cols):
+        """Per-seed final HV of the significance-baseline GA's full run."""
+        arr = cols.get(sig_baseline_ga, {}).get('full')
+        if arr is None:
+            return None
+        a = np.asarray(arr, float)
+        a = a[np.isfinite(a)]
+        return a if len(a) >= 3 else None
+
+    def _group_best_val(gcols, ceiling):
+        """Best normalised mean within a single GA's XGB/RF/RBF/Full columns."""
+        vals = []
+        for ckey in pred_keys:
+            mean, _ = _final_hv_mean_std(gcols.get(ckey), ceiling)
+            if np.isfinite(mean):
+                vals.append(mean)
+        return max(vals) if vals else None
+
+    def _row_markers(cols):
+        """Directional Holm-corrected Wilcoxon for every non-random cell in a row
+        (each GA's XGB/RF/RBF/Full) vs. the single full-random baseline.  Returns
+        ``{(ga, ckey): '+'/'-'/'~'}``; Holm family = all tested cells in the row."""
+        out = {}
+        if not _SCIPY_AVAILABLE:
+            return out
+        base = _baseline_samples(cols)
+        if base is None:
+            return out
+        base_mean = float(np.mean(base))
+        pvals, tested, means = [], [], []
+        for ga in ga_groups:
+            gcols = cols.get(ga, {})
+            for ckey in pred_keys:
+                if ga == sig_baseline_ga and ckey == 'full':
+                    continue   # the baseline column itself -- no marker
+                arr = gcols.get(ckey)
+                if arr is None:
+                    continue
+                samp = np.asarray(arr, float)
+                samp = samp[np.isfinite(samp)]
+                if len(samp) < 3:
+                    continue
+                try:
+                    _, pv = ranksums(base, samp)
+                except Exception:
+                    continue
+                pvals.append(float(pv))
+                tested.append((ga, ckey))
+                means.append(float(np.mean(samp)))
+        if not pvals:
+            return out
+        reject = _holm_correct(pvals, alpha)
+        for key, r, m in zip(tested, reject, means):
+            if r:
+                out[key] = '+' if m > base_mean else '-'
+            else:
+                out[key] = '~'
+        return out
+
+    # Split the non-random GAs into panels of *gas_per_table*, stacked VERTICALLY
+    # inside a single table (one float, one tabular).  A leading reference column
+    # holds the full-random baseline and is repeated in every panel; the column
+    # count is fixed by *gas_per_table* and short trailing panels are padded.
+    chunks = [ga_groups[i:i + gas_per_table]
+              for i in range(0, len(ga_groups), gas_per_table)]
+    n_parts = len(chunks)
+    base_label = n_obj_label.replace('+', 'plus')
+
+    n_cols = 2 + gas_per_table * group_cols        # Problem + Rand(full) + groups
+    col_spec = 'l|r' + ('|' + 'r' * group_cols) * gas_per_table
+
+    def _pad(cells, chunk):
+        """Pad a row's cells with blanks so every panel spans *gas_per_table* GAs."""
+        missing = gas_per_table - len(chunk)
+        return cells + [''] * (missing * group_cols)
+
+    def _emit_panel(lines, chunk):
+        """Append one GA-panel: its two header rows plus all problem rows."""
+        missing = gas_per_table - len(chunk)
+
+        # Top header: blank over Problem + reference col, one multicolumn per GA.
+        top = ['', '']
+        for ga in chunk:
+            glab = ga_labels.get(ga, ga).replace('_', r'\_')
+            top.append(r'\multicolumn{' + str(group_cols) + r'}{c|}{\textbf{'
+                       + glab + r'}}')
+        if missing:
+            top.append(r'\multicolumn{' + str(missing * group_cols) + r'}{c}{}')
+        lines.append(' & '.join(top) + r' \\')
+
+        # Sub-header: Problem | <baseline> (full) | XGB/RF/RBF/Full per GA.
+        sub = [r'\textbf{Problem}', r'\textit{' + ref_col_head + r'}']
+        for _ga in chunk:
+            for p in predictors:
+                sub.append(_PRED_ABBREV.get(p, p.upper()))
+            sub.append(r'\textit{Full}')
+        lines.append(' & '.join(_pad(sub, chunk)) + r' \\')
+        lines.append(r'\midrule')
+
+        for subsection_header, problem_keys, problem_labels, prob_data in sections:
+            if not problem_keys:
+                continue
+            lines.append(
+                r'\multicolumn{' + str(n_cols) + r'}{l}{\textit{'
+                + subsection_header.replace('_', r'\_') + r'}} \\'
+            )
+            lines.append(r'\midrule')
+
+            for prob in problem_keys:
+                entry = prob_data.get(prob, {})
+                cols = entry.get('cols', {})
+                ceiling = entry.get('ceiling')
+                plabel = problem_labels.get(prob, prob).replace('_', r'\_')
+
+                markers = _row_markers(cols)
+                ref_mean, ref_std = _final_hv_mean_std(
+                    cols.get(baseline_ga, {}).get('full'), ceiling)
+                cells = [plabel, _format_mean_std(ref_mean, ref_std, sci=False)]
+
+                for ga in chunk:
+                    gcols = cols.get(ga, {})
+                    best_val = _group_best_val(gcols, ceiling)
+                    for ckey in pred_keys:
+                        mean, std = _final_hv_mean_std(gcols.get(ckey), ceiling)
+                        cell = _format_mean_std(mean, std, sci=False)
+                        if (best_val is not None and np.isfinite(mean)
+                                and abs(mean - best_val) < 1e-9):
+                            cell = r'\textbf{' + cell + r'}'
+                        mk = markers.get((ga, ckey))
+                        if mk == '+':
+                            cell += r'$^{+}$'
+                        elif mk == '-':
+                            cell += r'$^{-}$'
+                        elif mk == '~':
+                            cell += r'$^{\sim}$'
+                        cells.append(cell)
+                lines.append(' & '.join(_pad(cells, chunk)) + r' \\')
+
+            lines.append(r'\midrule')
+
+        if lines[-1] == r'\midrule':
+            lines.pop()
+
+    panels_note = (
+        f' The {len(ga_groups)} non-random algorithms are split into {n_parts} '
+        f'vertically stacked panels of up to {gas_per_table} algorithms each.'
+        if n_parts > 1 else '')
+
+    lines = [
+        r'\begin{table*}[p]',
+        r'\centering',
+        (
+            r'\caption{Normalised HV $\uparrow$ at generation 100. Each algorithm '
+            r'shows its three predictor surrogates (XGB/RF/RBF) and its own full '
+            r'100-generation no-predictor run (\textbf{Full}, Experiment 1); the '
+            r'leading \textbf{' + ref_col_head + r'} column gives the Experiment-1 '
+            r'full-budget no-predictor baseline for reference, on the '
+            + n_obj_label + r'-objective problems.' + panels_note
+            + r' Mean$_{\text{std}}$ over seeds; HV is normalised by the '
+            r'pooled-Pareto-front HV (1\,=\,ideal). \textbf{Bold} marks the best '
+            r"of an algorithm's four columns per row. Superscripts test each cell "
+            r'vs.\ \textbf{' + sig_label + r'} (Holm-corrected Wilcoxon over all cells in '
+            r'the row, $\alpha=' + str(alpha)
+            + r'$): $^{+}$ better, $^{-}$ worse, $^{\sim}$ n.s. '
+            r'Predictors: ' + legend + r'.'
+            + ((' ' + variant_note) if variant_note else '') + r'}'
+        ),
+        r'\label{tab:combined\_exp1\_exp2\_hv\_' + base_label + label_suffix + r'}',
+        r'\resizebox{\textwidth}{!}{%',
+        r'\begin{tabular}{' + col_spec + r'}',
+        r'\toprule',
+    ]
+
+    for part_idx, chunk in enumerate(chunks):
+        if part_idx > 0:
+            # Separate stacked panels with a little space and a double rule.
+            lines.append(r'\midrule')
+            lines.append(r'\midrule')
+        _emit_panel(lines, chunk)
+
+    lines += [
+        r'\bottomrule',
+        r'\end{tabular}%',
+        r'}',
+        r'\end{table*}',
+    ]
+
+    tex = '\n'.join(lines)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(tex)
+    print(f'[OK] Saved combined exp1/exp2 HV table ({n_obj_label} obj, '
+          f'{n_parts} stacked panel{"s" if n_parts != 1 else ""}): {out_path}')
 
     return tex

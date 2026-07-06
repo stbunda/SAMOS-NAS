@@ -15,14 +15,21 @@
 # pre-copy below, re-submitting a killed/interrupted array index resumes
 # from the next missing seed rather than seed 0.
 #
-# Task count: 2 suites x 9 pids x 5 methods, plus samos2-encoding restricted
-# to the 7 c10mop pids with a categorical-op search space (NB101/NB201/NATS;
-# DARTS pids 8-9 and all in1kmop pids have none) = 18*5 + 7 = 97 tasks.
+# Task count: indices 0-96 = original study (2 suites x 9 pids x 5 methods,
+# plus samos2-encoding on the 7 c10mop pids with a categorical-op search
+# space = 18*5 + 7 = 97 tasks; NB101/NB201/NATS -- DARTS pids 8-9 and all
+# in1kmop pids have none). Indices 97-186 = the 2026-07-06 additions
+# (18 pids x 5 methods: samos2-rfr, samos2-xgb10, samos2-xgb10-uncertainty,
+# samos2-uncertainty-lin_annealing, samos2-uncertainty-obj = 90 tasks).
+# Total 187. Original indices are unchanged, so old logs stay valid.
 # The COMBOS array below is built to match compare_methods.py's own
 # samos2-encoding skip logic exactly -- keep the two in sync if either changes.
 #
-# Submit:
+# Submit everything (existing results are skipped, so this is safe):
 #   sbatch experiments/samos/COMPARE_METHODS_EVOXBENCH.sbatch
+#
+# Submit only the 2026-07-06 additions:
+#   sbatch --array=97-186%10 experiments/samos/COMPARE_METHODS_EVOXBENCH.sbatch
 #
 # Force re-run (ignore existing pkls):
 #   sbatch --export=ALL,OVERWRITE=1 experiments/samos/COMPARE_METHODS_EVOXBENCH.sbatch
@@ -33,7 +40,7 @@
 
 #SBATCH -J samos2_compare
 #SBATCH -c 2
-#SBATCH --array=0-96%10            # 97 tasks (suite,pid,method), 10 concurrent
+#SBATCH --array=0-186%10           # 187 tasks (suite,pid,method), 10 concurrent
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -61,6 +68,15 @@ for SUITE in c10mop in1kmop; do
         if [ "$SUITE" = "c10mop" ] && [ "$PID" -le 7 ]; then
             COMBOS+=("${SUITE}:${PID}:samos2-encoding")
         fi
+    done
+done
+# 2026-07-06 additions (indices 97-186): de-confounded controls + C3 variants.
+# Appended AFTER the original loop so indices 0-96 keep their meaning.
+for SUITE in c10mop in1kmop; do
+    for PID in 1 2 3 4 5 6 7 8 9; do
+        for METHOD in samos2-rfr samos2-xgb10 samos2-xgb10-uncertainty samos2-uncertainty-lin_annealing samos2-uncertainty-obj; do
+            COMBOS+=("${SUITE}:${PID}:${METHOD}")
+        done
     done
 done
 

@@ -37,6 +37,30 @@ from pymoo.indicators.igd_plus import IGDPlus
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 
+# ─── fast exact hypervolume (pygmo) ───────────────────────────────────────────
+
+def fast_hv(F, ref_point) -> float:
+    """Exact hypervolume of *F* (minimisation) w.r.t. *ref_point*, via pygmo.
+
+    Mirrors pymoo's ``HV`` to machine precision but is orders of magnitude faster
+    in high dimensions.  Non-finite entries are replaced with 1.0 and points not
+    strictly dominating *ref_point* are dropped (they contribute zero volume).
+    Returns 0.0 for empty / fully-clipped input.
+    """
+    import pygmo as pg
+    if F is None:
+        return 0.0
+    F = np.asarray(F, dtype=float)
+    if F.ndim != 2 or F.shape[0] == 0:
+        return 0.0
+    F = np.where(np.isfinite(F), F, 1.0)
+    ref = np.asarray(ref_point, dtype=float)
+    F = F[(F < ref).all(axis=1)]
+    if len(F) == 0:
+        return 0.0
+    return float(pg.hypervolume(F).compute(ref))
+
+
 # ─── fast non-dominated sort ──────────────────────────────────────────────────
 
 def _nd_filter_2d(F: np.ndarray) -> np.ndarray:
@@ -483,8 +507,10 @@ def recompute_indicator_trajectories(
     if not os.path.isdir(seed_dir):
         return None
 
-    hv_ind  = HV(ref_point=ref_point)
-    igd_ind = IGDPlus(pareto_approx)
+    # IGD+ (pymoo) is the remaining hot-loop cost; SAMOS_SKIP_IGD=1 disables it
+    # (igd values become NaN) so HV trajectories build fast on high-obj problems.
+    skip_igd = os.environ.get('SAMOS_SKIP_IGD') == '1'
+    igd_ind = None if skip_igd else IGDPlus(pareto_approx)
 
     hv_runs, igd_runs = [], []
 
@@ -538,8 +564,8 @@ def recompute_indicator_trajectories(
                 hv_series.append(prev_hv)
                 igd_series.append(prev_igd)
                 continue
-            prev_hv  = float(hv_ind(F_gen))
-            prev_igd = float(igd_ind(F_gen))
+            prev_hv  = fast_hv(F_gen, ref_point)
+            prev_igd = np.nan if skip_igd else float(igd_ind(F_gen))
             prev_key = key
             hv_series.append(prev_hv)
             igd_series.append(prev_igd)
@@ -597,7 +623,6 @@ def recompute_final_indicators(
     if not os.path.isdir(seed_dir):
         return None
 
-    hv_ind  = HV(ref_point=ref_point)
     igd_ind = IGDPlus(pareto_approx)
 
     hvs, igds = [], []
@@ -612,7 +637,7 @@ def recompute_final_indicators(
             F = np.where(np.isfinite(F), F, 1.0)
         if len(F) == 0:
             continue
-        hvs.append(float(hv_ind(F)))
+        hvs.append(fast_hv(F, ref_point))
         igds.append(float(igd_ind(F)))
 
     if not hvs:
@@ -643,7 +668,6 @@ def recompute_final_indicators_seeds(
     if not os.path.isdir(seed_dir):
         return None
 
-    hv_ind  = HV(ref_point=ref_point)
     igd_ind = IGDPlus(pareto_approx)
 
     hvs, igds = [], []
@@ -658,7 +682,7 @@ def recompute_final_indicators_seeds(
             F = np.where(np.isfinite(F), F, 1.0)
         if len(F) == 0:
             continue
-        hvs.append(float(hv_ind(F)))
+        hvs.append(fast_hv(F, ref_point))
         igds.append(float(igd_ind(F)))
 
     if not hvs:
@@ -667,6 +691,142 @@ def recompute_final_indicators_seeds(
         'hv':       np.array(hvs),
         'igd_plus': np.array(igds),
     }
+
+
+# ─── combined Exp1+Exp2 Pareto approximation (one global reference) ────────────
+
+def _combined_evox_seed_dirs(
+    suite, pid, exp1_root, exp2_root, gas, predictors,
+    exp1_subdir, exp2_subdirs,
+):
+    """Every EvoXBench seed directory that feeds the combined reference front.
+
+    Pools Experiment 1 (full budget, one dir per GA) and Experiment 2
+    (predictor-guided, one dir per predictor x GA x DOE sub-dir) for one PID, so
+    the resulting front is the union of *all* experimental data — the single
+    global reference every table/figure should be scored against.
+    """
+    pid_s = f'pid{pid}'
+    dirs = [os.path.join(exp1_root, 'evoxbench', suite, pid_s, ga, exp1_subdir)
+            for ga in gas]
+    for subdir in exp2_subdirs:
+        for pred in predictors:
+            for ga in gas:
+                dirs.append(os.path.join(
+                    exp2_root, 'evoxbench', suite, pid_s, pred, ga, subdir))
+    return dirs
+
+
+def _load_combined_cache(cache_path: str, seed_dirs: list) -> dict | None:
+    """Validate and return the combined-front cache, else ``None`` to rebuild.
+
+    Stale if the exact set of contributing ``seed_*.pkl`` files changed or any
+    recorded file was modified since the cache was written.
+    """
+    if not os.path.isfile(cache_path):
+        return None
+    try:
+        with open(cache_path, 'rb') as fh:
+            cache = pickle.load(fh)
+    except Exception as exc:
+        print(f'  [convergence] WARN: could not read combined cache {cache_path}: {exc}')
+        return None
+
+    recorded = {e['seed_file']: e['mtime'] for e in cache.get('sources', [])}
+    current = set()
+    for d in seed_dirs:
+        if not os.path.isdir(d):
+            continue
+        for fname in os.listdir(d):
+            if fname.endswith('.pkl'):
+                current.add(os.path.abspath(os.path.join(d, fname)))
+    if current != set(recorded):
+        print('  [convergence] Combined cache stale: contributing files changed.')
+        return None
+    for f in current:
+        if os.path.getmtime(f) > recorded[f] + 1e-3:
+            print(f'  [convergence] Combined cache stale: {f} modified.')
+            return None
+    print(f'  [convergence] Combined cache hit: {cache_path} '
+          f'({len(cache["pareto_approx"])} PF points, {len(recorded)} seed files).')
+    return cache
+
+
+def build_combined_exp_pareto_approximation(
+    suite: str,
+    pid: int,
+    exp1_root: str,
+    exp2_root: str,
+    gas: list,
+    predictors: list,
+    cache_path: str,
+    exp1_subdir: str = 'ga_obj',
+    exp2_subdirs: tuple = ('ga_obj_pred', 'ga_obj_pred_1k'),
+    force_rebuild: bool = False,
+) -> dict | None:
+    """Build (or load) the combined Exp1+Exp2 Pareto approximation for one PID.
+
+    Pools ``test_obj_archive[-1]`` (final cumulative ND archive, true-eval) from
+    every Exp1 GA folder and every Exp2 predictor x GA x DOE folder, computes the
+    non-dominated front of the union, and derives a shared nadir / reference
+    point.  Cached (mtime-validated) at *cache_path*.
+
+    Returns a dict with the same ``pareto_approx`` / ``nadir`` / ``ref_point``
+    keys as :func:`build_pareto_approximation`, or ``None`` if no data is found.
+    The front is identical (same pooled data, same ND filter, same ref-point
+    formula) to the one used by ``analyse_combined_exp1_exp2`` and the fidelity
+    analysis, so all four sets of outputs are mutually comparable.
+    """
+    seed_dirs = _combined_evox_seed_dirs(
+        suite, pid, exp1_root, exp2_root, gas, predictors, exp1_subdir, exp2_subdirs)
+
+    if not force_rebuild:
+        cached = _load_combined_cache(cache_path, seed_dirs)
+        if cached is not None:
+            return cached
+
+    all_points, sources = [], []
+    for d in seed_dirs:
+        for F, abs_path in _load_final_test_archive(d):
+            finite = np.isfinite(F).all(axis=1)
+            F = F[finite]
+            if len(F) == 0:
+                continue
+            all_points.append(F)
+            sources.append({'seed_file': abs_path, 'mtime': os.path.getmtime(abs_path)})
+
+    if not all_points:
+        print(f'  [convergence] WARN: no combined Exp1/Exp2 data for {suite}/pid{pid}.')
+        return None
+
+    combined = np.unique(np.vstack(all_points), axis=0)
+    pareto_approx = combined[_nd_filter(combined)]
+    nadir = np.max(pareto_approx, axis=0)
+    ref_point = np.maximum(nadir * 1.05, nadir + 1e-6)
+
+    result = {
+        'pareto_approx': pareto_approx,
+        'nadir':         nadir,
+        'ref_point':     ref_point,
+        'sources':       sources,
+        'seed_dirs':     seed_dirs,
+    }
+    os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cache_path) or '.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            pickle.dump(result, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, cache_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    print(f'  [convergence] Built combined Exp1+Exp2 approx for {suite}/pid{pid}: '
+          f'{len(pareto_approx)} PF points from {len(sources)} seed files '
+          f'-> {cache_path}')
+    return result
 
 
 # ─── trajectory cache helpers ─────────────────────────────────────────────────
