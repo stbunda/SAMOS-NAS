@@ -111,6 +111,16 @@ _SRC="results/samos/compare/${SUITE}/pid${PID}/${BUDGET_FOLDER}/${METHOD}"
 
 rsync -aR "${RSYNC_SOURCES[@]}" "$SCRATCH_DIRECTORY/" 2>/dev/null || true
 
+# EvoXBench SQLite database (~2.8G): copied to node-local scratch because
+# NB101 issues one ORM query PER ARCHITECTURE (thousands of tiny reads per
+# outer generation) -- brutal over the shared filesystem, cheap on /local.
+# Separate rsync with -L (--copy-links): problem/data/evoxbench may be a
+# symlink/junction to another checkout, and the scratch copy must be real
+# files, not a link back to the shared FS. The model/data dir (1.3G) is NOT
+# copied: those files are loaded once per benchmark construction, so shared-FS
+# latency is irrelevant there (EVOXBENCH_MODEL below keeps them on submit dir).
+rsync -aRL problem/data/evoxbench/database "$SCRATCH_DIRECTORY/" 2>/dev/null || true
+
 cd "$SCRATCH_DIRECTORY"
 
 echo "Copied structure:"
@@ -125,6 +135,20 @@ conda activate SAMOS311
 # CPU-only job: hide all GPUs so CUDA-enabled builds (xgboost, torch via
 # evoxbench) cannot create a CUDA context / reserve VRAM on this shared node.
 export CUDA_VISIBLE_DEVICES=""
+
+# --------- point evoxbench's SQLite at the scratch copy -------------------------------------------------------------------------------
+# evoxbench resolves its Django `ORM` package (and thus db.sqlite3, via that
+# package's BASE_DIR) from sys.path, and only `setdefault`s EVOXBENCH_DATA /
+# EVOXBENCH_MODEL from the shared ~/.config/evoxbench/config.json. Exporting
+# these BEFORE python starts therefore wins over the shared json with no race
+# between array tasks (the json itself keeps its submit-dir value, same as
+# before -- see problem/evoxbench/utils.py). PYTHONPATH puts the scratch
+# database dir ahead of the json's sys.path.append, so ORM + db.sqlite3
+# resolve from /local scratch; EVOXBENCH_MODEL keeps the (one-time-loaded)
+# model files on the shared FS, matching what utils.py configures.
+export PYTHONPATH="${SCRATCH_DIRECTORY}/problem/data/evoxbench/database${PYTHONPATH:+:$PYTHONPATH}"
+export EVOXBENCH_DATA="${SCRATCH_DIRECTORY}/problem/data/evoxbench/database"
+export EVOXBENCH_MODEL="${SLURM_SUBMIT_DIR}/problem/data/evoxbench/data"
 
 echo "Activated: SAMOS311"
 
@@ -142,6 +166,8 @@ echo "N_GEN             = $N_GEN"
 echo "N_GEN_INNER       = $N_GEN_INNER"
 echo "BUDGET            = $(( N_GEN * POP_SIZE ))"
 echo "OVERWRITE         = ${OVERWRITE:-<unset>}"
+echo "EVOXBENCH_DATA    = $EVOXBENCH_DATA"
+echo "EVOXBENCH_MODEL   = $EVOXBENCH_MODEL"
 
 # --------- run: one seed at a time, rsync-back after each ------------------------------------------------------------------------------------------------
 DEST="${SLURM_SUBMIT_DIR}/results/samos/compare/${SUITE}/pid${PID}/${BUDGET_FOLDER}/${METHOD}"
