@@ -19,6 +19,7 @@ _SS_ABBREV = {
     'ResNet50DSearchSpace':   'ResNet-50D',
     'TransformerSearchSpace': 'Transformer',
     'MobileNetV3SearchSpace': 'MobileNetV3',
+    'MoSegNASSearchSpace':    'MoSegNAS',
 }
 
 # ─── per-suite, per-pid metadata ─────────────────────────────────────────────
@@ -66,6 +67,40 @@ BENCHMARK_META: dict[str, dict[int, dict]] = {
         8: {'label': 'IN-1k/MOP8', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 3,                                                           'obj_names': ('Err.', '#Params', 'FLOPs'),     'cheap_obj_indices': [1, 2]},
         # Objectives: err & params & flops & latency
         9: {'label': 'IN-1k/MOP9', 'search_space': 'MobileNetV3',  'n_var': 21, 'n_obj': 4,                                                           'obj_names': ('Err.', '#Params', 'FLOPs', 'Latency'), 'cheap_obj_indices': [1, 2]},
+    },
+    # citysegmop pid -> objs string (from evoxbench.test_suites.citysegmop), all on MoSegNASSearchSpace (24 vars).
+    # 'flops'/'params' are structural (cheap); err/latency/energy all require the RankNet/lookup-table surrogate (expensive).
+    'citysegmop': {
+        # Objectives: err & h1_latency
+        1:  {'label': 'CS/MOP1',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 2, 'obj_names': ('Err.', 'H1 Lat.'),                                            'cheap_obj_indices': []},
+        # Objectives: err & h1_latency & flops
+        2:  {'label': 'CS/MOP2',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 3, 'obj_names': ('Err.', 'H1 Lat.', 'FLOPs'),                                   'cheap_obj_indices': [2]},
+        # Objectives: err & h1_latency & params
+        3:  {'label': 'CS/MOP3',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 3, 'obj_names': ('Err.', 'H1 Lat.', '#Params'),                                 'cheap_obj_indices': [2]},
+        # Objectives: err & h1_latency & h1_energy_consumption & flops
+        4:  {'label': 'CS/MOP4',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 4, 'obj_names': ('Err.', 'H1 Lat.', 'H1 En.', 'FLOPs'),                         'cheap_obj_indices': [3]},
+        # Objectives: err & h1_latency & h1_energy_consumption & flops & params
+        5:  {'label': 'CS/MOP5',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 5, 'obj_names': ('Err.', 'H1 Lat.', 'H1 En.', 'FLOPs', '#Params'),              'cheap_obj_indices': [3, 4]},
+        # Objectives: err & h2_latency
+        6:  {'label': 'CS/MOP6',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 2, 'obj_names': ('Err.', 'H2 Lat.'),                                            'cheap_obj_indices': []},
+        # Objectives: err & h2_latency & flops
+        7:  {'label': 'CS/MOP7',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 3, 'obj_names': ('Err.', 'H2 Lat.', 'FLOPs'),                                   'cheap_obj_indices': [2]},
+        # Objectives: err & h2_latency & params
+        8:  {'label': 'CS/MOP8',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 3, 'obj_names': ('Err.', 'H2 Lat.', '#Params'),                                 'cheap_obj_indices': [2]},
+        # Objectives: err & h2_latency & h2_energy_consumption & flops
+        9:  {'label': 'CS/MOP9',  'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 4, 'obj_names': ('Err.', 'H2 Lat.', 'H2 En.', 'FLOPs'),                         'cheap_obj_indices': [3]},
+        # Objectives: err & h2_latency & h2_energy_consumption & flops & params
+        10: {'label': 'CS/MOP10', 'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 5, 'obj_names': ('Err.', 'H2 Lat.', 'H2 En.', 'FLOPs', '#Params'),              'cheap_obj_indices': [3, 4]},
+        # Objectives: err & h1_latency & h2_latency
+        11: {'label': 'CS/MOP11', 'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 3, 'obj_names': ('Err.', 'H1 Lat.', 'H2 Lat.'),                                 'cheap_obj_indices': []},
+        # Objectives: err & h1_latency & h2_latency & h1_energy_consumption & h2_energy_consumption
+        12: {'label': 'CS/MOP12', 'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 5, 'obj_names': ('Err.', 'H1 Lat.', 'H2 Lat.', 'H1 En.', 'H2 En.'),             'cheap_obj_indices': []},
+        # Objectives: err & h1_latency & h2_latency & h1_energy_consumption & h2_energy_consumption & flops
+        13: {'label': 'CS/MOP13', 'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 6, 'obj_names': ('Err.', 'H1 Lat.', 'H2 Lat.', 'H1 En.', 'H2 En.', 'FLOPs'),    'cheap_obj_indices': [5]},
+        # Objectives: err & h1_latency & h2_latency & h1_energy_consumption & h2_energy_consumption & params
+        14: {'label': 'CS/MOP14', 'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 6, 'obj_names': ('Err.', 'H1 Lat.', 'H2 Lat.', 'H1 En.', 'H2 En.', '#Params'),  'cheap_obj_indices': [5]},
+        # Objectives: err & h1_latency & h2_latency & h1_energy_consumption & h2_energy_consumption & flops & params
+        15: {'label': 'CS/MOP15', 'search_space': 'MoSegNAS', 'n_var': 24, 'n_obj': 7, 'obj_names': ('Err.', 'H1 Lat.', 'H2 Lat.', 'H1 En.', 'H2 En.', 'FLOPs', '#Params'), 'cheap_obj_indices': [5, 6]},
     },
 }
 
