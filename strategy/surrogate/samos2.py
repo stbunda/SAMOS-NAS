@@ -68,6 +68,9 @@ class SAMOS2(Algorithm):
         with kind='lcb'/'hvi' is used).
     surrogate_problem_factory : callable
         ``factory(surrogates) -> pymoo Problem``, called each infill step.
+        When ``constr_surrogate`` is configured (see below) it is instead
+        called as ``factory(surrogates, fitted_constr_surrogate) -> Problem``
+        so the inner problem can read predicted constraint values.
     predict_obj_indices : list[int]
         Column (in the outer problem's F) that each entry of ``surrogates``
         predicts, in the same order as ``surrogates``. Required whenever
@@ -97,6 +100,21 @@ class SAMOS2(Algorithm):
         surrogates=None) -> Population`` (see strategy/surrogate/infill.py).
         None -> DiversitySelector(use_subset_selection) (SAMOSMinimal
         behaviour).
+    constr_surrogate : object or None
+        Constraint-handling seam for the S1-S4 campaign. A model implementing
+        ``fit(X, y)`` / ``predict(X)``. When given, it is fitted each outer
+        generation on the archive's ``(X, G)`` right where the objective
+        surrogates are fitted, then passed as the *second* argument to
+        ``surrogate_problem_factory`` so the inner problem predicts G.
+        None (default) leaves every existing caller untouched -- the factory
+        is still called with a single argument, and cheap/exact constraints
+        (constr computed inside the inner problem via the benchmark) need no
+        surrogate here.
+
+        Note: the outer problem defines ``out['G']``, so archive individuals
+        carry G/CV/feasible and the ``RankAndCrowding`` archive selection plus
+        the inner NSGA-II both become feasibility-first (Deb's CDP) for free
+        -- see problem/evoxbench/constrained_problem.py for the verification.
     """
 
     def __init__(self,
@@ -118,6 +136,7 @@ class SAMOS2(Algorithm):
                  canonicalizer=None,
                  collapse_training_set=False,
                  infill_selector=None,
+                 constr_surrogate=None,
                  **kwargs):
         super().__init__(eliminate_duplicates=False, **kwargs)
         self.sampling                  = sampling
@@ -130,6 +149,7 @@ class SAMOS2(Algorithm):
         self.ga_pop_size               = ga_pop_size if ga_pop_size is not None else n_infill * 10
         self.canonicalizer             = canonicalizer
         self.collapse_training_set     = collapse_training_set
+        self.constr_surrogate          = constr_surrogate
 
         if predict_obj_indices is None:
             if len(surrogates) > 1:
@@ -226,6 +246,13 @@ class SAMOS2(Algorithm):
         for surrogate, orig_idx in zip(self.surrogates, self.predict_obj_indices):
             surrogate.fit(X_train, F_train[:, orig_idx])
 
+        # Constraint surrogate (campaign S1-S4): fit on the archive's (X, G)
+        # here, alongside the objective surrogates. ponytail: trains on the
+        # full archive X_arc/G_arc, not the (C2) collapsed objective training
+        # set -- constraint scenarios don't use collapse_training_set.
+        if self.constr_surrogate is not None:
+            self.constr_surrogate.fit(X_arc, self._archive.get('G')[:, 0])
+
         top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=self.ga_pop_size)
         n_rand   = self.ga_pop_size - len(top_pop)
         if n_rand > 0:
@@ -235,8 +262,13 @@ class SAMOS2(Algorithm):
             inner_X  = top_pop.get('X')
         inner_init = Population.new('X', inner_X)   # X-only → surrogate re-evaluates
 
-        # 2. Inner MOO GA (NSGA-II by default) on the surrogate problem
-        surr_problem = self.surrogate_problem_factory(self.surrogates)
+        # 2. Inner MOO GA (NSGA-II by default) on the surrogate problem.
+        #    Pass the fitted constraint surrogate as a 2nd factory arg only
+        #    when configured, so existing single-arg factories are unaffected.
+        if self.constr_surrogate is not None:
+            surr_problem = self.surrogate_problem_factory(self.surrogates, self.constr_surrogate)
+        else:
+            surr_problem = self.surrogate_problem_factory(self.surrogates)
         inner_alg = self.inner_algorithm(
             pop_size=self.ga_pop_size,
             sampling=inner_init,
@@ -302,7 +334,11 @@ class SAMOS2(Algorithm):
             ], dtype=bool)
             cand_pop = cand_pop[not_dup]
 
-        # 4. Select n_infill candidates; pad with random if scarce
+        # 4. Select n_infill candidates; pad with random if scarce.
+        #    ponytail: the infill selector ranks candidates on F only (no G);
+        #    infeasible candidates may enter the infill batch, but the
+        #    feasibility-first RankAndCrowding survival on the constrained
+        #    archive (CDP) filters them out at the next generation.
         infill_pop = self._select_infill(cand_pop, F_arc)
 
         # Return X-only — real problem fills F after this returns
