@@ -10,29 +10,52 @@ experiments/constraint/THRESHOLDS.md for threshold provenance.
 Instances
 ---------
 Selected via --suite/--pid (default c10mop/4, so every pre-existing
-invocation behaves identically):
+invocation behaves identically). Every instance's benchmark column order is
+(Err, #Params, FLOPs[, Latency]); objective and constraint columns are
+resolved by metric NAME (metric_index), never a hardcoded position, so one
+scenario definition below applies unchanged across all of them.
 
-  c10mop/pid4  : NATS, 5 vars.
-  in1kmop/pid9 : MobileNetV3, 21 vars.
+  4-metric (Err/#Params/FLOPs/Latency) -- s1 and s2 (s2's own physical runs;
+  s4 reads them too, see Scenarios below):
+    c10mop/pid4  : NATS, 5 vars.
+    in1kmop/pid9 : MobileNetV3, 21 vars.
 
-Both share the metric column order (Err, #Params, FLOPs, Latency), the same obj_indices=[0, 2], 
-the same constraint columns (1 = #Params, 3 = Latency) and the same BENCHMARK_META cheap_obj_indices=[1, 2], 
-so the samos-cheap split logic is identical. They differ in normalized_objectives (pid4 True, pid9 False), 
-which ConstrainedEvoXBenchProblem's normalize-once convention already absorbs: either way the 
-constraint metric the problem sees lives in the benchmark-normalized space THRESHOLDS.md computed the per-instance
-thresholds in (verified empirically for pid9: ~49% of a 2k random sample is feasible at each threshold, 
-matching the ~50% design intent).
+  3-metric (Err/#Params/FLOPs) -- s1 and s3. Each of these problems already
+  drops one of {#Params, FLOPs} as an objective; that dropped metric becomes
+  the natural constraint (s1 keeps FLOPs as an objective and constrains
+  #Params, s3 does the reverse):
+    c10mop/pid2  : NB101, 26 vars.        c10mop/pid3  : NATS, 5 vars.
+    c10mop/pid9  : DARTS, 32 vars.        in1kmop/pid3 : ResNet-50D, 25 vars.
+    in1kmop/pid6 : Transformer, 34 vars.  in1kmop/pid8 : MobileNetV3, 21 vars.
+
+All eight share BENCHMARK_META cheap_obj_indices=[1, 2] (#Params, FLOPs both
+cheap), so the samos-cheap split logic is identical everywhere. They differ
+in normalized_objectives (True for c10mop/pid2,3,4; False otherwise), which
+ConstrainedEvoXBenchProblem's normalize-once convention already absorbs --
+the constraint metric always lives in the space THRESHOLDS.md computed the
+per-instance thresholds in (verified empirically for pid9: ~49% of a 2k
+random sample is feasible at each threshold, matching the ~50% design
+intent; the six 3-metric instances were checked against their own 10k
+samples the same way, see THRESHOLDS.md).
 
 Scenarios
 ---------
-Scenario definitions (constraint metric + handler mode) are instance-
-independent; only the numeric threshold varies per instance (THRESHOLDS
-dict below). Objectives are always {Err, FLOPs} (obj_indices=[0, 2]).
+Scenario definitions (objectives + constraint metric + handler mode) are
+instance-independent; only the numeric threshold varies per instance
+(THRESHOLDS dict below). Objectives are two metric NAMES per scenario
+(SCENARIOS dict's obj_metrics), resolved to benchmark columns per instance:
 
-  s1 : #Params <= T_params, hard   (cheap constraint metric)
-  s2 : Latency <= T_latency, hard  (expensive constraint metric)
-  s3 : #Params <= T_params, soft   (cheap constraint metric)
-  s4 : Latency <= T_latency, soft  (expensive constraint metric)
+  s1 : objectives {Err, FLOPs},   #Params <= T_params, hard  (cheap constraint)
+  s2 : objectives {Err, #Params}, Latency <= T_latency, hard (expensive constraint)
+  s3 : objectives {Err, #Params}, FLOPs   <= T_flops,   soft (cheap constraint)
+  s4 : objectives {Err, #Params}, Latency <= T_latency, soft (expensive constraint)
+       -- an ANALYSIS VIEW of s2, not a run of its own: identical objectives,
+       constraint, threshold and handler set (only the hard/soft framing
+       differs), and the shared feasibility indicator treats the threshold
+       as a hard cutoff either way, so a separate s4 run would duplicate s2's
+       compute byte-for-byte. --scenario s4 refuses here with a message
+       pointing at s2; analyse_constraint.py reads s2's pkls under an s4
+       view instead.
 
 Handlers
 --------
@@ -93,11 +116,23 @@ every other handler acts purely on selection pressure that RandomGA does not
 have, so those runs would be byte-identical duplicates of its default run --
 the runner prints [SKIP] instead and analysis replicates the row.
 
-Output layout (round 2 adds the handler level):
-  {results_root}/{scenario}/{suite}/pid{pid}/{budget}/{method}/{handler}/seed_{N}.pkl
-Round-1 flat pkls ({method}/seed_N.pkl) are migrated by COPY -- never moved
-or deleted -- into the scenario-default handler subdir via --migrate
-(s1/s2 -> h4-cdp, s3/s4 -> h2-penalty).
+Output layout (adds an objective-set tag level on top of the handler level):
+  {results_root}/{scenario}/{suite}/pid{pid}/{objtag}/{budget}/{method}/{handler}/seed_{N}.pkl
+objtag identifies the scenario's objective set ('obj-err-flops' for s1,
+'obj-err-params' for s2/s3/s4 -- see _objtag()), so the same (scenario,
+suite, pid) can never silently collide across an objective-set change. This
+module writes and skip-if-exists-checks ONLY the tagged path; paths without
+an objtag level are pre-existing history from before objectives became
+per-scenario and are never read or rewritten here (analyse_constraint.py
+still reads them, as legacy data -- see its own docstring). Round-1 flat
+pkls ({method}/seed_N.pkl, no handler or objtag level at all) are migrated
+by COPY -- never moved or deleted -- into the scenario-default handler
+subdir via --migrate (s1/s2 -> h4-cdp, s3/s4 -> h2-penalty); that migration
+predates the objtag level and is unaffected by it. Every new-phase pkl also
+carries a 'meta' dict (suite/pid/scenario/objtag/objectives/constraint/
+threshold/mode/handler/method/seed/pop_size/n_gen/n_gen_inner/config) so it
+is self-describing without consulting the writing code's current SCENARIOS/
+THRESHOLDS state; legacy pkls predate this key.
 
 Methods
 -------
@@ -117,12 +152,14 @@ Methods
                  XGBoost), regardless of scenario.
   samos-cheap  : SAMOS2 cheap-real split, derived from BENCHMARK_META's
                  cheap_obj_indices for the instance ({1, 2} = #Params, FLOPs
-                 for both supported instances): predict=[0] (Err), real=[1]
-                 (FLOPs). Constraint: exact
-                 (constr_surrogate=None) when constr_index is itself a cheap
-                 column (s1/s3, #Params) -- this is H7 (exact cheap filter)
-                 for free; predicted (constr_surrogate=XGBoost) otherwise
-                 (s2/s4, Latency, expensive).
+                 for every supported instance): predict=[0] (Err), real=[1]
+                 (the scenario's other objective -- FLOPs for s1, #Params for
+                 s2/s3/s4 -- always a cheap column since both #Params and
+                 FLOPs are). Constraint: exact (constr_surrogate=None) when
+                 the constraint metric is itself a cheap column (s1's
+                 #Params, s3's FLOPs) -- this is H7 (exact cheap filter) for
+                 free; predicted (constr_surrogate=XGBoost) otherwise (s2/s4,
+                 Latency, expensive).
 
 Known simplifications:
   (a) SAMOS2's archive-level RankAndCrowding seeding (top_pop in _infill)
@@ -136,9 +173,11 @@ Known simplifications:
 Examples
 --------
   python experiments/constraint/run_constraint.py --scenario s1
-  python experiments/constraint/run_constraint.py --scenario s1 --suite in1kmop --pid 9
+  python experiments/constraint/run_constraint.py --scenario s1 --suite c10mop --pid 3
+  python experiments/constraint/run_constraint.py --scenario s3 --suite in1kmop --pid 8
   python experiments/constraint/run_constraint.py --scenario s2 --method samos --handler h3-adaptive-penalty
   python experiments/constraint/run_constraint.py --scenario s1 --all_handlers
+  python experiments/constraint/run_constraint.py --scenario s4              # refuses: see --scenario s2
   python experiments/constraint/run_constraint.py --migrate                     # copy round-1 flat pkls
   python experiments/constraint/run_constraint.py --scenario s2 --method samos-cheap \\
       --pop_size 8 --n_gen 3 --n_gen_inner 4 --results_root /tmp/smoke
@@ -191,23 +230,20 @@ from strategy.sampler import EvoxBenchSampler
 from strategy.surrogate.models import XGBoost
 from strategy.surrogate.samos2 import SAMOS2
 
-# ─── default instance (module-level for backward compatibility) ──────────────
-# analyse_constraint.py imports SUITE / PID directly; they remain the
-# campaign's original default instance. The runner itself takes --suite/--pid
-# and only falls back to these via the CLI defaults.
-SUITE       = 'c10mop'
-PID         = 4
-OBJ_INDICES = [0, 2]   # Err, FLOPs (same benchmark column order on all instances)
+# ─── default instance (module-level, used only as the --suite/--pid CLI
+# defaults so every pre-existing invocation keeps behaving identically) ───────
+SUITE = 'c10mop'
+PID   = 4
 
 # ─── per-instance thresholds (config, not code) ──────────────────────────────
 # Provenance: experiments/constraint/THRESHOLDS.md -- per instance, the
 # median of the constraint metric over a fixed-seed (0) 10k random sample, in
 # the space the constrained problem operates in (benchmark.evaluate() output,
 # benchmark.normalize() applied ONLY when not benchmark.normalized_objectives
-# -- c10mop/pid4 is natively normalized, in1kmop/pid9 is normalized by that
-# convention). ~50% of the sample is feasible at each
-# threshold by construction. Keyed by (suite, pid), then by the same metric
-# names SCENARIOS uses.
+# -- normalized natively for c10mop/pid2,3,4, via that convention for
+# everything else). ~50% of the sample is feasible at each threshold by
+# construction. Keyed by (suite, pid), then by the same metric names
+# SCENARIOS uses.
 THRESHOLDS = {
     ('c10mop', 4): {
         '#Params': 0.4383147965648318,
@@ -217,17 +253,62 @@ THRESHOLDS = {
         '#Params': 0.554389375817845,
         'Latency': 0.4606726558251625,
     },
+    ('c10mop', 2): {
+        '#Params': 0.07970941037337388,
+        'FLOPs':   0.0816152005844248,
+    },
+    ('c10mop', 3): {
+        '#Params': 0.4383147965648318,
+        'FLOPs':   0.34256897616596726,
+    },
+    ('c10mop', 9): {
+        '#Params': 0.418475,
+        'FLOPs':   0.4018467755799336,
+    },
+    ('in1kmop', 3): {
+        '#Params': 0.36461655406484417,
+        'FLOPs':   0.27081408509201554,
+    },
+    ('in1kmop', 6): {
+        '#Params': 0.4490521985657902,
+        'FLOPs':   0.450714583214995,
+    },
+    ('in1kmop', 8): {
+        '#Params': 0.5542505032341564,
+        'FLOPs':   0.49379317155236824,
+    },
 }
 
-# SCENARIOS is data, not branching code, and is
-# instance-independent: the constraint metric and handler mode define the
-# scenario; the numeric threshold is looked up per instance in THRESHOLDS.
+# SCENARIOS is data, not branching code, and is instance-independent: the
+# objective metric names, constraint metric and handler mode define the
+# scenario; the numeric threshold is looked up per instance in THRESHOLDS,
+# the benchmark column indices per instance in obj_indices_for()/metric_index.
+# s4 has no runs of its own -- 'view_of' names the scenario whose physical
+# output it reads instead (see module docstring, 'Scenarios').
 SCENARIOS = {
-    's1': dict(constr_metric='#Params', mode='hard'),
-    's2': dict(constr_metric='Latency', mode='hard'),
-    's3': dict(constr_metric='#Params', mode='soft'),
-    's4': dict(constr_metric='Latency', mode='soft'),
+    's1': dict(obj_metrics=('Err.', 'FLOPs'),   constr_metric='#Params', mode='hard'),
+    's2': dict(obj_metrics=('Err.', '#Params'), constr_metric='Latency', mode='hard'),
+    's3': dict(obj_metrics=('Err.', '#Params'), constr_metric='FLOPs',   mode='soft'),
+    's4': dict(obj_metrics=('Err.', '#Params'), constr_metric='Latency', mode='soft', view_of='s2'),
 }
+
+# Output-path tag per scenario's objective set (see module docstring, 'Output
+# layout'). Metric names are mapped to short slugs; every combination in
+# SCENARIOS today is covered explicitly, with a generic fallback for future
+# additions.
+_METRIC_SLUG = {'Err.': 'err', '#Params': 'params', 'FLOPs': 'flops', 'Latency': 'latency'}
+
+
+def _objtag(obj_metrics):
+    return 'obj-' + '-'.join(_METRIC_SLUG.get(m, m.lower().strip('.#')) for m in obj_metrics)
+
+
+def obj_indices_for(suite, pid, scenario):
+    """Benchmark output-column indices for a scenario's objectives at one
+    instance, resolved by metric NAME (KeyError if this instance does not
+    define one of them)."""
+    return [metric_index(suite, pid, m) for m in SCENARIOS[scenario]['obj_metrics']]
+
 
 METHODS = ['random', 'samos', 'samos-cheap']
 
@@ -260,8 +341,9 @@ class _ConstraintsAsPenaltyMO(ConstraintsAsPenalty):
     ``F + penalty * np.reshape(CV, F.shape)``. ``calc_cv`` returns one
     aggregated violation per individual, shape ``(n,)`` -- that reshape only
     works when ``F`` is single-column (``n.size == n_obj==1 * n``). Our inner
-    problems have ``n_obj=len(OBJ_INDICES)=2`` (Err, FLOPs) with one
-    constraint, so ``CV.size == n`` but ``F.size == 2n``, and pymoo's own
+    problems have ``n_obj=len(obj_indices)=2`` (every current scenario picks
+    exactly two objectives) with one constraint, so ``CV.size == n`` but
+    ``F.size == 2n``, and pymoo's own
     reshape raises ``ValueError: cannot reshape array of size n into shape
     (n,2)`` (confirmed against the installed build). This override is
     otherwise identical to pymoo's; it only replaces the exact reshape with
@@ -428,16 +510,17 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
 
     cfg          = SCENARIOS[scenario]
     benchmark    = get_benchmark(suite, pid)
+    obj_indices  = obj_indices_for(suite, pid, scenario)
     constr_index = metric_index(suite, pid, cfg['constr_metric'])
     threshold    = THRESHOLDS[(suite, pid)][cfg['constr_metric']]
 
-    problem  = ConstrainedEvoXBenchProblem(benchmark, OBJ_INDICES, constr_index, threshold)
+    problem  = ConstrainedEvoXBenchProblem(benchmark, obj_indices, constr_index, threshold)
     callback = FeasibilityAwareEvoxBenchCallback(
-        benchmark, OBJ_INDICES, constr_index, threshold,
+        benchmark, obj_indices, constr_index, threshold,
         compute_indicators=compute_indicators)
 
     algorithm, copy_algorithm = build_algorithm(
-        method, benchmark, suite, pid, OBJ_INDICES, constr_index, threshold,
+        method, benchmark, suite, pid, obj_indices, constr_index, threshold,
         handler, seed, pop_size, n_doe, n_infill, n_gen_inner, inner_pop_size,
         penalty, n_gen)
 
@@ -497,12 +580,33 @@ def main(args):
     scenario = args.scenario
     suite, pid = args.suite, args.pid
     cfg = SCENARIOS[scenario]
+
+    if 'view_of' in cfg:
+        print(f"ERROR: --scenario {scenario} has no runs of its own -- it is an analysis "
+              f"view of --scenario {cfg['view_of']}'s physical output (identical objectives, "
+              f"constraint, threshold and handler set; only the hard/soft framing differs, "
+              f"see module docstring, 'Scenarios'). Run --scenario {cfg['view_of']} instead; "
+              f"analyse_constraint.py reads its pkls under an {scenario} view too.")
+        return 1
+
     if (suite, pid) not in THRESHOLDS:
         print(f'ERROR: no thresholds defined for {suite}/pid{pid} '
               f'(available: {sorted(THRESHOLDS)}) -- see THRESHOLDS.md.')
         return 1
+    if cfg['constr_metric'] not in THRESHOLDS[(suite, pid)]:
+        print(f"ERROR: {suite}/pid{pid} has no {cfg['constr_metric']!r} threshold "
+              f"(scenario {scenario} constrains it) -- available: "
+              f"{sorted(THRESHOLDS[(suite, pid)])}; see THRESHOLDS.md.")
+        return 1
     threshold = THRESHOLDS[(suite, pid)][cfg['constr_metric']]
 
+    try:
+        obj_indices_for(suite, pid, scenario)   # validate objectives resolve before any runs start
+    except KeyError as exc:
+        print(f'ERROR: {exc}')
+        return 1
+
+    objtag = _objtag(cfg['obj_metrics'])
     handlers, default_handler = _resolve_handlers(scenario, args)
 
     # (method, handler) work list; RandomGA runs only its default + h1.
@@ -525,25 +629,39 @@ def main(args):
         for method, handler in pairs:
             run_i += 1
             save_dir = os.path.join(
-                args.results_root, scenario, suite, f'pid{pid}', budget_folder,
+                args.results_root, scenario, suite, f'pid{pid}', objtag, budget_folder,
                 method, handler)
             os.makedirs(save_dir, exist_ok=True)
             out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
 
             if os.path.exists(out_path) and not args.overwrite:
-                print(f'[SKIP {run_i}/{total_runs}] {scenario}/{suite}/pid{pid}/'
+                print(f'[SKIP {run_i}/{total_runs}] {scenario}/{suite}/pid{pid}/{objtag}/'
                       f'{method}/{handler}/seed_{seed} already exists')
                 with open(out_path, 'rb') as f:
                     data = pickle.load(f)
             else:
                 print(f'\n[RUN {run_i}/{total_runs}] scenario={scenario} {suite}/pid{pid} '
-                      f'(mode={cfg["mode"]}, constr={cfg["constr_metric"]}, T={threshold:.4f})  '
+                      f'(mode={cfg["mode"]}, objectives={"/".join(cfg["obj_metrics"])}, '
+                      f'constr={cfg["constr_metric"]}, T={threshold:.4f})  '
                       f'method={method}  handler={handler}  seed={seed}  '
                       f'pop={args.pop_size}  n_gen={args.n_gen}')
                 data = run_single(
                     method, scenario, suite, pid, handler, seed, args.pop_size,
                     args.n_gen, args.n_doe, args.n_infill, args.n_gen_inner,
                     args.inner_pop_size, args.penalty)
+                # Self-describing pkl (author request): everything needed to
+                # re-derive this run's config without consulting the output
+                # path or SCENARIOS/THRESHOLDS at whatever version they are
+                # when the pkl is read later. Legacy (untagged-path) pkls
+                # predate this key; analyse_constraint.py falls back to its
+                # path+LEGACY_CONFIG map when it is absent.
+                data['meta'] = dict(
+                    suite=suite, pid=pid, scenario=scenario, objtag=objtag,
+                    obj_metrics=tuple(cfg['obj_metrics']), constr_metric=cfg['constr_metric'],
+                    threshold=threshold, mode=cfg['mode'], handler=handler, method=method,
+                    seed=seed, pop_size=args.pop_size, n_gen=args.n_gen,
+                    n_gen_inner=args.n_gen_inner, config='r3',
+                )
                 with open(out_path, 'wb') as f:
                     pickle.dump(data, f)
                 print(f'  Saved -> {out_path}')
