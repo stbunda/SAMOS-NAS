@@ -110,11 +110,45 @@ an off-default scenario x handler combination: stress / wrong-model rows
                        when a parent is infeasible -- only the survival
                        mechanism is replaced, so that residual feasibility
                        pressure is accepted and documented, not patched.
+  b0-as-obj          : constraint-as-objective baseline (B0). No G anywhere
+                       in the search: the outer problem is UNCONSTRAINED,
+                       3-objective (the scenario's two objectives plus its
+                       constrained metric appended as an ordinary third
+                       objective, resolved by name; asserted == 3 in
+                       run_single). samos -> all 3 objectives predicted (3
+                       surrogates); samos-cheap -> the instance's cheap
+                       columns among those 3 evaluated exactly, the rest
+                       predicted (same _obj_split split as every other
+                       handler, just over 3 columns instead of 2). No
+                       constr_surrogate for either method -- the constrained
+                       metric IS an objective here. Search mechanism is
+                       SMS-EMOA (SAMOS2's inner_algorithm), chosen by
+                       preliminary study (D31, experiments/constraint/
+                       prelim_3obj.py): plain NSGA-II's crowding-distance
+                       selection degrades noticeably at 3 objectives on
+                       these instances, SMS-EMOA did not. Evaluation/
+                       scoring is unaffected: the callback still gets the
+                       scenario's TWO objective columns + the usual
+                       constr_index/threshold, so indicators stay comparable
+                       to every other handler row (the 3-obj archive is
+                       projected onto the feasible 2-obj front post hoc, see
+                       problem/evoxbench/callbacks.py). SAMOS2's archive-
+                       seeding RankAndCrowding (top_pop in _infill) still
+                       runs plain (feasibility-agnostic) crowding at 3
+                       objectives for this handler -- that degradation is
+                       deliberately left in place; it is part of what B0
+                       measures, not a bug to fix here. Output path gets a
+                       distinct 3-objective objtag (_objtag_b0 below) so a
+                       b0-as-obj run can never be mistaken for a 2-objective
+                       row by path alone; its meta additionally records the
+                       3 search objectives next to the 2 scoring objectives
+                       (see 'Output layout').
 
 For method 'random', only h1-rejection and the scenario default are run:
-every other handler acts purely on selection pressure that RandomGA does not
-have, so those runs would be byte-identical duplicates of its default run --
-the runner prints [SKIP] instead and analysis replicates the row.
+every other handler -- including b0-as-obj -- acts purely on selection
+pressure that RandomGA does not have, so those runs would be byte-identical
+duplicates of its default run -- the runner prints [SKIP] instead and
+analysis replicates the row.
 
 Output layout (adds an objective-set tag level on top of the handler level):
   {results_root}/{scenario}/{suite}/pid{pid}/{objtag}/{budget}/{method}/{handler}/seed_{N}.pkl
@@ -133,6 +167,18 @@ carries a 'meta' dict (suite/pid/scenario/objtag/objectives/constraint/
 threshold/mode/handler/method/seed/pop_size/n_gen/n_gen_inner/config) so it
 is self-describing without consulting the writing code's current SCENARIOS/
 THRESHOLDS state; legacy pkls predate this key.
+
+b0-as-obj's objtag is DIFFERENT from its scenario's normal objtag: it
+encodes the 3-column search-objective set instead (_objtag_b0() below,
+e.g. 'obj-err-flops-params-b0' for s1), so the path alone makes an
+unconstrained 3-objective run impossible to confuse with a 2-objective
+handler row even though the handler-subdir level would already prevent a
+literal collision. meta['obj_metrics'] / meta['constr_metric'] still record
+the scenario's normal 2-objective scoring config (unchanged, so
+analyse_constraint.py's config-signature groups b0-as-obj rows with every
+other handler row of the same scenario -- they are scored in the same
+2-objective space); meta gains a 'search_obj_metrics' key (3 names) on
+b0-as-obj rows only, recording what was actually searched.
 
 Methods
 -------
@@ -177,6 +223,8 @@ Examples
   python experiments/constraint/run_constraint.py --scenario s3 --suite in1kmop --pid 8
   python experiments/constraint/run_constraint.py --scenario s2 --method samos --handler h3-adaptive-penalty
   python experiments/constraint/run_constraint.py --scenario s1 --all_handlers
+  python experiments/constraint/run_constraint.py --scenario s1 --method samos --handler b0-as-obj \\
+      --suite c10mop --pid 3
   python experiments/constraint/run_constraint.py --scenario s4              # refuses: see --scenario s2
   python experiments/constraint/run_constraint.py --migrate                     # copy round-1 flat pkls
   python experiments/constraint/run_constraint.py --scenario s2 --method samos-cheap \\
@@ -199,8 +247,10 @@ sys.path.insert(0, _REPO_ROOT)
 
 import numpy as np
 from pymoo.algorithms.moo.nsga2 import NSGA2, RankAndCrowding
+from pymoo.algorithms.moo.sms import SMSEMOA
 from pymoo.constraints.as_penalty import ConstraintsAsPenalty
 from pymoo.core.individual import calc_cv
+from pymoo.core.problem import Problem
 from pymoo.optimize import minimize
 from pymoo.util.misc import from_dict
 
@@ -303,6 +353,14 @@ def _objtag(obj_metrics):
     return 'obj-' + '-'.join(_METRIC_SLUG.get(m, m.lower().strip('.#')) for m in obj_metrics)
 
 
+def _objtag_b0(search_obj_metrics):
+    """b0-as-obj's own objtag: the 3-column SEARCH objective set (scenario's
+    2 objectives + its constrained metric), suffixed so it can never be
+    mistaken for a 2-objective row by path alone (see module docstring,
+    'Output layout'). E.g. s1 -> 'obj-err-flops-params-b0'."""
+    return _objtag(search_obj_metrics) + '-b0'
+
+
 def obj_indices_for(suite, pid, scenario):
     """Benchmark output-column indices for a scenario's objectives at one
     instance, resolved by metric NAME (KeyError if this instance does not
@@ -314,7 +372,7 @@ METHODS = ['random', 'samos', 'samos-cheap']
 
 # ─── handler axis ─────────────────────────────────────────────────────────────
 HANDLERS = ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty',
-            'h4-cdp', 'h5-eps', 'h6-sr']
+            'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj']
 
 # Scenario-default handler = the round-1 wiring, keyed by the scenario's mode.
 DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-penalty'}
@@ -322,11 +380,13 @@ DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-penalty'}
 # Scenario -> handler-row matrix (config, not code). Includes each
 # scenario's default; --all_handlers runs exactly this row. S2 carries the
 # h2/h3 penalty stress rows; s3/s4 carry the h1/h4 wrong-model controls.
+# b0-as-obj (D31) is on every row -- s4 stays a view of s2, so its row just
+# documents the same set s2 physically runs.
 SCENARIO_HANDLERS = {
-    's1': ['h1-rejection', 'h2-penalty', 'h4-cdp', 'h5-eps', 'h6-sr'],
-    's2': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr'],
-    's3': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr'],
-    's4': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr'],
+    's1': ['h1-rejection', 'h2-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
+    's2': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
+    's3': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj'],
+    's4': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj'],
 }
 
 # Handlers that act on selection pressure only are meaningless for RandomGA:
@@ -370,6 +430,81 @@ def _obj_split(obj_indices, cheap_cols):
     return predict_pos, real_pos
 
 
+class B0ObjectiveProblem(Problem):
+    """Outer problem for the b0-as-obj handler: UNCONSTRAINED search over
+    ``obj_indices`` benchmark columns (the scenario's 2 objectives + its
+    constrained metric, in that order) -- no ``G`` anywhere. Same
+    evaluate-once / normalize-once / non-finite-guard convention as
+    ``ConstrainedEvoXBenchProblem`` (problem/evoxbench/constrained_problem.py),
+    minus the constraint machinery."""
+
+    def __init__(self, benchmark, obj_indices, no_norm: bool = False):
+        ss = benchmark.search_space
+        self.obj_indices = list(obj_indices)
+        super().__init__(
+            n_var=ss.n_var,
+            n_obj=len(self.obj_indices),
+            xl=np.asarray(ss.lb, dtype=float),
+            xu=np.asarray(ss.ub, dtype=float),
+        )
+        self.benchmark    = benchmark
+        self.no_norm      = no_norm
+        self.n_eval_calls = 0
+
+    def _evaluate(self, X, out, *args, **kwargs):
+        X_int = np.round(X).astype(int)
+        F = self.benchmark.evaluate(X_int, true_eval=False)
+        if not self.no_norm and not self.benchmark.normalized_objectives:
+            F = self.benchmark.normalize(F)
+        F = np.where(np.isfinite(F), F, 1.0)
+        out['F'] = F[:, self.obj_indices]
+        self.n_eval_calls += len(X_int)
+
+
+class B0SurrogateProblemEvox(Problem):
+    """Inner problem for the b0-as-obj handler: the unconstrained,
+    3-objective counterpart of ``ConstrainedSurrogateProblemEvox`` (same
+    predict/real split over output-column POSITIONS into ``obj_indices``,
+    same evaluate-once / normalize-once / non-finite-guard convention) --
+    minus the constraint. No ``constr_surrogate`` seam: the constrained
+    metric is an ordinary predicted-or-real objective column here."""
+
+    def __init__(self, surrogates, obj_indices, predict_obj_indices,
+                 real_obj_indices, benchmark, no_norm: bool = False):
+        ss = benchmark.search_space
+        self.obj_indices         = list(obj_indices)
+        self.predict_obj_indices = list(predict_obj_indices)
+        self.real_obj_indices    = list(real_obj_indices)
+        super().__init__(
+            n_var=ss.n_var,
+            n_obj=len(self.obj_indices),
+            xl=np.asarray(ss.lb, dtype=float),
+            xu=np.asarray(ss.ub, dtype=float),
+        )
+        self.surrogates = surrogates
+        self.benchmark  = benchmark
+        self.no_norm    = no_norm
+
+    def _evaluate(self, X, out, *args, **kwargs):
+        n = len(X)
+        F = np.zeros((n, self.n_obj))
+
+        if self.real_obj_indices:
+            X_int   = np.round(X).astype(int)
+            F_bench = self.benchmark.evaluate(X_int, true_eval=False)
+            if not self.no_norm and not self.benchmark.normalized_objectives:
+                F_bench = self.benchmark.normalize(F_bench)
+            F_bench = np.where(np.isfinite(F_bench), F_bench, 1.0)
+            for pos in self.real_obj_indices:
+                F[:, pos] = F_bench[:, self.obj_indices[pos]]
+
+        X_float = X.astype(float)
+        for surrogate, pos in zip(self.surrogates, self.predict_obj_indices):
+            F[:, pos] = np.asarray(surrogate.predict(X_float)).squeeze()
+
+        out['F'] = F
+
+
 def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
                      threshold, handler, seed, pop_size, n_doe, n_infill,
                      n_gen_inner, inner_pop_size, penalty, n_gen):
@@ -407,17 +542,44 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
         predict_pos = list(range(len(obj_indices)))
         real_pos    = []
         surrogates       = [XGBoost(100, seed=rng.randint(0, 2**31 - 1)) for _ in predict_pos]
-        constr_surrogate = XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+        # b0-as-obj: no constr_surrogate -- the constrained metric is an
+        # ordinary predicted objective column here, never a G.
+        constr_surrogate = (None if handler == 'b0-as-obj'
+                             else XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
 
     elif method == 'samos-cheap':
         cheap_cols = set(BENCHMARK_META[suite][pid].get('cheap_obj_indices', []))
         predict_pos, real_pos = _obj_split(obj_indices, cheap_cols)
         surrogates = [XGBoost(100, seed=rng.randint(0, 2**31 - 1)) for _ in predict_pos]
-        exact_constr = constr_index in cheap_cols   # H7: cheap constraint -> exact
-        constr_surrogate = None if exact_constr else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+        if handler == 'b0-as-obj':
+            constr_surrogate = None   # same reason as the 'samos' branch above.
+        else:
+            exact_constr = constr_index in cheap_cols   # H7: cheap constraint -> exact
+            constr_surrogate = None if exact_constr else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
 
     else:
         raise ValueError(f'Unknown method: {method!r}')
+
+    if handler == 'b0-as-obj':
+        # B0 baseline (D31): unconstrained ``len(obj_indices)``-objective
+        # (== 3, enforced by the caller) search, no wrap_inner, no
+        # constr_surrogate, SMS-EMOA as the inner algorithm -- empirically
+        # the strongest of {NSGA-II, SMS-EMOA, NSGA-III} at 3 objectives on
+        # these instances (experiments/constraint/prelim_3obj.py). SAMOS2's
+        # archive-seeding RankAndCrowding (top_pop in _infill) still runs
+        # plain crowding at 3 objectives here -- deliberately left as part
+        # of what this baseline measures, see module docstring.
+        def factory(surrs):
+            return B0SurrogateProblemEvox(surrs, obj_indices, predict_pos, real_pos, benchmark)
+
+        algorithm = SAMOS2(
+            sampling=sampler, surrogates=surrogates, surrogate_problem_factory=factory,
+            predict_obj_indices=predict_pos,
+            crossover=crossover, mutation=mutation, n_doe=n_doe_, n_infill=n_infill_,
+            n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
+            inner_algorithm=SMSEMOA,
+        )
+        return algorithm, True
 
     # ── handler wiring (scenario-independent) ─────────────────────────────────
     # wrap_inner: callable(inner) applied inside the factory each outer
@@ -510,17 +672,32 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
 
     cfg          = SCENARIOS[scenario]
     benchmark    = get_benchmark(suite, pid)
-    obj_indices  = obj_indices_for(suite, pid, scenario)
+    obj_indices  = obj_indices_for(suite, pid, scenario)   # scenario's 2 scoring objectives -- always
     constr_index = metric_index(suite, pid, cfg['constr_metric'])
     threshold    = THRESHOLDS[(suite, pid)][cfg['constr_metric']]
 
-    problem  = ConstrainedEvoXBenchProblem(benchmark, obj_indices, constr_index, threshold)
+    if handler == 'b0-as-obj':
+        # B0 (D31): unconstrained search over the scenario's 2 objectives
+        # PLUS the constrained metric as an ordinary 3rd objective -- no G.
+        # The callback below still only sees the scenario's 2 objectives +
+        # constr_index/threshold, so indicators/feasibility scoring stay
+        # identical to every other handler row (search space differs, the
+        # scored space does not -- see module docstring).
+        search_obj_indices = obj_indices + [constr_index]
+        problem = B0ObjectiveProblem(benchmark, search_obj_indices)
+        assert problem.n_obj == 3, (
+            f'b0-as-obj requires exactly 3 search objectives, got {problem.n_obj} '
+            f'({scenario}/{suite}/pid{pid})')
+    else:
+        search_obj_indices = obj_indices
+        problem = ConstrainedEvoXBenchProblem(benchmark, obj_indices, constr_index, threshold)
+
     callback = FeasibilityAwareEvoxBenchCallback(
         benchmark, obj_indices, constr_index, threshold,
         compute_indicators=compute_indicators)
 
     algorithm, copy_algorithm = build_algorithm(
-        method, benchmark, suite, pid, obj_indices, constr_index, threshold,
+        method, benchmark, suite, pid, search_obj_indices, constr_index, threshold,
         handler, seed, pop_size, n_doe, n_infill, n_gen_inner, inner_pop_size,
         penalty, n_gen)
 
@@ -607,6 +784,11 @@ def main(args):
         return 1
 
     objtag = _objtag(cfg['obj_metrics'])
+    # b0-as-obj's own 3-column objtag (scenario objectives + constrained
+    # metric); only used for handler == 'b0-as-obj' below, see module
+    # docstring ('Output layout').
+    b0_search_obj_metrics = tuple(cfg['obj_metrics']) + (cfg['constr_metric'],)
+    b0_objtag = _objtag_b0(b0_search_obj_metrics)
     handlers, default_handler = _resolve_handlers(scenario, args)
 
     # (method, handler) work list; RandomGA runs only its default + h1.
@@ -628,14 +810,17 @@ def main(args):
     for seed in args.seeds:
         for method, handler in pairs:
             run_i += 1
+            # b0-as-obj writes under its own 3-objective objtag; every other
+            # handler keeps the scenario's normal (2-objective) objtag.
+            this_objtag = b0_objtag if handler == 'b0-as-obj' else objtag
             save_dir = os.path.join(
-                args.results_root, scenario, suite, f'pid{pid}', objtag, budget_folder,
+                args.results_root, scenario, suite, f'pid{pid}', this_objtag, budget_folder,
                 method, handler)
             os.makedirs(save_dir, exist_ok=True)
             out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
 
             if os.path.exists(out_path) and not args.overwrite:
-                print(f'[SKIP {run_i}/{total_runs}] {scenario}/{suite}/pid{pid}/{objtag}/'
+                print(f'[SKIP {run_i}/{total_runs}] {scenario}/{suite}/pid{pid}/{this_objtag}/'
                       f'{method}/{handler}/seed_{seed} already exists')
                 with open(out_path, 'rb') as f:
                     data = pickle.load(f)
@@ -655,12 +840,18 @@ def main(args):
                 # when the pkl is read later. Legacy (untagged-path) pkls
                 # predate this key; analyse_constraint.py falls back to its
                 # path+LEGACY_CONFIG map when it is absent.
+                # obj_metrics/constr_metric/mode stay the scenario's normal
+                # 2-objective SCORING config even for b0-as-obj (so its
+                # config-signature groups with the scenario's other handler
+                # rows in analyse_constraint.py); search_obj_metrics records
+                # what was actually searched, b0-as-obj rows only.
                 data['meta'] = dict(
-                    suite=suite, pid=pid, scenario=scenario, objtag=objtag,
+                    suite=suite, pid=pid, scenario=scenario, objtag=this_objtag,
                     obj_metrics=tuple(cfg['obj_metrics']), constr_metric=cfg['constr_metric'],
                     threshold=threshold, mode=cfg['mode'], handler=handler, method=method,
                     seed=seed, pop_size=args.pop_size, n_gen=args.n_gen,
                     n_gen_inner=args.n_gen_inner, config='r3',
+                    **({'search_obj_metrics': b0_search_obj_metrics} if handler == 'b0-as-obj' else {}),
                 )
                 with open(out_path, 'wb') as f:
                     pickle.dump(data, f)

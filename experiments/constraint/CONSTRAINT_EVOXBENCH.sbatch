@@ -19,9 +19,10 @@
 # below, re-submitting a killed/interrupted array index resumes from the
 # next missing seed rather than seed 0.
 #
-# Task count: 272 = 100 rounds-1/2 tasks (indices 0-99, FROZEN -- same
+# Task count: 304 = 100 rounds-1/2 tasks (indices 0-99, FROZEN -- same
 # (suite,pid,scenario,method,handler) table as before) + 172 round-3
-# additions (indices 100-271, APPENDED after so 0-99 keep their meaning).
+# additions (indices 100-271, FROZEN -- same as before) + 32 round-4 B0
+# additions (indices 272-303, APPENDED after so 0-271 keep their meaning).
 #
 # Round-3 (instance axis: the constrained metric on every 3-objective problem
 # is its own "removed third objective" -- s1 constrains #Params with
@@ -36,6 +37,24 @@
 #       random x {default=h2-penalty,h1}) = 6 x 12 = 72
 #   s2-union on pid4/pid9 x (samos,samos-cheap x {h1,h2,h3,h4,h5,h6} +
 #       random x {default=h4-cdp,h1}) = 2 x 14 = 28
+#
+# Round-4 (B0 baseline, constraint-as-objective, D31: unconstrained
+# 3-objective search -- scenario's 2 objectives + its constrained metric as
+# an ordinary 3rd objective, no G -- SMS-EMOA as the search/inner algorithm,
+# see run_constraint.py's 'b0-as-obj' handler docstring). samos/samos-cheap
+# only -- random has no selection pressure to lose at 3 objectives and is
+# skipped by run_constraint.py itself (prints [SKIP], byte-identical to its
+# default row), so no random entries are appended below:
+#   s1 on 8 instances (the six 3-obj pids + c10mop/4 + in1kmop/9, all of
+#       which already carry a #Params threshold) x {samos,samos-cheap} =
+#       8 x 2 = 16
+#   s3 on the six 3-obj pids only (pid4/pid9 have no FLOPs threshold) x
+#       {samos,samos-cheap} = 6 x 2 = 12
+#   s2-union on pid4/pid9 x {samos,samos-cheap} = 2 x 2 = 4
+#   total: 16 + 12 + 4 = 32, indices 272-303, own b0-as-obj objtag per
+#   scenario (see objtag_for() below) -- never the scenario's normal
+#   2-objective objtag, so these paths can never collide with any other
+#   handler's.
 #
 # run_constraint.py now ALWAYS writes an objective-set-tagged output path
 # ({scenario}/{suite}/pid{pid}/{objtag}/{budget}/{method}/{handler}/
@@ -80,14 +99,22 @@
 #            contiguous 12-blocks in that instance order)
 #   172-243  s3 on the same 6 instances, same shape (72)
 #   244-271  s2-union on c10mop:4, in1kmop:9 (28: 14 tasks per instance)
+#   ROUND-4 (272-303, B0 baseline -- see above):
+#   272-287  s1 x b0-as-obj on c10mop:4, in1kmop:9, c10mop:2,3,9,
+#            in1kmop:3,6,8 (16: 2 tasks -- samos,samos-cheap -- per instance,
+#            contiguous 2-blocks in that instance order)
+#   288-299  s3 x b0-as-obj on c10mop:2,3,9 / in1kmop:3,6,8, same shape (12)
+#   300-303  s2-union x b0-as-obj on c10mop:4, in1kmop:9 (4: 2 tasks per
+#            instance)
 #
 # Submit everything (existing results are skipped, so this is safe):
 #   sbatch experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
 #
-# Submit only rounds 1-2, or only round 3 (new submissions should usually
-# use this range):
+# Submit only rounds 1-2, only round 3, or only round 4 / B0 (new
+# submissions should usually use one of these ranges):
 #   sbatch --array=0-99%10   experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
 #   sbatch --array=100-271%10 experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
+#   sbatch --array=272-303%10 experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
 #
 # Submit a single scenario (defaults + additions, per the index map):
 #   e.g. c10mop/pid4 s2 defaults: --array=3-5 ; its handler additions: --array=33-43
@@ -102,8 +129,8 @@
 
 #SBATCH -J constraint_s1s4
 #SBATCH -c 2
-#SBATCH --array=100-199%20            # 272 tasks (suite,pid,scenario,method,handler), 10 concurrent
-##SBATCH --array=0-271%10            # 272 tasks (suite,pid,scenario,method,handler), 10 concurrent
+#SBATCH --array=272-303%20            # 304 tasks (suite,pid,scenario,method,handler), 10 concurrent
+##SBATCH --array=0-303%10            # 304 tasks (suite,pid,scenario,method,handler), 10 concurrent
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -149,12 +176,23 @@ scenario_handlers() {
     esac
 }
 # Output-path objective-set tag per scenario -- mirrors run_constraint.py's
-# _objtag(SCENARIOS[scenario]['obj_metrics']). Applies to every index in
-# COMBOS (0-271): run_constraint.py always writes the tagged path now, so
-# the scratch pre-copy / rsync-back below must use it too, even for the
-# frozen 0-99 block.
+# _objtag(SCENARIOS[scenario]['obj_metrics']) for every handler except
+# b0-as-obj, which gets its own 3-column tag (mirrors _objtag_b0(), see
+# run_constraint.py's 'b0-as-obj' docstring / 'Output layout'). Applies to
+# every index in COMBOS (0-303): run_constraint.py always writes the tagged
+# path now, so the scratch pre-copy / rsync-back below must use it too, even
+# for the frozen 0-271 block.
 objtag_for() {
-    case "$1" in
+    local scenario="$1" handler="$2"
+    if [ "$handler" = "b0-as-obj" ]; then
+        case "$scenario" in
+            s1)       echo "obj-err-flops-params-b0" ;;
+            s2|s4)    echo "obj-err-params-latency-b0" ;;
+            s3)       echo "obj-err-params-flops-b0" ;;
+        esac
+        return
+    fi
+    case "$scenario" in
         s1)          echo "obj-err-flops" ;;
         s2|s3|s4)    echo "obj-err-params" ;;
     esac
@@ -215,6 +253,24 @@ for INSTANCE in c10mop:4 in1kmop:9; do
         done
     done
 done
+# indices 272-303: round-4, B0 baseline (constraint-as-objective, D31).
+# samos/samos-cheap only per scenario's instance set (see header) -- no
+# random entries, run_constraint.py itself [SKIP]s that combination.
+for INSTANCE in c10mop:4 in1kmop:9 c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+    for METHOD in samos samos-cheap; do
+        COMBOS+=("${INSTANCE}:s1:${METHOD}:b0-as-obj")
+    done
+done
+for INSTANCE in c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+    for METHOD in samos samos-cheap; do
+        COMBOS+=("${INSTANCE}:s3:${METHOD}:b0-as-obj")
+    done
+done
+for INSTANCE in c10mop:4 in1kmop:9; do
+    for METHOD in samos samos-cheap; do
+        COMBOS+=("${INSTANCE}:s2:${METHOD}:b0-as-obj")
+    done
+done
 
 TASK_ENTRY="${COMBOS[$SLURM_ARRAY_TASK_ID]}"
 if [ -z "$TASK_ENTRY" ]; then
@@ -222,7 +278,7 @@ if [ -z "$TASK_ENTRY" ]; then
     exit 1
 fi
 IFS=':' read -r SUITE PID SCENARIO METHOD HANDLER <<< "$TASK_ENTRY"
-OBJTAG=$(objtag_for "$SCENARIO")   # mirrors run_constraint.py's output path -- see header
+OBJTAG=$(objtag_for "$SCENARIO" "$HANDLER")   # mirrors run_constraint.py's output path -- see header
 
 # --------- scratch setup -----------------------------------------------------------------------------------------------------------------------------------
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
