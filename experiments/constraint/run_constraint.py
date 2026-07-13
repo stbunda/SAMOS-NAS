@@ -38,12 +38,18 @@ random sample is feasible at each threshold, matching the ~50% design
 intent; the six 3-metric instances were checked against their own 10k
 samples the same way, see THRESHOLDS.md).
 
-  citysegmop (MoSegNAS, 24 vars) -- s5 and s6 -- both objectives sets keep
-  BENCHMARK_META's one cheap structural column (FLOPs/#Params respectively,
-  cheap_obj_indices=[2]) so the samos-cheap split still works; UNLIKE
-  c10mop/in1kmop, Err. is ALSO predictor-backed here (RankNet/lookup-table
-  surrogate), not just the constraint metric:
-    citysegmop/pid2 : Err/H1 Lat./FLOPs.    citysegmop/pid3 : Err/H1 Lat./#Params.
+  citysegmop (MoSegNAS, 24 vars) -- s2, per-instance override (see
+  SCENARIO_OVERRIDES below) -- not a new scenario: both pids run s2 (hard
+  constraint on an expensive metric), just with citysegmop's own latency
+  metric name, 'H1 Lat.' (not 'Latency'), and each pid's own cheap
+  structural column as the other objective (FLOPs for pid2, #Params for
+  pid3), mirroring s2's cheap-objectives / expensive-constraint split. Both
+  keep BENCHMARK_META's one cheap structural column (cheap_obj_indices=[2])
+  so the samos-cheap split still works; UNLIKE c10mop/in1kmop, Err. is ALSO
+  predictor-backed here (RankNet/lookup-table surrogate), not just the
+  constraint metric:
+    citysegmop/pid2 : Err/H1 Lat./FLOPs, s2 objectives {Err, FLOPs}.
+    citysegmop/pid3 : Err/H1 Lat./#Params, s2 objectives {Err, #Params}.
 
 Scenarios
 ---------
@@ -62,15 +68,21 @@ instance-independent; only the numeric threshold varies per instance
        as a hard cutoff either way, so a separate s4 run would duplicate s2's
        compute byte-for-byte. --scenario s4 refuses here with a message
        pointing at s2; analyse_constraint.py reads s2's pkls under an s4
-       view instead.
-  s5 : objectives {Err, FLOPs},   H1 Lat. <= T_h1lat, hard (citysegmop/pid2)
-  s6 : objectives {Err, #Params}, H1 Lat. <= T_h1lat, hard (citysegmop/pid3)
-       -- s2's role on the citysegmop suite: a hard constraint on a genuinely
-       expensive, predictor-backed metric (H1 Lat.), with the objective pair
-       chosen per pid so the OTHER objective is that pid's cheap structural
-       column (s5 keeps FLOPs for pid2, s6 keeps #Params for pid3), mirroring
-       s2's cheap-objectives / expensive-constraint split even though Err. is
-       predictor-backed here too (see Instances above).
+       view instead. This also covers citysegmop's s2 runs (see Instances
+       above and SCENARIO_OVERRIDES below) automatically -- s4 is a view of
+       s2 regardless of which instance's override produced the s2 pkls.
+
+Scenario ids above are scenario TYPES (their objectives/constraint-metric
+NAMES and hard/soft mode), instance-independent by construction.
+SCENARIO_OVERRIDES (defined next to SCENARIOS below) swaps in per-instance
+metric NAMES for instances whose own benchmark uses a different name for
+the same role -- on citysegmop the expensive-constraint metric is called
+'H1 Lat.' (not 'Latency'), so citysegmop/pid2 and citysegmop/pid3 both run
+s2 through this override rather than a new scenario (mode, handler set and
+every other s2 property are unchanged). scenario_cfg(scenario, suite, pid)
+resolves the effective (possibly overridden) config; every read of a
+scenario's obj_metrics/constr_metric goes through it, while mode/view_of
+checks keep reading the base SCENARIOS entry (overrides never carry those).
 
 Handlers
 --------
@@ -138,7 +150,7 @@ an off-default scenario x handler combination: stress / wrong-model rows
                        constr_surrogate for either method -- the constrained
                        metric IS an objective here. Search mechanism is
                        SMS-EMOA (SAMOS2's inner_algorithm), chosen by
-                       preliminary study (D31, experiments/constraint/
+                       preliminary study (experiments/constraint/
                        prelim_3obj.py): plain NSGA-II's crowding-distance
                        selection degrades noticeably at 3 objectives on
                        these instances, SMS-EMOA did not. Evaluation/
@@ -231,6 +243,28 @@ Known simplifications:
       against unpenalized archive F (the outer archive) when ranking for
       diversity. Both are accepted for round 1; see the experiment plan.
 
+Hard-evaluability gate (--gate)
+------------------------------------
+--gate turns the hard/soft mode axis into physics instead of a handler
+default: in HARD-mode scenarios every infeasible high-fidelity evaluation is
+counted as waste (n_hf_evaluated / n_hf_feasible on the algorithm, preferred
+by the callback's n_evaluated series) and DISCARDED -- its F is masked to
+np.inf by the outer problem (fail-safe sentinel; a leak ranks worst instead
+of corrupting sorts) and it never enters the archive, so objective
+surrogates train on feasible points only. The constraint surrogate trains on
+archive + rejection log (X and violation of every discarded point -- WHICH
+architectures failed is observable, their objectives are not). SAMOS2's DOE
+redraws full batches (counted + gated) until >= 2 feasible points exist;
+random gets NO such policy (an infeasible draw just consumes budget) and
+random x h1-rejection is [SKIP]ped outright (rejection resampling is a
+strategy, and for expensive constraints an unbudgeted oracle). Soft-mode
+scenarios run bit-identically to ungated -- they are the controls -- which
+makes s4 runnable under --gate (gated s2 != soft s4; the s2/s4 dedup applies
+only ungated). Gated runs REQUIRE a dedicated --results_root; meta records
+gate (per-run truth: False on soft rows even under --gate), penalty, and
+data['handler_state'] carries h3's w(t) / h5's eps(t) trajectories so any
+penalized/relaxed view is reconstructable from the pkl alone.
+
 Examples
 --------
   python experiments/constraint/run_constraint.py --scenario s1
@@ -246,6 +280,10 @@ Examples
       --pop_size 8 --n_gen 3 --n_gen_inner 4 --results_root /tmp/smoke
   python experiments/constraint/run_constraint.py --scenario s1 --threshold_set q25 \\
       --results_root results/constraint_25   # ~25%-feasible thresholds (THRESHOLDS_Q25)
+  python experiments/constraint/run_constraint.py --scenario s1 --gate \\
+      --results_root results/constraint_gated   # hard-evaluability gate
+  python experiments/constraint/run_constraint.py --scenario s2 --method samos \\
+      --handler h1-cdp-reject                    # rejection+CDP practitioner row
 """
 
 import argparse
@@ -418,9 +456,38 @@ SCENARIOS = {
     's2': dict(obj_metrics=('Err.', '#Params'), constr_metric='Latency', mode='hard'),
     's3': dict(obj_metrics=('Err.', '#Params'), constr_metric='FLOPs',   mode='soft'),
     's4': dict(obj_metrics=('Err.', '#Params'), constr_metric='Latency', mode='soft', view_of='s2'),
-    's5': dict(obj_metrics=('Err.', 'FLOPs'),   constr_metric='H1 Lat.', mode='hard'),   # citysegmop/pid2
-    's6': dict(obj_metrics=('Err.', '#Params'), constr_metric='H1 Lat.', mode='hard'),   # citysegmop/pid3
 }
+
+# Per-instance overrides of a scenario's obj_metrics/constr_metric NAMES
+# (config, not code) -- keyed by (suite, pid), then scenario id. Scenario ids
+# are scenario TYPES (s2 = hard constraint on an expensive metric); some
+# instances name the same-role metric differently or pair it with a
+# different cheap objective, so those metric names are per-instance while
+# mode/view_of stay the base SCENARIOS entry's (never overridden here).
+# citysegmop's latency metric is called 'H1 Lat.' (not 'Latency'), and each
+# pid keeps its own cheap structural column as the other s2 objective (see
+# module docstring, 'Instances' and 'Scenarios').
+SCENARIO_OVERRIDES = {
+    # s4 entries: same metric names as s2 (s4 is s2's soft counterpart);
+    # they only matter under --gate, where s4 becomes a physical run set
+    # -- ungated invocations never reach them (--scenario s4
+    # refuses without --gate).
+    ('citysegmop', 2): {'s2': dict(obj_metrics=('Err.', 'FLOPs'),   constr_metric='H1 Lat.'),
+                        's4': dict(obj_metrics=('Err.', 'FLOPs'),   constr_metric='H1 Lat.')},
+    ('citysegmop', 3): {'s2': dict(obj_metrics=('Err.', '#Params'), constr_metric='H1 Lat.'),
+                        's4': dict(obj_metrics=('Err.', '#Params'), constr_metric='H1 Lat.')},
+}
+
+
+def scenario_cfg(scenario, suite, pid):
+    """Effective scenario config at one instance: SCENARIOS[scenario] merged
+    with any SCENARIO_OVERRIDES[(suite, pid)][scenario] (metric names only --
+    mode/view_of always come from the base entry). Every read of a scenario's
+    obj_metrics/constr_metric should go through this, not SCENARIOS directly."""
+    cfg = dict(SCENARIOS[scenario])
+    cfg.update(SCENARIO_OVERRIDES.get((suite, pid), {}).get(scenario, {}))
+    return cfg
+
 
 # Output-path tag per scenario's objective set (see module docstring, 'Output
 # layout'). Metric names are mapped to short slugs; every combination in
@@ -444,10 +511,10 @@ def _objtag_b0(search_obj_metrics):
 
 
 def obj_indices_for(suite, pid, scenario):
-    """Benchmark output-column indices for a scenario's objectives at one
-    instance, resolved by metric NAME (KeyError if this instance does not
-    define one of them)."""
-    return [metric_index(suite, pid, m) for m in SCENARIOS[scenario]['obj_metrics']]
+    """Benchmark output-column indices for a scenario's (instance-resolved,
+    see scenario_cfg) objectives at one instance, resolved by metric NAME
+    (KeyError if this instance does not define one of them)."""
+    return [metric_index(suite, pid, m) for m in scenario_cfg(scenario, suite, pid)['obj_metrics']]
 
 
 METHODS = ['random', 'samos', 'samos-cheap']
@@ -460,7 +527,14 @@ HANDLERS = ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty',
             # b0-as-obj's advantage can be attributed to the formulation or
             # to SMS-EMOA. Run explicitly via --handler / the sbatch block.
             'h4-cdp-sms',   # constrained CDP, SMS-EMOA inner GA
-            'b0-nsga2']     # constraint-as-objective, NSGA-II inner GA
+            'b0-nsga2',     # constraint-as-objective, NSGA-II inner GA
+            # h1's infill-seam rejection COMBINED with the default
+            # feasibility-first survival -- the rejection+CDP hybrid that
+            # h1-rejection deliberately isolates away. The practitioner
+            # row: never spend a real evaluation on a candidate whose
+            # (predicted, or exact for cheap constraints) G says it cannot
+            # run, and stay feasibility-first everywhere else.
+            'h1-cdp-reject']
 
 # Handlers that search the 3-column objective set (scenario objectives +
 # constrained metric) instead of defining G.
@@ -472,15 +546,16 @@ DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-penalty'}
 # Scenario -> handler-row matrix (config, not code). Includes each
 # scenario's default; --all_handlers runs exactly this row. S2 carries the
 # h2/h3 penalty stress rows; s3/s4 carry the h1/h4 wrong-model controls.
-# b0-as-obj (D31) is on every row -- s4 stays a view of s2, so its row just
+# b0-as-obj is on every row -- s4 stays a view of s2, so its row just
 # documents the same set s2 physically runs.
+# h1-cdp-reject is on every row; NOTE the sbatch files do NOT mirror it
+# inside their frozen-index scenario_handlers() tables -- it is appended there
+# as its own contiguous block instead (see each file's index map).
 SCENARIO_HANDLERS = {
-    's1': ['h1-rejection', 'h2-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
-    's2': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
-    's3': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj'],
-    's4': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj'],
-    's5': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
-    's6': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
+    's1': ['h1-rejection', 'h2-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj', 'h1-cdp-reject'],
+    's2': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj', 'h1-cdp-reject'],
+    's3': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj', 'h1-cdp-reject'],
+    's4': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj', 'h1-cdp-reject'],
 }
 
 # Handlers that act on selection pressure only are meaningless for RandomGA:
@@ -601,13 +676,25 @@ class B0SurrogateProblemEvox(Problem):
 
 def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
                      threshold, handler, seed, pop_size, n_doe, n_infill,
-                     n_gen_inner, inner_pop_size, penalty, n_gen):
-    """Returns ``(algorithm, copy_algorithm)``; the second element is the
-    ``copy_algorithm`` value ``minimize`` must be called with. It is False
-    only for h3/h5 (their per-generation state objects read the live
+                     n_gen_inner, inner_pop_size, penalty, n_gen, gated=False):
+    """Returns ``(algorithm, copy_algorithm, handler_state)``. The second
+    element is the ``copy_algorithm`` value ``minimize`` must be called with:
+    False only for h3/h5 (their per-generation state objects read the live
     algorithm's archive through the factory closure's ``algo_ref``; pymoo's
     default algorithm deepcopy would sever that handle) and pymoo's default
-    True everywhere else."""
+    True everywhere else. ``handler_state`` is a (possibly empty) dict of
+    per-outer-generation handler-state trajectories (h3's adaptive
+    penalty weight, h5's epsilon -- appended live by the wrap_inner closures
+    so a stored pkl can reconstruct any penalized/relaxed view exactly
+    without replaying the update logic); run_single saves it under
+    ``data['handler_state']``.
+
+    ``gated`` switches on the hard-evaluability gate (hard-mode
+    scenarios under --gate): infeasible high-fidelity evaluations are
+    counted as waste and discarded, never archived -- see SAMOS2.hard_gate /
+    RandomGA.hard_gate. h3/h5's per-generation signals then come from the
+    algorithm's HF counters / rejection log instead of the (all-feasible by
+    construction) archive."""
     xl = np.asarray(benchmark.search_space.lb, dtype=int)
     xu = np.asarray(benchmark.search_space.ub, dtype=int)
 
@@ -620,15 +707,21 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
     n_infill_ = n_infill if n_infill is not None else pop_size
     inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
 
+    handler_state = {}
+
     if method == 'random':
         # No surrogate, no selection pressure: every handler except
         # h1-rejection is a no-op for this method (main() [SKIP]s them).
         # h1 swaps the sampler for exact rejection sampling; DOE and every
         # infill batch RandomGA draws are then rejection-resampled.
+        # Gated runs never reach the h1 branch (main() [SKIP]s random x h1
+        # under --gate: random has no strategy -- an infeasible draw
+        # just consumes budget, no replacement).
         if handler == 'h1-rejection':
             g_fn    = make_benchmark_g_fn(benchmark, constr_index, threshold)
             sampler = RejectionSampling(sampler, g_fn)
-        return RandomGA(pop_size=pop_size, sampling=sampler, eliminate_duplicates=elim), True
+        return RandomGA(pop_size=pop_size, sampling=sampler, eliminate_duplicates=elim,
+                        hard_gate=gated), True, handler_state
 
     rng = np.random.RandomState(seed)
 
@@ -667,14 +760,26 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
         def factory(surrs):
             return B0SurrogateProblemEvox(surrs, obj_indices, predict_pos, real_pos, benchmark)
 
+        # B0's outer problem defines no G, so the gate/waste counters read
+        # the constrained metric straight off evaluated F (it is the LAST
+        # search-objective column, appended by run_single): reality does not
+        # care that this formulation ignores the constraint -- an infeasible
+        # evaluation fails the same way for every handler. Passed
+        # unconditionally: ungated runs use it for exact counters only.
+        _constr_pos = len(obj_indices) - 1
+
+        def b0_gate_g_fn(pop, _t=threshold, _p=_constr_pos):
+            return (pop.get('F')[:, _p] - _t) / _t
+
         algorithm = SAMOS2(
             sampling=sampler, surrogates=surrogates, surrogate_problem_factory=factory,
             predict_obj_indices=predict_pos,
             crossover=crossover, mutation=mutation, n_doe=n_doe_, n_infill=n_infill_,
             n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
             inner_algorithm=SMSEMOA if handler == 'b0-as-obj' else NSGA2,
+            hard_gate=gated, gate_g_fn=b0_gate_g_fn,
         )
-        return algorithm, True
+        return algorithm, True, handler_state
 
     # ── handler wiring (scenario-independent) ─────────────────────────────────
     # wrap_inner: callable(inner) applied inside the factory each outer
@@ -706,22 +811,44 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
 
     elif handler == 'h3-adaptive-penalty':
         pen = AdaptivePenaltyProblem(w0=1.0, target=0.5, c=1.2)
+        handler_state['penalty_trajectory'] = []   # w(t), one entry per outer gen
 
         def wrap_inner(inner):
-            arc = algo_ref[0]._archive    # live archive (copy_algorithm=False)
-            if len(arc) > 0:
-                pen.adapt(feasible_fraction(arc))
+            algo = algo_ref[0]            # live handle (copy_algorithm=False)
+            if gated:
+                # Gated archive is all-feasible by construction -- the
+                # adaptive signal is the cumulative HF feasibility ratio
+                # (evaluated feasible / evaluated total) instead.
+                if algo.n_hf_evaluated > 0:
+                    pen.adapt(algo.n_hf_feasible / algo.n_hf_evaluated)
+            else:
+                arc = algo._archive
+                if len(arc) > 0:
+                    pen.adapt(feasible_fraction(arc))
+            handler_state['penalty_trajectory'].append(float(pen.weight))
             return pen.wrap(inner)
 
         copy_algorithm = False            # live-archive handle, see docstring
 
     elif handler == 'h5-eps':
         eps = EpsilonRelaxation(n_gen_total=n_gen)
+        handler_state['eps_trajectory'] = []       # eps(t), one entry per outer gen
 
         def wrap_inner(inner):
-            eps.maybe_init_eps0(algo_ref[0]._archive)   # eps0 = mean DOE CV
-            wrapped = eps.wrap(inner)                   # snapshots epsilon(t)
-            eps.advance()                               # t+1 for next generation
+            algo = algo_ref[0]
+            if gated:
+                # eps0 = mean CV over ALL DOE evaluations: gated archive
+                # members have CV 0, the rejected draws carry their
+                # violation in the rejection log.
+                if eps.eps0 is None and algo.n_hf_evaluated > 0:
+                    total_cv = (float(np.sum(np.maximum(0.0, algo._rejected_G)))
+                                if algo._rejected_G is not None else 0.0)
+                    eps.set_eps0(total_cv / algo.n_hf_evaluated)
+            else:
+                eps.maybe_init_eps0(algo._archive)   # eps0 = mean DOE CV
+            handler_state['eps_trajectory'].append(float(eps.eps))
+            wrapped = eps.wrap(inner)                # snapshots epsilon(t)
+            eps.advance()                            # t+1 for next generation
             return wrapped
 
         copy_algorithm = False            # live-archive handle, see docstring
@@ -744,6 +871,16 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
         _surv.filter_infeasible = False
         samos2_kwargs['inner_algorithm'] = partial(NSGA2, survival=_surv)
 
+    elif handler == 'h1-cdp-reject':
+        # h1's infill-seam rejection COMBINED with the default
+        # feasibility-first RankAndCrowding survival -- the rejection+CDP
+        # hybrid that h1-rejection deliberately isolates away. The
+        # practitioner row: never spend a real evaluation on a candidate
+        # whose (predicted, or exact for cheap constraints) G says it
+        # cannot run, and stay feasibility-first everywhere else. Under the
+        # hard gate this is the expected default wiring.
+        samos2_kwargs['infill_selector'] = RejectionInfillSelector()
+
     else:
         raise ValueError(f'Unknown handler: {handler!r}')
 
@@ -760,23 +897,29 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
         crossover=crossover, mutation=mutation, n_doe=n_doe_, n_infill=n_infill_,
         n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
         constr_surrogate=constr_surrogate,
+        hard_gate=gated,
         **samos2_kwargs,
     )
     algo_ref.append(algorithm)   # late-bind the live handle for h3/h5 closures
-    return algorithm, copy_algorithm
+    return algorithm, copy_algorithm, handler_state
 
 
 def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
                n_doe, n_infill, n_gen_inner, inner_pop_size, penalty,
-               threshold_set='q50', compute_indicators=True):
+               threshold_set='q50', compute_indicators=True, gate=False):
     np.random.seed(seed)
     random.seed(seed)
 
-    cfg          = SCENARIOS[scenario]
+    cfg          = scenario_cfg(scenario, suite, pid)
     benchmark    = get_benchmark(suite, pid)
     obj_indices  = obj_indices_for(suite, pid, scenario)   # scenario's 2 scoring objectives -- always
     constr_index = metric_index(suite, pid, cfg['constr_metric'])
     threshold    = THRESHOLD_SETS[threshold_set][(suite, pid)][cfg['constr_metric']]
+
+    # Hard-evaluability gate: only hard-mode scenarios gate; soft-mode
+    # runs in a gated campaign behave exactly like ungated ones (they are
+    # the controls -- the hard/soft axis is finally physical).
+    gated = bool(gate) and cfg['mode'] == 'hard'
 
     if handler in B0_HANDLERS:
         # B0: unconstrained search over the scenario's 2 objectives
@@ -784,7 +927,11 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
         # The callback below still only sees the scenario's 2 objectives +
         # constr_index/threshold, so indicators/feasibility scoring stay
         # identical to every other handler row (search space differs, the
-        # scored space does not -- see module docstring).
+        # scored space does not -- see module docstring). Gating for b0 is
+        # algorithm-side only (SAMOS2.gate_g_fn reads the constrained-metric
+        # column of evaluated F): the problem class stays unconstrained and
+        # unmasked -- gated rows are discarded whole, so their F is never
+        # consumed by anything.
         search_obj_indices = obj_indices + [constr_index]
         problem = B0ObjectiveProblem(benchmark, search_obj_indices)
         assert problem.n_obj == 3, (
@@ -792,23 +939,30 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
             f'({scenario}/{suite}/pid{pid})')
     else:
         search_obj_indices = obj_indices
-        problem = ConstrainedEvoXBenchProblem(benchmark, obj_indices, constr_index, threshold)
+        problem = ConstrainedEvoXBenchProblem(benchmark, obj_indices, constr_index,
+                                              threshold, gate=gated)
 
     callback = FeasibilityAwareEvoxBenchCallback(
         benchmark, obj_indices, constr_index, threshold,
         compute_indicators=compute_indicators)
 
-    algorithm, copy_algorithm = build_algorithm(
+    algorithm, copy_algorithm, handler_state = build_algorithm(
         method, benchmark, suite, pid, search_obj_indices, constr_index, threshold,
         handler, seed, pop_size, n_doe, n_infill, n_gen_inner, inner_pop_size,
-        penalty, n_gen)
+        penalty, n_gen, gated=gated)
 
     results = minimize(
         problem=problem, algorithm=algorithm, termination=('n_gen', n_gen),
         seed=seed, callback=callback, save_history=False, verbose=True,
         copy_algorithm=copy_algorithm,
     )
-    return results.algorithm.callback.data
+    data = results.algorithm.callback.data
+    # Per-generation handler-state trajectories (h3 penalty weight, h5
+    # epsilon) -- stored so any penalized/relaxed view is reconstructable
+    # from the pkl alone, without replaying update logic.
+    if handler_state:
+        data['handler_state'] = handler_state
+    return data
 
 
 def migrate(args):
@@ -868,14 +1022,16 @@ def main(args):
     budget_folder = f'B{args.n_gen * args.pop_size}_P{args.pop_size}'
     scenario = args.scenario
     suite, pid = args.suite, args.pid
-    cfg = SCENARIOS[scenario]
+    base_cfg = SCENARIOS[scenario]   # mode/view_of always come from the base entry
 
-    if 'view_of' in cfg:
+    if 'view_of' in base_cfg and not args.gate:
         print(f"ERROR: --scenario {scenario} has no runs of its own -- it is an analysis "
-              f"view of --scenario {cfg['view_of']}'s physical output (identical objectives, "
+              f"view of --scenario {base_cfg['view_of']}'s physical output (identical objectives, "
               f"constraint, threshold and handler set; only the hard/soft framing differs, "
-              f"see module docstring, 'Scenarios'). Run --scenario {cfg['view_of']} instead; "
-              f"analyse_constraint.py reads its pkls under an {scenario} view too.")
+              f"see module docstring, 'Scenarios'). Run --scenario {base_cfg['view_of']} instead; "
+              f"analyse_constraint.py reads its pkls under an {scenario} view too. "
+              f"(Under --gate this scenario DOES run: the hard gate makes hard and soft "
+              f"physically different, so the s2/s4 dedup no longer applies.)")
         return 1
 
     if args.threshold_set != 'q50' and args.results_root == _DEFAULT_RESULTS_ROOT:
@@ -885,6 +1041,18 @@ def main(args):
               f"results/constraint_25 for q25) -- threshold sets must never be mixed in one "
               f"results tree.")
         return 1
+
+    if args.gate and args.results_root in (_DEFAULT_RESULTS_ROOT,
+                                           os.path.join('results', 'constraint_25'),
+                                           'results/constraint_25'):
+        print(f"ERROR: --gate must not write into {args.results_root} -- that tree holds "
+              f"ungated data, and gated runs are a different physical experiment (infeasible "
+              f"evaluations are discarded, surrogates train on feasible points only). "
+              f"Point --results_root at a dedicated tree (e.g. results/constraint_gated) -- "
+              f"gated and ungated runs must never be mixed in one results tree.")
+        return 1
+
+    cfg = scenario_cfg(scenario, suite, pid)   # instance-resolved obj_metrics/constr_metric
 
     thresholds = THRESHOLD_SETS[args.threshold_set]
     if (suite, pid) not in thresholds:
@@ -912,7 +1080,10 @@ def main(args):
     b0_objtag = _objtag_b0(b0_search_obj_metrics)
     handlers, default_handler = _resolve_handlers(scenario, args)
 
-    # (method, handler) work list; RandomGA runs only its default + h1.
+    # (method, handler) work list; RandomGA runs only its default + h1
+    # (default only under --gate: random has no strategy -- rejection
+    # resampling would be a strategy, and for expensive constraints an
+    # unbudgeted oracle; infeasible draws just consume budget).
     pairs = []
     for method in args.method:
         for handler in handlers:
@@ -921,6 +1092,12 @@ def main(args):
                 print(f'[SKIP] random x {handler}: handler acts on selection '
                       f'pressure RandomGA does not have -- would be byte-identical '
                       f'to random x {default_handler} (analysis replicates the row).')
+                continue
+            if args.gate and method == 'random' and handler == 'h1-rejection':
+                print(f'[SKIP] random x h1-rejection under --gate: random has no '
+                      f'strategy -- an infeasible draw consumes budget with no '
+                      f'replacement; rejection sampling would be both a strategy and, '
+                      f'for expensive constraints, an unbudgeted evaluation oracle.')
                 continue
             pairs.append((method, handler))
 
@@ -954,7 +1131,8 @@ def main(args):
                 data = run_single(
                     method, scenario, suite, pid, handler, seed, args.pop_size,
                     args.n_gen, args.n_doe, args.n_infill, args.n_gen_inner,
-                    args.inner_pop_size, args.penalty, args.threshold_set)
+                    args.inner_pop_size, args.penalty, args.threshold_set,
+                    gate=args.gate)
                 # Self-describing pkl: everything needed to re-derive this
                 # run's config without consulting the output path or
                 # SCENARIOS/THRESHOLDS at whatever version they are when the
@@ -966,6 +1144,11 @@ def main(args):
                 # config-signature groups with the scenario's other handler
                 # rows in analyse_constraint.py); search_obj_metrics records
                 # what was actually searched, b0 rows only.
+                # 'gate' records whether THIS run was actually gated (
+                # --gate only gates hard-mode scenarios; soft runs in a
+                # gated campaign carry gate=False). 'penalty' is the static
+                # h2 weight (and h3's w0); h3/h5's per-generation state
+                # lives in data['handler_state'] (see run_single).
                 data['meta'] = dict(
                     suite=suite, pid=pid, scenario=scenario, objtag=this_objtag,
                     obj_metrics=tuple(cfg['obj_metrics']), constr_metric=cfg['constr_metric'],
@@ -973,6 +1156,7 @@ def main(args):
                     seed=seed, pop_size=args.pop_size, n_gen=args.n_gen,
                     n_gen_inner=args.n_gen_inner, config='r3',
                     threshold_set=args.threshold_set, inner_ga=_inner_ga(method, handler),
+                    gate=bool(args.gate and cfg['mode'] == 'hard'), penalty=args.penalty,
                     **({'search_obj_metrics': b0_search_obj_metrics} if handler in B0_HANDLERS else {}),
                 )
                 with open(out_path, 'wb') as f:
@@ -1051,6 +1235,17 @@ if __name__ == '__main__':
     p.add_argument('--penalty', type=float, default=1.0,
                     help='ConstraintsAsPenalty weight for soft scenarios (s3/s4). '
                          'Unused for hard scenarios (s1/s2).')
+    p.add_argument('--gate', action='store_true',
+                    help='Hard-evaluability gate: in HARD-mode scenarios, '
+                         'infeasible high-fidelity evaluations are counted as '
+                         'waste and discarded -- never archived, never used '
+                         'for objective-surrogate training (the constraint '
+                         'surrogate trains on archive + rejection log). Soft '
+                         'scenarios run unchanged (the controls), and s4 '
+                         'becomes runnable (gated s2 != soft s4, so the s2/s4 '
+                         'dedup no longer applies). Requires a dedicated '
+                         '--results_root (e.g. results/constraint_gated) -- '
+                         'gated and ungated data must never share a tree.')
     p.add_argument('--overwrite', action='store_true')
     args = p.parse_args()
     if args.migrate:

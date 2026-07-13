@@ -1,16 +1,23 @@
 #!/bin/bash
 # --------- CONSTRAINT_25_EVOXBENCH.sbatch ---------------------------------------------------------------------------------------------------------
-# Q25 (~25%-feasible) tight-threshold variant of CONSTRAINT_EVOXBENCH.sbatch:
-# same S1-S3 constraint-scenario campaign (run_constraint.py), but its OWN
-# clean (suite, pid, scenario, method, handler) task table and index map --
-# NOT the same as that file's (see Task count / Index map below) -- plus
-# every task call adds --threshold_set q25 --results_root
-# results/constraint_25, so runs use the tighter THRESHOLDS_Q25 table
-# (run_constraint.py) instead of the default THRESHOLDS median table, and
-# land under results/constraint_25, never under results/constraint
-# (run_constraint.py's --threshold_set guard refuses to mix the two in one
-# results tree) -- see experiments/constraint/THRESHOLDS.md for the Q25
-# provenance (same fixed-seed 10k samples the medians came from).
+# GATED Q25 campaign: the S1-S4 constraint-scenario campaign
+# (run_constraint.py) at the Q25 (~25%-feasible) tight thresholds
+# (THRESHOLDS_Q25) WITH the hard-evaluability gate -- every task
+# call passes --gate --threshold_set q25 --results_root
+# results/constraint_25_gated. Under the gate, hard-mode scenarios (s1, s2)
+# discard every infeasible high-fidelity evaluation (counted as waste,
+# F-masked to inf, never archived; objective surrogates train on feasible
+# points only, the constraint surrogate on archive + rejection log); soft
+# scenarios (s3, s4) run with ungated internals as the controls -- the
+# hard/soft axis is physical in this campaign, so s4 is a REAL run set here
+# (gated s2 != soft s4; the s2/s4 dedup applies only ungated) rather than an
+# analysis view. See run_constraint.py's module docstring
+# ('Hard-evaluability gate').
+#
+# This is a clean fresh-campaign table: results/constraint_25_gated starts
+# empty, so there is no historical index map to preserve. The results root
+# is results/constraint_25_gated (run_constraint.py's --gate guard refuses
+# the ungated trees; the name carries both axes: threshold set + gate).
 #
 # Cloned from experiments/samos/COMPARE_METHODS_EVOXBENCH.sbatch: one array
 # task == one (suite, pid, scenario, method, handler) tuple, looping over all
@@ -23,105 +30,91 @@
 # below, re-submitting a killed/interrupted array index resumes from the
 # next missing seed rather than seed 0.
 #
-# Task count: 292, a clean fresh-campaign table (results/constraint_25 starts
-# empty, so there is no historical index map to preserve -- see below):
-#   s1 on all eight instances (c10mop:4, in1kmop:9, c10mop:2,3,9, in1kmop:3,
-#     6,8): 14 tasks per instance -- random x default handler, random x
-#     h1-rejection, then samos/samos-cheap x s1's full handler row
-#     {h1-rejection, h2-penalty, h4-cdp, h5-eps, h6-sr, b0-as-obj} = 8 x 14
-#     = 112
-#   s3 on the six 3-obj instances only (c10mop:2,3,9, in1kmop:3,6,8 -- c10mop:4
-#     / in1kmop:9 carry no FLOPs threshold, so s3 skips them): same
-#     per-instance shape with s3's handler row {h1-rejection, h2-penalty,
-#     h3-adaptive-penalty, h4-cdp, h6-sr, b0-as-obj} = 6 x 14 = 84
-#   s2 on c10mop:4 / in1kmop:9 only: 16 tasks per instance -- random x
-#     default, random x h1-rejection, then samos/samos-cheap x s2's full
-#     7-handler row {h1-rejection, h2-penalty, h3-adaptive-penalty, h4-cdp,
-#     h5-eps, h6-sr, b0-as-obj} = 2 x 16 = 32 -- s2 and s4 are the physically
-#     identical run set, s4 is an analysis view (run_constraint.py refuses
-#     --scenario s4), so no s4 row is ever built below, and s2 is built
-#     exactly once (not once per round, as in the frozen table)
-#   h4-cdp-sms controls (constrained CDP with SMS-EMOA inner instead of
-#     NSGA-II): same three scenario/instance sets as above, samos/samos-cheap
-#     only = (8 + 6 + 2) x 2 = 32
-#   b0-nsga2 controls (constraint-as-objective with NSGA-II inner instead of
-#     SMS-EMOA): same shape = 32
-#   citysegmop suite (s5 on pid2, s6 on pid3 -- a hard constraint on H1 Lat.,
-#     the genuinely predictor-backed expensive metric on this suite, see
-#     run_constraint.py's module docstring): 16 tasks per instance -- random
-#     x default handler, random x h1-rejection, then samos/samos-cheap x the
-#     scenario's full 7-handler row {h1-rejection, h2-penalty,
-#     h3-adaptive-penalty, h4-cdp, h5-eps, h6-sr, b0-as-obj} = 2 x 16 = 32
-#   total: 112 + 84 + 32 + 32 + 32 + 32 = 324
+# Task table (426 tasks, gated semantics):
+#   * NO random x h1-rejection rows anywhere: under --gate run_constraint.py
+#     [SKIP]s them (random has no strategy -- an infeasible draw
+#     consumes budget with no replacement; rejection sampling would be both
+#     a strategy and, for expensive constraints, an unbudgeted oracle), so
+#     submitting them would burn array tasks on no-ops. Random runs ONLY its
+#     scenario default.
+#   * s4 is a physical block (soft counterpart of s2, same instances --
+#     incl. citysegmop via the s4 SCENARIO_OVERRIDES entries).
+#   * h1-cdp-reject is folded into every scenario's handler row (this
+#     is a fresh table; the frozen-map append constraint of the Q50 file
+#     does not exist here) -- rows mirror run_constraint.py's
+#     SCENARIO_HANDLERS exactly, b0-as-obj included.
+#   * h4-cdp-sms / b0-nsga2 inner-GA control blocks cover all four
+#     scenarios' instance sets, s4 and citysegmop included, so the
+#     {formulation} x {inner GA} factorial exists under the gate too.
 #
-# b0-as-obj (unconstrained 3-objective search -- scenario's 2 objectives
-# plus its constrained metric as an ordinary 3rd objective, no G, SMS-EMOA
-# inner) is folded straight into each scenario's full handler row instead of
-# being a separate appended round -- see scenario_handlers() below, which
-# returns the FULL row including b0-as-obj for every scenario, mirroring
-# run_constraint.py's SCENARIO_HANDLERS exactly.
-#
-# This file's indices are NOT compatible with CONSTRAINT_EVOXBENCH.sbatch's:
-# that file keeps a FROZEN historical map (368 tasks) so its old array
-# indices stay meaningful against already-existing Q50 results. This
-# campaign starts fresh against an empty results/constraint_25, so the dead
-# weight that map carries is simply absent here: no s4 rows (they would exit
-# 1 -- s4 is an analysis view of s2, see above), no s3 rows on c10mop:4 /
-# in1kmop:9 (that file's round-1 s3 entries there error out: those instances
-# have no FLOPs threshold, and their objectives predate the per-scenario
-# objective change), and no duplicated s2 block (that file runs s2 on
-# pid4/pid9 twice -- once in its round-1/2 block, once again in its round-3
-# union block; this table runs it once).
+#   s1 (hard, GATED) on the eight #Params-threshold instances (c10mop:4,
+#     in1kmop:9, c10mop:2,3,9, in1kmop:3,6,8): 15 tasks per instance --
+#     random x h4-cdp, then samos/samos-cheap x s1's full 7-handler row
+#     {h1-rejection, h2-penalty, h4-cdp, h5-eps, h6-sr, b0-as-obj,
+#     h1-cdp-reject} = 8 x 15 = 120
+#   s3 (soft, control) on the six 3-obj instances (c10mop:2,3,9,
+#     in1kmop:3,6,8): 15 per instance -- random x h2-penalty, then
+#     samos/samos-cheap x s3's row {h1-rejection, h2-penalty,
+#     h3-adaptive-penalty, h4-cdp, h6-sr, b0-as-obj, h1-cdp-reject}
+#     = 6 x 15 = 90
+#   s2 (hard, GATED) on the four latency instances (c10mop:4, in1kmop:9,
+#     citysegmop:2, citysegmop:3): 17 per instance -- random x h4-cdp, then
+#     samos/samos-cheap x s2's full 8-handler row {h1-rejection, h2-penalty,
+#     h3-adaptive-penalty, h4-cdp, h5-eps, h6-sr, b0-as-obj, h1-cdp-reject}
+#     = 4 x 17 = 68
+#   s4 (soft, control -- s2's soft counterpart, PHYSICAL under --gate) on
+#     the same four latency instances: 15 per instance -- random x
+#     h2-penalty, then samos/samos-cheap x s4's row (same as s3's)
+#     = 4 x 15 = 60
+#   h4-cdp-sms controls: (s1's 8 + s3's 6 + s2's 4 + s4's 4) instances x
+#     {samos, samos-cheap} = 22 x 2 = 44
+#   b0-nsga2 controls: same shape = 44
+#   total: 120 + 90 + 68 + 60 + 44 + 44 = 426
 #
 # run_constraint.py always writes an objective-set-tagged output path
 # ({scenario}/{suite}/pid{pid}/{objtag}/{budget}/{method}/{handler}/
-# seed_N.pkl, objtag = 'obj-err-flops' for s1 / 'obj-err-params' for s2/s3,
-# its own 3-column tag for b0-as-obj/b0-nsga2 -- see objtag_for() below and
-# run_constraint.py's module docstring, 'Output layout').
+# seed_N.pkl -- see objtag_for() below and run_constraint.py's module
+# docstring, 'Output layout'). Gated runs additionally carry meta.gate
+# (True on s1/s2 rows, False on the s3/s4 controls), meta.penalty, and
+# data['handler_state'] (h3 w(t) / h5 eps(t) trajectories).
 #
-# NB101 instances (c10mop/pid2, in the s1-on-eight and h4-cdp-sms/b0-nsga2
-# blocks) are the slow tasks here: NB101 issues one ORM query PER
-# ARCHITECTURE (thousands of tiny reads per outer generation), which the
-# scratch-DB copy below mitigates but does not eliminate -- expect these
-# tasks to run noticeably longer than the other instances at the same
-# budget.
+# NB101 instances (c10mop/pid2, in the s1/s3/control blocks) are the slow
+# tasks here: NB101 issues one ORM query PER ARCHITECTURE (thousands of tiny
+# reads per outer generation), which the scratch-DB copy below mitigates but
+# does not eliminate -- expect these tasks to run noticeably longer than the
+# other instances at the same budget.
 #
 # Index map (each block contiguous):
-#     0-111  s1 on c10mop:4, in1kmop:9, c10mop:2,3,9, in1kmop:3,6,8 (112: 14
-#            tasks per instance, contiguous 14-blocks in that instance
-#            order -- random:default, random:h1-rejection, then samos x
-#            {h1,h2,h4,h5,h6,b0-as-obj}, samos-cheap x same)
-#   112-195  s3 on c10mop:2,3,9, in1kmop:3,6,8 (84: 14 tasks per instance,
-#            same shape with s3's handler row {h1,h2,h3-adaptive-penalty,h4,
-#            h6,b0-as-obj})
-#   196-227  s2 on c10mop:4, in1kmop:9 (32: 16 tasks per instance --
-#            random:default, random:h1-rejection, then samos/samos-cheap x
-#            the full 7-handler s2 row {h1,h2,h3-adaptive-penalty,h4,h5,h6,
-#            b0-as-obj}); also s4's physical data (see above)
-#   228-259  h4-cdp-sms controls, same scenario/instance sets as above,
-#            samos/samos-cheap only (32: s1 on the eight instances (16),
-#            then s3 on the six 3-obj instances (12), then s2 on pid4/pid9
-#            (4), each instance a contiguous 2-block -- samos, samos-cheap)
-#   260-291  b0-nsga2 controls, same shape (32)
-#   292-307  s5 on citysegmop:2 (16: random x {h4-cdp,h1-rejection}, then
-#            samos/samos-cheap x s5's full 7-handler row)
-#   308-323  s6 on citysegmop:3, same shape (16)
+#     0-119  s1 GATED on c10mop:4, in1kmop:9, c10mop:2,3,9, in1kmop:3,6,8
+#            (120: 15 tasks per instance, contiguous 15-blocks in that
+#            instance order -- random:h4-cdp, then samos x s1's 7-handler
+#            row, samos-cheap x same)
+#   120-209  s3 control on c10mop:2,3,9, in1kmop:3,6,8 (90: 15 per instance,
+#            random:h2-penalty + samos/samos-cheap x s3's 7-handler row)
+#   210-277  s2 GATED on c10mop:4, in1kmop:9, citysegmop:2, citysegmop:3
+#            (68: 17 per instance, random:h4-cdp + samos/samos-cheap x s2's
+#            8-handler row)
+#   278-337  s4 control on the same four latency instances (60: 15 per
+#            instance, random:h2-penalty + samos/samos-cheap x s4's
+#            7-handler row)
+#   338-381  h4-cdp-sms controls (44: 2 tasks -- samos,samos-cheap -- per
+#            instance; s1's 8 instances, then s3's 6, then s2's 4, then
+#            s4's 4)
+#   382-425  b0-nsga2 controls, same shape (44)
 #
 # Submit everything (existing results are skipped, so this is safe):
 #   sbatch experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
 #
-# Submit only s1, only s3, only s2, only the SMS-EMOA/NSGA-II control
-# blocks, or only the citysegmop suite (new submissions should usually use
-# one of these ranges):
-#   sbatch --array=0-111%10   experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
-#   sbatch --array=112-195%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
-#   sbatch --array=196-227%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
-#   sbatch --array=228-291%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
-#   sbatch --array=292-323%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
+# Submit one scenario block or the control blocks:
+#   sbatch --array=0-119%10   experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
+#   sbatch --array=120-209%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
+#   sbatch --array=210-277%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
+#   sbatch --array=278-337%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
+#   sbatch --array=338-425%10 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
 #
 # Submit a single scenario/instance block (per the index map):
-#   e.g. c10mop/pid4 s1 (first 14-block of 0-111): --array=0-13
-#   e.g. c10mop/pid2 s3 (first 14-block of 112-195): --array=112-125
+#   e.g. c10mop/pid4 s1 (first 15-block of 0-119): --array=0-14
+#   e.g. citysegmop/pid2 s2 (third 17-block of 210-277): --array=244-260
 #
 # Force re-run (ignore existing pkls):
 #   sbatch --export=ALL,OVERWRITE=1 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
@@ -130,20 +123,18 @@
 #   sbatch --array=7 experiments/constraint/CONSTRAINT_25_EVOXBENCH.sbatch
 # -----------------------------------------------------------------------------------------------------------------------------------------------------------
 
-#SBATCH -J constraint_25
+#SBATCH -J constraint_25g
 #SBATCH -c 2
-#SBATCH --array=0-323%20              # full campaign (324 tasks total, existing results are skipped)
-##SBATCH --array=228-291%20           # h4-cdp-sms / b0-nsga2 control blocks only
-##SBATCH --array=196-227%20           # s2 block only
+#SBATCH --array=0-425%20              # full gated campaign (426 tasks total, existing results are skipped)
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
 #SBATCH --time=48:00:00
-#SBATCH --output=slurm/slurm_logs_constraint_25/%x_%A_%a.log
+#SBATCH --output=slurm/slurm_logs_constraint_25_gated/%x_%A_%a.log
 #SBATCH -p main,dmb
 #SBATCH --qos research-deadline
 
-mkdir -p slurm/slurm_logs_constraint_25
+mkdir -p slurm/slurm_logs_constraint_25_gated
 
 # --------- tunable parameters -----------------------------------------------------------------------------------------------------------------------------
 POP_SIZE=${POP_SIZE:-20}
@@ -151,143 +142,152 @@ N_GEN=${N_GEN:-60}
 N_GEN_INNER=${N_GEN_INNER:-20}
 
 # --------- (suite, pid, scenario, method, handler) task table --------------------------------------------------------------------------------------
-# Mirrors run_constraint.py's THRESHOLDS instances, SCENARIOS dict, METHODS
-# list, DEFAULT_HANDLER, and SCENARIO_HANDLERS (D22 matrix) -- keep in sync.
-# Each scenario's block below is random x default handler, random x
-# h1-rejection, then samos/samos-cheap x the scenario's FULL handler row
-# (scenario_handlers(), which now includes b0-as-obj) -- one pass per
-# scenario, nothing appended in a later round (see Task count above).
+# Mirrors run_constraint.py's THRESHOLDS_Q25 instances, SCENARIOS dict +
+# citysegmop SCENARIO_OVERRIDES (s2 AND s4), METHODS list, DEFAULT_HANDLER,
+# and SCENARIO_HANDLERS (which includes h1-cdp-reject) -- keep in sync.
 default_handler() {
     case "$1" in
-        s1|s2|s5|s6) echo h4-cdp ;;
-        s3|s4)       echo h2-penalty ;;
+        s1|s2) echo h4-cdp ;;
+        s3|s4) echo h2-penalty ;;
     esac
 }
-# Each scenario's FULL handler row, including b0-as-obj. Must mirror
-# run_constraint.py's SCENARIO_HANDLERS exactly (plus b0-as-obj, folded in
-# here rather than appended as a separate round -- see Task count above).
+# Each scenario's FULL handler row incl. b0-as-obj and h1-cdp-reject. Must
+# mirror run_constraint.py's SCENARIO_HANDLERS exactly (fresh table, no
+# frozen-index constraint here -- unlike the Q50 file).
 scenario_handlers() {
     case "$1" in
-        s1)    echo "h1-rejection h2-penalty h4-cdp h5-eps h6-sr b0-as-obj" ;;
-        s3)    echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h6-sr b0-as-obj" ;;
-        s2)    echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h5-eps h6-sr b0-as-obj" ;;
-        s5|s6) echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h5-eps h6-sr b0-as-obj" ;;
+        s1)    echo "h1-rejection h2-penalty h4-cdp h5-eps h6-sr b0-as-obj h1-cdp-reject" ;;
+        s2)    echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h5-eps h6-sr b0-as-obj h1-cdp-reject" ;;
+        s3|s4) echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h6-sr b0-as-obj h1-cdp-reject" ;;
     esac
 }
 # Output-path objective-set tag per scenario -- mirrors run_constraint.py's
-# _objtag(SCENARIOS[scenario]['obj_metrics']) for every handler except
-# b0-as-obj/b0-nsga2, which get their own 3-column tag (mirrors
-# _objtag_b0(), see run_constraint.py's 'b0-as-obj' docstring / 'Output
-# layout'). Applies to every index in COMBOS (0-323).
+# _objtag(scenario_cfg(scenario, suite, pid)['obj_metrics']) for every
+# handler except b0-as-obj/b0-nsga2, which get their own 3-column tag
+# (mirrors _objtag_b0()). citysegmop needs suite+pid (not just scenario) to
+# resolve its tag -- s2/s4 are per-instance overridden there (see
+# run_constraint.py's SCENARIO_OVERRIDES).
 objtag_for() {
-    local scenario="$1" handler="$2"
+    local scenario="$1" handler="$2" suite="$3" pid="$4"
     if [ "$handler" = "b0-as-obj" ] || [ "$handler" = "b0-nsga2" ]; then
         # both b0 rows share the 3-column search-objective tag; they are
         # separated by their handler directory.
+        if [ "$suite" = "citysegmop" ]; then
+            case "$pid" in
+                2) echo "obj-err-flops-h1lat-b0" ;;
+                3) echo "obj-err-params-h1lat-b0" ;;
+            esac
+            return
+        fi
         case "$scenario" in
             s1)       echo "obj-err-flops-params-b0" ;;
             s2|s4)    echo "obj-err-params-latency-b0" ;;
             s3)       echo "obj-err-params-flops-b0" ;;
-            s5)       echo "obj-err-flops-h1lat-b0" ;;
-            s6)       echo "obj-err-params-h1lat-b0" ;;
+        esac
+        return
+    fi
+    if [ "$suite" = "citysegmop" ]; then
+        case "$pid" in
+            2) echo "obj-err-flops" ;;
+            3) echo "obj-err-params" ;;
         esac
         return
     fi
     case "$scenario" in
         s1)          echo "obj-err-flops" ;;
         s2|s3|s4)    echo "obj-err-params" ;;
-        s5)          echo "obj-err-flops" ;;
-        s6)          echo "obj-err-params" ;;
     esac
 }
 
 COMBOS=()
-# indices 0-111: s1 on all eight instances (14 per instance: random x
-# default handler, random x h1-rejection, then samos/samos-cheap x s1's
-# full handler row, which includes b0-as-obj -- see scenario_handlers()
-# above)
+# indices 0-119: s1 GATED on the eight instances (15 per instance: random x
+# default handler only -- NO random x h1-rejection under the gate, see
+# header -- then samos/samos-cheap x s1's full handler row).
 for INSTANCE in c10mop:4 in1kmop:9 c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
     COMBOS+=("${INSTANCE}:s1:random:$(default_handler s1)")
-    COMBOS+=("${INSTANCE}:s1:random:h1-rejection")
     for METHOD in samos samos-cheap; do
         for HANDLER in $(scenario_handlers s1); do
             COMBOS+=("${INSTANCE}:s1:${METHOD}:${HANDLER}")
         done
     done
 done
-# indices 112-195: s3 on the six 3-obj instances (84: 14 tasks per instance,
-# same shape; c10mop:4 / in1kmop:9 have no FLOPs threshold, so s3 skips them)
+# indices 120-209: s3 soft control on the six 3-obj instances (15 per
+# instance, same shape with s3's handler row).
 for INSTANCE in c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
     COMBOS+=("${INSTANCE}:s3:random:$(default_handler s3)")
-    COMBOS+=("${INSTANCE}:s3:random:h1-rejection")
     for METHOD in samos samos-cheap; do
         for HANDLER in $(scenario_handlers s3); do
             COMBOS+=("${INSTANCE}:s3:${METHOD}:${HANDLER}")
         done
     done
 done
-# indices 196-227: s2 on c10mop:4 / in1kmop:9 (32: 16 tasks per instance --
-# random x default, random x h1-rejection, then samos/samos-cheap x s2's
-# full 7-handler row). This is ALSO s4's physical data (analysis view, no
-# separate submission -- run_constraint.py refuses --scenario s4, see
-# header).
-for INSTANCE in c10mop:4 in1kmop:9; do
+# indices 210-277: s2 GATED on the four latency instances (17 per instance,
+# s2's full 8-handler row).
+for INSTANCE in c10mop:4 in1kmop:9 citysegmop:2 citysegmop:3; do
     COMBOS+=("${INSTANCE}:s2:random:$(default_handler s2)")
-    COMBOS+=("${INSTANCE}:s2:random:h1-rejection")
     for METHOD in samos samos-cheap; do
         for HANDLER in $(scenario_handlers s2); do
             COMBOS+=("${INSTANCE}:s2:${METHOD}:${HANDLER}")
         done
     done
 done
-# indices 228-259: h4-cdp-sms controls (constrained CDP with SMS-EMOA inner
-# instead of NSGA-II), same scenario/instance sets as above, samos/samos-cheap
-# only (32 = s1 on the eight instances (16) + s3 on the six 3-obj instances
-# (12) + s2 on pid4/pid9 (4)).
-for INSTANCE in c10mop:4 in1kmop:9 c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+# indices 278-337: s4 soft control -- s2's soft counterpart, PHYSICAL under
+# --gate (citysegmop via its s4 SCENARIO_OVERRIDES entries) -- on
+# the same four latency instances (15 per instance, s4's handler row).
+for INSTANCE in c10mop:4 in1kmop:9 citysegmop:2 citysegmop:3; do
+    COMBOS+=("${INSTANCE}:s4:random:$(default_handler s4)")
     for METHOD in samos samos-cheap; do
-        COMBOS+=("${INSTANCE}:s1:${METHOD}:h4-cdp-sms")
+        for HANDLER in $(scenario_handlers s4); do
+            COMBOS+=("${INSTANCE}:s4:${METHOD}:${HANDLER}")
+        done
     done
 done
-for INSTANCE in c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
-    for METHOD in samos samos-cheap; do
-        COMBOS+=("${INSTANCE}:s3:${METHOD}:h4-cdp-sms")
+# indices 338-381: h4-cdp-sms inner-GA controls (constrained CDP with
+# SMS-EMOA inner instead of NSGA-II), samos/samos-cheap only, all four
+# scenarios' instance sets (inner-GA factorial under the gate).
+for HANDLER in h4-cdp-sms; do
+    for INSTANCE in c10mop:4 in1kmop:9 c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s1:${METHOD}:${HANDLER}")
+        done
+    done
+    for INSTANCE in c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s3:${METHOD}:${HANDLER}")
+        done
+    done
+    for INSTANCE in c10mop:4 in1kmop:9 citysegmop:2 citysegmop:3; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s2:${METHOD}:${HANDLER}")
+        done
+    done
+    for INSTANCE in c10mop:4 in1kmop:9 citysegmop:2 citysegmop:3; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s4:${METHOD}:${HANDLER}")
+        done
     done
 done
-for INSTANCE in c10mop:4 in1kmop:9; do
-    for METHOD in samos samos-cheap; do
-        COMBOS+=("${INSTANCE}:s2:${METHOD}:h4-cdp-sms")
+# indices 382-425: b0-nsga2 controls (constraint-as-objective with NSGA-II
+# inner instead of SMS-EMOA), same shape (44).
+for HANDLER in b0-nsga2; do
+    for INSTANCE in c10mop:4 in1kmop:9 c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s1:${METHOD}:${HANDLER}")
+        done
     done
-done
-# indices 260-291: b0-nsga2 controls (constraint-as-objective with NSGA-II
-# inner instead of SMS-EMOA), same shape as the h4-cdp-sms block (32).
-for INSTANCE in c10mop:4 in1kmop:9 c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
-    for METHOD in samos samos-cheap; do
-        COMBOS+=("${INSTANCE}:s1:${METHOD}:b0-nsga2")
+    for INSTANCE in c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s3:${METHOD}:${HANDLER}")
+        done
     done
-done
-for INSTANCE in c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
-    for METHOD in samos samos-cheap; do
-        COMBOS+=("${INSTANCE}:s3:${METHOD}:b0-nsga2")
+    for INSTANCE in c10mop:4 in1kmop:9 citysegmop:2 citysegmop:3; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s2:${METHOD}:${HANDLER}")
+        done
     done
-done
-for INSTANCE in c10mop:4 in1kmop:9; do
-    for METHOD in samos samos-cheap; do
-        COMBOS+=("${INSTANCE}:s2:${METHOD}:b0-nsga2")
-    done
-done
-# indices 292-323: citysegmop suite (s5 on pid2, s6 on pid3 -- a hard
-# constraint on H1 Lat., see header). 16 tasks per instance: random x
-# default handler, random x h1-rejection, then samos/samos-cheap x the
-# scenario's full 7-handler row (scenario_handlers(), which already
-# includes b0-as-obj for s5/s6 -- see above).
-for SCENARIO in s5 s6; do
-    INSTANCE=$([ "$SCENARIO" = "s5" ] && echo citysegmop:2 || echo citysegmop:3)
-    COMBOS+=("${INSTANCE}:${SCENARIO}:random:$(default_handler "$SCENARIO")")
-    COMBOS+=("${INSTANCE}:${SCENARIO}:random:h1-rejection")
-    for METHOD in samos samos-cheap; do
-        for HANDLER in $(scenario_handlers "$SCENARIO"); do
-            COMBOS+=("${INSTANCE}:${SCENARIO}:${METHOD}:${HANDLER}")
+    for INSTANCE in c10mop:4 in1kmop:9 citysegmop:2 citysegmop:3; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s4:${METHOD}:${HANDLER}")
         done
     done
 done
@@ -298,7 +298,7 @@ if [ -z "$TASK_ENTRY" ]; then
     exit 1
 fi
 IFS=':' read -r SUITE PID SCENARIO METHOD HANDLER <<< "$TASK_ENTRY"
-OBJTAG=$(objtag_for "$SCENARIO" "$HANDLER")   # mirrors run_constraint.py's output path -- see header
+OBJTAG=$(objtag_for "$SCENARIO" "$HANDLER" "$SUITE" "$PID")   # mirrors run_constraint.py's output path -- see header
 
 # --------- scratch setup -----------------------------------------------------------------------------------------------------------------------------------
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
@@ -319,10 +319,9 @@ RSYNC_SOURCES=(
 
 # Pre-copy any already-computed results for this (suite, pid, scenario,
 # objtag, method, handler) so run_constraint.py's own skip-if-exists logic
-# can resume mid-seed-range. The objtag level is always present -- see header
-# ('run_constraint.py now ALWAYS writes an objective-set-tagged output path').
+# can resume mid-seed-range.
 BUDGET_FOLDER="B$(( N_GEN * POP_SIZE ))_P${POP_SIZE}"
-_SRC="results/constraint_25/${SCENARIO}/${SUITE}/pid${PID}/${OBJTAG}/${BUDGET_FOLDER}/${METHOD}/${HANDLER}"
+_SRC="results/constraint_25_gated/${SCENARIO}/${SUITE}/pid${PID}/${OBJTAG}/${BUDGET_FOLDER}/${METHOD}/${HANDLER}"
 [ -d "$_SRC" ] && RSYNC_SOURCES+=("$_SRC")
 
 rsync -aR "${RSYNC_SOURCES[@]}" "$SCRATCH_DIRECTORY/" 2>/dev/null || true
@@ -380,6 +379,7 @@ echo "SCENARIO          = $SCENARIO"
 echo "METHOD            = $METHOD"
 echo "HANDLER           = $HANDLER"
 echo "OBJTAG            = $OBJTAG"
+echo "GATE              = --gate (hard-mode rows gated, s3/s4 controls ungated internals)"
 echo "SEEDS             = 0-19"
 echo "POP_SIZE          = $POP_SIZE"
 echo "N_GEN             = $N_GEN"
@@ -390,12 +390,12 @@ echo "EVOXBENCH_DATA    = $EVOXBENCH_DATA"
 echo "EVOXBENCH_MODEL   = $EVOXBENCH_MODEL"
 
 # --------- run: one seed at a time, rsync-back after each ------------------------------------------------------------------------------------------------
-DEST="${SLURM_SUBMIT_DIR}/results/constraint_25/${SCENARIO}/${SUITE}/pid${PID}/${OBJTAG}/${BUDGET_FOLDER}/${METHOD}/${HANDLER}"
+DEST="${SLURM_SUBMIT_DIR}/results/constraint_25_gated/${SCENARIO}/${SUITE}/pid${PID}/${OBJTAG}/${BUDGET_FOLDER}/${METHOD}/${HANDLER}"
 mkdir -p "$DEST"
 
 for SEED in $(seq 0 19); do
     echo ""
-    echo "--------- SUITE: $SUITE  PID: $PID  SCENARIO: $SCENARIO  METHOD: $METHOD  HANDLER: $HANDLER  seed: $SEED"
+    echo "--------- SUITE: $SUITE  PID: $PID  SCENARIO: $SCENARIO  METHOD: $METHOD  HANDLER: $HANDLER  seed: $SEED  (GATED q25)"
 
     python experiments/constraint/run_constraint.py \
         --scenario      "$SCENARIO" \
@@ -408,10 +408,11 @@ for SEED in $(seq 0 19); do
         --n_gen         "$N_GEN" \
         --n_gen_inner   "$N_GEN_INNER" \
         --threshold_set q25 \
-        --results_root  results/constraint_25 \
+        --gate \
+        --results_root  results/constraint_25_gated \
         ${OVERWRITE:+--overwrite}
 
-    rsync -a "${SCRATCH_DIRECTORY}/results/constraint_25/${SCENARIO}/${SUITE}/pid${PID}/${OBJTAG}/${BUDGET_FOLDER}/${METHOD}/${HANDLER}/" "$DEST/" 2>/dev/null || true
+    rsync -a "${SCRATCH_DIRECTORY}/results/constraint_25_gated/${SCENARIO}/${SUITE}/pid${PID}/${OBJTAG}/${BUDGET_FOLDER}/${METHOD}/${HANDLER}/" "$DEST/" 2>/dev/null || true
 done
 echo ""
 echo "Results copied to $DEST"

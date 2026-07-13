@@ -115,7 +115,37 @@ class SAMOS2(Algorithm):
         carry G/CV/feasible and the ``RankAndCrowding`` archive selection plus
         the inner NSGA-II both become feasibility-first (Deb's CDP) for free
         -- see problem/evoxbench/constrained_problem.py for the verification.
+    hard_gate : bool
+        Hard-evaluability gate. When True, every
+        high-fidelity-evaluated individual whose violation is positive is
+        counted (``n_hf_evaluated`` / ``n_hf_feasible``), logged to the
+        rejection log (``_rejected_X`` / ``_rejected_G`` -- X and violation
+        only, never F: under gated-hard semantics the objective values of an
+        infeasible run are unobservable), and DISCARDED -- it never enters
+        ``_archive``, so objective surrogates train on feasible points only.
+        The constraint surrogate instead trains on archive UNION rejection
+        log (the infeasibility signal must come from somewhere). Rejected X
+        keys still enter ``_archive_keys``: a known-failed architecture is
+        never re-proposed (you know which ones failed). The DOE additionally
+        redraws full batches (each counted + gated like any evaluation) until
+        at least ``gate_min_doe_feasible`` feasible points exist, up to
+        ``_GATE_MAX_DOE_BATCHES`` batches -- a gated run must not start with
+        an unusable archive, but the policy stays minimal so the evaluation
+        budget is not silently inflated (RuntimeError if even that fails).
+        Default False = ungated behaviour, bit-exact. The counters are
+        maintained (cheaply) even when False, so the feasibility-aware
+        callback can always prefer them over archive-derived counts.
+    gate_g_fn : callable or None
+        Violation source for the gate/counters when the outer problem defines
+        no ``G`` (the b0-as-obj / b0-nsga2 rows, where the constrained metric
+        is an ordinary objective column): ``gate_g_fn(pop) -> (n,) array``,
+        feasible <= 0, evaluated on the already-evaluated population. Ignored
+        whenever the population carries real G.
+    gate_min_doe_feasible : int
+        Gated-DOE viability floor (see ``hard_gate``). Default 2.
     """
+
+    _GATE_MAX_DOE_BATCHES = 10   # extra full-n_doe redraws before giving up
 
     def __init__(self,
                  sampling,
@@ -137,6 +167,9 @@ class SAMOS2(Algorithm):
                  collapse_training_set=False,
                  infill_selector=None,
                  constr_surrogate=None,
+                 hard_gate=False,
+                 gate_g_fn=None,
+                 gate_min_doe_feasible=2,
                  **kwargs):
         super().__init__(eliminate_duplicates=False, **kwargs)
         self.sampling                  = sampling
@@ -150,6 +183,17 @@ class SAMOS2(Algorithm):
         self.canonicalizer             = canonicalizer
         self.collapse_training_set     = collapse_training_set
         self.constr_surrogate          = constr_surrogate
+        self.hard_gate                 = bool(hard_gate)
+        self.gate_g_fn                 = gate_g_fn
+        self.gate_min_doe_feasible     = int(gate_min_doe_feasible)
+
+        # High-fidelity evaluation counters + rejection log. Counters
+        # run gated or not (the callback prefers them over archive-derived
+        # counts); the rejection log only fills when hard_gate is True.
+        self.n_hf_evaluated = 0
+        self.n_hf_feasible  = 0
+        self._rejected_X    = None   # (n_rej, n_var) float or None
+        self._rejected_G    = None   # (n_rej,) violations (> 0) or None
 
         if predict_obj_indices is None:
             if len(surrogates) > 1:
@@ -199,15 +243,86 @@ class SAMOS2(Algorithm):
     def _setup(self, problem, **kwargs):
         pass
 
+    # ── hard-evaluability gate ───────────────────────────────────────────────
+
+    def _violations_of(self, pop):
+        """Per-individual violation for the gate/counters: the population's
+        own G column when the outer problem defines one, else ``gate_g_fn``
+        (b0 rows), else zeros (unconstrained legacy callers)."""
+        G = pop.get('G')
+        if G is not None and np.asarray(G).size > 0:
+            return np.asarray(G, dtype=float).reshape(len(pop), -1)[:, 0]
+        if self.gate_g_fn is not None:
+            return np.asarray(self.gate_g_fn(pop), dtype=float).reshape(-1)
+        return np.zeros(len(pop))
+
+    def _gate_merge(self, infills):
+        """Count every evaluated infill, then merge into the archive -- all
+        of them ungated, only the feasible subset when hard_gate is on
+        (infeasible X/violation go to the rejection log; their keys still
+        enter _archive_keys so a known-failed arch is never re-proposed).
+        Returns the merged (kept) subset."""
+        if infills is None or len(infills) == 0:
+            return infills
+        viol = self._violations_of(infills)
+        self.n_hf_evaluated += len(infills)
+        self.n_hf_feasible  += int(np.sum(viol <= 0))
+
+        kept = infills
+        if self.hard_gate:
+            feas_mask = viol <= 0
+            kept      = infills[feas_mask]
+            rejected  = infills[~feas_mask]
+            if len(rejected) > 0:
+                rx = rejected.get('X').astype(float)
+                rg = viol[~feas_mask]
+                self._rejected_X = rx if self._rejected_X is None else np.vstack([self._rejected_X, rx])
+                self._rejected_G = rg if self._rejected_G is None else np.concatenate([self._rejected_G, rg])
+
+        self._archive = Population.merge(self._archive, kept)
+        self._add_to_archive_keys(infills)   # kept AND rejected: never re-propose
+        return kept
+
+    def _set_optimum(self):
+        # Gated edge case: a fully-rejected infill batch leaves self.pop
+        # empty and pymoo's filter_optimum(empty) returns None, which the
+        # verbose output machinery cannot handle. Keep the previous optimum
+        # (display/result state only -- the archive gate is unaffected).
+        if self.hard_gate and (self.pop is None or len(self.pop) == 0):
+            if self.opt is None:
+                self.opt = Population.empty()
+            return
+        super()._set_optimum()
+
     # ── initialisation (DOE) ──────────────────────────────────────────────────
 
     def _initialize_infill(self):
         return self._init.do(self.problem, self.n_doe, algorithm=self)
 
     def _initialize_advance(self, infills=None, **kwargs):
-        self._archive = Population.merge(self._archive, infills)
-        self._add_to_archive_keys(infills)
-        self.pop = infills
+        kept = self._gate_merge(infills)
+        # Gated-DOE viability floor: redraw full batches -- every draw
+        # evaluated, counted and gated exactly like the first -- until the
+        # archive holds at least gate_min_doe_feasible feasible points. The
+        # floor is deliberately minimal (default 2) so the policy almost
+        # never triggers at the campaign's feasibility levels and the
+        # evaluation budget is not silently inflated; the redraws that do
+        # happen are visible in n_hf_evaluated (waste).
+        if self.hard_gate:
+            n_extra = 0
+            while len(self._archive) < self.gate_min_doe_feasible:
+                if n_extra >= self._GATE_MAX_DOE_BATCHES:
+                    raise RuntimeError(
+                        f'hard gate: DOE produced only {len(self._archive)} feasible '
+                        f'point(s) after {n_extra} extra batch(es) of {self.n_doe} '
+                        f'(need >= {self.gate_min_doe_feasible}). The feasible region '
+                        f'is too small for random initialization at this threshold.')
+                extra = self._init.do(self.problem, self.n_doe, algorithm=self)
+                self.evaluator.eval(self.problem, extra)
+                extra_kept = self._gate_merge(extra)
+                kept = Population.merge(kept, extra_kept) if kept is not None else extra_kept
+                n_extra += 1
+        self.pop = kept if kept is not None else infills
 
     # ── display helpers ──────────────────────────────────────────────────────
 
@@ -240,6 +355,13 @@ class SAMOS2(Algorithm):
         X_arc = self._archive.get('X')   # (N, n_var) float
         F_arc = self._archive.get('F')   # (N, n_obj) float
 
+        # Tripwire: the archive must never hold a non-finite fitness.
+        # Ungated runs guard non-finite benchmark output to 1.0 upstream;
+        # gated runs mask infeasible F to inf but the gate drops those rows
+        # before the merge -- an inf/NaN here means the gate leaked.
+        assert np.isfinite(F_arc).all(), \
+            'non-finite F in SAMOS2 archive: hard-gate leak or unguarded fitness'
+
         # 1. Fit one surrogate per predicted objective (matching column order
         #    with predict_obj_indices, not positionally).
         X_train, F_train = self._training_set(X_arc, F_arc)
@@ -250,8 +372,17 @@ class SAMOS2(Algorithm):
         # here, alongside the objective surrogates. ponytail: trains on the
         # full archive X_arc/G_arc, not the (C2) collapsed objective training
         # set -- constraint scenarios don't use collapse_training_set.
+        # Hard gate: a gated archive is all-feasible (G <= 0 only), so
+        # the boundary signal lives in the rejection log -- train on archive
+        # UNION rejected (X, violation). Realistic: which architectures
+        # failed IS observable, their objective values are not.
         if self.constr_surrogate is not None:
-            self.constr_surrogate.fit(X_arc, self._archive.get('G')[:, 0])
+            X_c = X_arc
+            G_c = self._archive.get('G')[:, 0]
+            if self.hard_gate and self._rejected_X is not None:
+                X_c = np.vstack([X_c, self._rejected_X])
+                G_c = np.concatenate([G_c, self._rejected_G])
+            self.constr_surrogate.fit(X_c, G_c)
 
         top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=self.ga_pop_size)
         n_rand   = self.ga_pop_size - len(top_pop)
@@ -320,7 +451,7 @@ class SAMOS2(Algorithm):
         self._prev_nd_F = nd_F
 
         print(
-            f" {self.n_gen:>{_W['gen']}} | {len(self._archive):>{_W['eval']}}"
+            f" {self.n_gen:>{_W['gen']}} | {self.n_hf_evaluated:>{_W['eval']}}"
             f" | {n_nds:>{_W['nds']}} | {n_surr_eval:>{_W['surr']}}"
             f" | {self._fmt_float(eps, _W['eps'])} | {str(ind or '-'):>{_W['ind']}} "
         )
@@ -345,9 +476,8 @@ class SAMOS2(Algorithm):
         return Population.new('X', infill_pop.get('X'))
 
     def _advance(self, infills=None, **kwargs):
-        self._archive = Population.merge(self._archive, infills)
-        self._add_to_archive_keys(infills)
-        self.pop = infills
+        kept = self._gate_merge(infills)
+        self.pop = kept if kept is not None else infills
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

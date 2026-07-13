@@ -277,25 +277,37 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
         else:
             src_pop = algorithm.pop
 
-        var_pop = src_pop.get('X')
-        obj_pop = src_pop.get('F')
+        # Under the hard gate src_pop can legitimately be empty (e.g.
+        # an all-infeasible RandomGA population before the first feasible
+        # draw); Population.empty().get('X') returns None, so normalize.
+        var_pop = src_pop.get('X') if len(src_pop) > 0 else []
+        obj_pop = src_pop.get('F') if len(src_pop) > 0 else []
 
-        # Waste counters: how many architectures the outer loop actually
-        # evaluated this generation and how many were feasible, read off
-        # src_pop's *complete* evaluated set (never dominance-filtered) --
-        # unlike n_total/n_feasible below, which count only the archive
-        # surviving the non-dominated filter and understate waste.
-        G = src_pop.get('G')
-        if G is not None and G.size > 0:
-            feasible_pop = G[:, 0] <= 0
+        # Waste counters: prefer the algorithm's own cumulative
+        # high-fidelity counters -- under the hard gate the archive holds
+        # only the feasible survivors, so counting src_pop would report zero
+        # waste by construction. Gate-aware algorithms (SAMOS2, RandomGA)
+        # maintain n_hf_evaluated / n_hf_feasible whether gated or not (for
+        # ungated runs the values coincide with the legacy archive counts).
+        # The legacy src_pop path stays for anything without the counters.
+        n_hf = getattr(algorithm, 'n_hf_evaluated', None)
+        if n_hf is not None:
+            self.data['n_evaluated'].append(int(n_hf))
+            self.data['n_feasible_evaluated'].append(int(algorithm.n_hf_feasible))
         else:
-            # Unconstrained outer problem (e.g. b0-as-obj / b0-nsga2): the
-            # constrained metric is an ordinary objective column instead of
-            # a pymoo constraint; locate it in F via obj_indices.
-            pos = algorithm.problem.obj_indices.index(self.constr_index)
-            feasible_pop = obj_pop[:, pos] <= self.threshold
-        self.data['n_evaluated'].append(len(src_pop))
-        self.data['n_feasible_evaluated'].append(int(feasible_pop.sum()))
+            G = src_pop.get('G') if len(src_pop) > 0 else None
+            if G is not None and G.size > 0:
+                feasible_pop = G[:, 0] <= 0
+            elif len(src_pop) > 0:
+                # Unconstrained outer problem (e.g. b0-as-obj / b0-nsga2): the
+                # constrained metric is an ordinary objective column instead of
+                # a pymoo constraint; locate it in F via obj_indices.
+                pos = algorithm.problem.obj_indices.index(self.constr_index)
+                feasible_pop = obj_pop[:, pos] <= self.threshold
+            else:
+                feasible_pop = np.zeros(0, dtype=bool)
+            self.data['n_evaluated'].append(len(src_pop))
+            self.data['n_feasible_evaluated'].append(int(feasible_pop.sum()))
 
         # Rebuild cumulative non-dominated archive (same helper as the base
         # class; non-domination here is w.r.t. the search objectives only,

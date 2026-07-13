@@ -68,14 +68,29 @@ class ConstrainedEvoXBenchProblem(Problem):
         convention). ``G <= 0`` <=> feasible.
     no_norm : bool
         Skip objective normalisation (matches EvoXBenchProblem.no_norm).
+    gate : bool
+        Hard-evaluability gate. When True, the F rows of infeasible
+        individuals (G > 0) are masked to ``np.inf`` AFTER the non-finite
+        guard: under the gated-hard semantics those objective values are
+        physically unobservable (the model cannot run), and inf is the
+        fail-safe sentinel -- if a gated row ever leaks past the algorithm's
+        archive gate, every comparison ranks it strictly worst (death-penalty
+        semantics) instead of silently corrupting dominance sorts the way NaN
+        would. G stays real either way (the gate needs it, and for a cheap /
+        simulated metric the violation IS observable). The invalid-arch
+        fallback (non-finite -> 1.0) feeds the same gate: a guarded row's
+        constraint metric of 1.0 exceeds every campaign threshold, so
+        can't-even-build architectures are gated out too, not laundered into
+        a plausible fitness. Default False = ungated behaviour, bit-exact.
     """
 
     def __init__(self, benchmark, obj_indices, constr_index, threshold,
-                 no_norm: bool = False, **kwargs):
+                 no_norm: bool = False, gate: bool = False, **kwargs):
         ss = benchmark.search_space
         self.obj_indices  = list(obj_indices)
         self.constr_index = int(constr_index)
         self.threshold    = float(threshold)
+        self.gate         = bool(gate)
         super().__init__(
             n_var=ss.n_var,
             n_obj=len(self.obj_indices),
@@ -97,8 +112,15 @@ class ConstrainedEvoXBenchProblem(Problem):
             F = self.benchmark.normalize(F)
         F = np.where(np.isfinite(F), F, 1.0)
 
-        out['F'] = F[:, self.obj_indices]
-        out['G'] = _violation(F[:, self.constr_index], self.threshold)[:, None]
+        G = _violation(F[:, self.constr_index], self.threshold)[:, None]
+        F_out = F[:, self.obj_indices]
+        if self.gate:
+            # Hard gate: infeasible F is unobservable -- inf sentinel,
+            # see the class docstring. Fancy indexing above returned a copy,
+            # so the in-place mask never touches the shared benchmark matrix.
+            F_out[G[:, 0] > 0] = np.inf
+        out['F'] = F_out
+        out['G'] = G
 
         self.n_eval_calls += len(X_int)
 
