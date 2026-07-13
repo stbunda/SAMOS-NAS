@@ -129,8 +129,9 @@
 
 #SBATCH -J constraint_s1s4
 #SBATCH -c 2
-#SBATCH --array=272-303%20            # 304 tasks (suite,pid,scenario,method,handler), 10 concurrent
-##SBATCH --array=0-303%10            # 304 tasks (suite,pid,scenario,method,handler), 10 concurrent
+#SBATCH --array=304-367%20            # round-5 inner-GA controls (368 tasks total)
+##SBATCH --array=272-303%20           # round-4 B0 block only
+##SBATCH --array=0-367%10             # everything (existing results are skipped)
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -184,7 +185,9 @@ scenario_handlers() {
 # for the frozen 0-271 block.
 objtag_for() {
     local scenario="$1" handler="$2"
-    if [ "$handler" = "b0-as-obj" ]; then
+    if [ "$handler" = "b0-as-obj" ] || [ "$handler" = "b0-nsga2" ]; then
+        # both b0 rows share the 3-column search-objective tag; they are
+        # separated by their handler directory.
         case "$scenario" in
             s1)       echo "obj-err-flops-params-b0" ;;
             s2|s4)    echo "obj-err-params-latency-b0" ;;
@@ -269,6 +272,31 @@ done
 for INSTANCE in c10mop:4 in1kmop:9; do
     for METHOD in samos samos-cheap; do
         COMBOS+=("${INSTANCE}:s2:${METHOD}:b0-as-obj")
+    done
+done
+# indices 304-367: round-5, inner-GA control rows completing the
+# {formulation: constrained-CDP vs constraint-as-objective} x {inner GA:
+# NSGA-II vs SMS-EMOA} factorial, so b0-as-obj's advantage can be attributed
+# to the formulation or the optimizer: 'h4-cdp-sms' (304-335) = constrained
+# CDP with SMS-EMOA inner; 'b0-nsga2' (336-367) = constraint-as-objective
+# with NSGA-II inner. Same instance sets as the B0 block, samos/samos-cheap
+# only; each writes under its own handler directory so nothing existing is
+# ever overwritten.
+for HANDLER in h4-cdp-sms b0-nsga2; do
+    for INSTANCE in c10mop:4 in1kmop:9 c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s1:${METHOD}:${HANDLER}")
+        done
+    done
+    for INSTANCE in c10mop:2 c10mop:3 c10mop:9 in1kmop:3 in1kmop:6 in1kmop:8; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s3:${METHOD}:${HANDLER}")
+        done
+    done
+    for INSTANCE in c10mop:4 in1kmop:9; do
+        for METHOD in samos samos-cheap; do
+            COMBOS+=("${INSTANCE}:s2:${METHOD}:${HANDLER}")
+        done
     done
 done
 

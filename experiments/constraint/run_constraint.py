@@ -372,7 +372,17 @@ METHODS = ['random', 'samos', 'samos-cheap']
 
 # ─── handler axis ─────────────────────────────────────────────────────────────
 HANDLERS = ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty',
-            'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj']
+            'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj',
+            # Inner-GA control rows (not part of any scenario's default row
+            # set): they complete the {formulation} x {inner GA} factorial so
+            # b0-as-obj's advantage can be attributed to the formulation or
+            # to SMS-EMOA. Run explicitly via --handler / the sbatch block.
+            'h4-cdp-sms',   # constrained CDP, SMS-EMOA inner GA
+            'b0-nsga2']     # constraint-as-objective, NSGA-II inner GA
+
+# Handlers that search the 3-column objective set (scenario objectives +
+# constrained metric) instead of defining G.
+B0_HANDLERS = ('b0-as-obj', 'b0-nsga2')
 
 # Scenario-default handler = the round-1 wiring, keyed by the scenario's mode.
 DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-penalty'}
@@ -542,16 +552,16 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
         predict_pos = list(range(len(obj_indices)))
         real_pos    = []
         surrogates       = [XGBoost(100, seed=rng.randint(0, 2**31 - 1)) for _ in predict_pos]
-        # b0-as-obj: no constr_surrogate -- the constrained metric is an
+        # b0 rows: no constr_surrogate -- the constrained metric is an
         # ordinary predicted objective column here, never a G.
-        constr_surrogate = (None if handler == 'b0-as-obj'
+        constr_surrogate = (None if handler in B0_HANDLERS
                              else XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
 
     elif method == 'samos-cheap':
         cheap_cols = set(BENCHMARK_META[suite][pid].get('cheap_obj_indices', []))
         predict_pos, real_pos = _obj_split(obj_indices, cheap_cols)
         surrogates = [XGBoost(100, seed=rng.randint(0, 2**31 - 1)) for _ in predict_pos]
-        if handler == 'b0-as-obj':
+        if handler in B0_HANDLERS:
             constr_surrogate = None   # same reason as the 'samos' branch above.
         else:
             exact_constr = constr_index in cheap_cols   # H7: cheap constraint -> exact
@@ -560,12 +570,13 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
     else:
         raise ValueError(f'Unknown method: {method!r}')
 
-    if handler == 'b0-as-obj':
-        # B0 baseline (D31): unconstrained ``len(obj_indices)``-objective
-        # (== 3, enforced by the caller) search, no wrap_inner, no
-        # constr_surrogate, SMS-EMOA as the inner algorithm -- empirically
-        # the strongest of {NSGA-II, SMS-EMOA, NSGA-III} at 3 objectives on
-        # these instances (experiments/constraint/prelim_3obj.py). SAMOS2's
+    if handler in B0_HANDLERS:
+        # B0 baseline: unconstrained ``len(obj_indices)``-objective (== 3,
+        # enforced by the caller) search, no wrap_inner, no constr_surrogate.
+        # 'b0-as-obj' uses SMS-EMOA as the inner algorithm -- empirically the
+        # strongest of {NSGA-II, SMS-EMOA, NSGA-III} at 3 objectives on these
+        # instances (experiments/constraint/prelim_3obj.py); 'b0-nsga2' is
+        # the inner-GA control (same formulation, NSGA-II inner). SAMOS2's
         # archive-seeding RankAndCrowding (top_pop in _infill) still runs
         # plain crowding at 3 objectives here -- deliberately left as part
         # of what this baseline measures, see module docstring.
@@ -577,7 +588,7 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
             predict_obj_indices=predict_pos,
             crossover=crossover, mutation=mutation, n_doe=n_doe_, n_infill=n_infill_,
             n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
-            inner_algorithm=SMSEMOA,
+            inner_algorithm=SMSEMOA if handler == 'b0-as-obj' else NSGA2,
         )
         return algorithm, True
 
@@ -594,6 +605,13 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
 
     if handler == 'h4-cdp':
         pass   # native CDP: out['G'] + RankAndCrowding do everything.
+
+    elif handler == 'h4-cdp-sms':
+        # Inner-GA control for the b0 comparison: identical constraint
+        # wiring to h4-cdp (native CDP -- pymoo's SMSEMOA survival is also
+        # feasibility-first via the Survival base class), only the inner
+        # algorithm changes.
+        samos2_kwargs['inner_algorithm'] = SMSEMOA
 
     elif handler == 'h2-penalty':
         def wrap_inner(inner):
@@ -676,8 +694,8 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
     constr_index = metric_index(suite, pid, cfg['constr_metric'])
     threshold    = THRESHOLDS[(suite, pid)][cfg['constr_metric']]
 
-    if handler == 'b0-as-obj':
-        # B0 (D31): unconstrained search over the scenario's 2 objectives
+    if handler in B0_HANDLERS:
+        # B0: unconstrained search over the scenario's 2 objectives
         # PLUS the constrained metric as an ordinary 3rd objective -- no G.
         # The callback below still only sees the scenario's 2 objectives +
         # constr_index/threshold, so indicators/feasibility scoring stay
@@ -686,7 +704,7 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
         search_obj_indices = obj_indices + [constr_index]
         problem = B0ObjectiveProblem(benchmark, search_obj_indices)
         assert problem.n_obj == 3, (
-            f'b0-as-obj requires exactly 3 search objectives, got {problem.n_obj} '
+            f'{handler} requires exactly 3 search objectives, got {problem.n_obj} '
             f'({scenario}/{suite}/pid{pid})')
     else:
         search_obj_indices = obj_indices
@@ -810,9 +828,9 @@ def main(args):
     for seed in args.seeds:
         for method, handler in pairs:
             run_i += 1
-            # b0-as-obj writes under its own 3-objective objtag; every other
+            # b0 rows write under their own 3-objective objtag; every other
             # handler keeps the scenario's normal (2-objective) objtag.
-            this_objtag = b0_objtag if handler == 'b0-as-obj' else objtag
+            this_objtag = b0_objtag if handler in B0_HANDLERS else objtag
             save_dir = os.path.join(
                 args.results_root, scenario, suite, f'pid{pid}', this_objtag, budget_folder,
                 method, handler)
@@ -834,24 +852,24 @@ def main(args):
                     method, scenario, suite, pid, handler, seed, args.pop_size,
                     args.n_gen, args.n_doe, args.n_infill, args.n_gen_inner,
                     args.inner_pop_size, args.penalty)
-                # Self-describing pkl (author request): everything needed to
-                # re-derive this run's config without consulting the output
-                # path or SCENARIOS/THRESHOLDS at whatever version they are
-                # when the pkl is read later. Legacy (untagged-path) pkls
-                # predate this key; analyse_constraint.py falls back to its
+                # Self-describing pkl: everything needed to re-derive this
+                # run's config without consulting the output path or
+                # SCENARIOS/THRESHOLDS at whatever version they are when the
+                # pkl is read later. Legacy (untagged-path) pkls predate this
+                # key; analyse_constraint.py falls back to its
                 # path+LEGACY_CONFIG map when it is absent.
                 # obj_metrics/constr_metric/mode stay the scenario's normal
-                # 2-objective SCORING config even for b0-as-obj (so its
+                # 2-objective SCORING config even for b0 rows (so their
                 # config-signature groups with the scenario's other handler
                 # rows in analyse_constraint.py); search_obj_metrics records
-                # what was actually searched, b0-as-obj rows only.
+                # what was actually searched, b0 rows only.
                 data['meta'] = dict(
                     suite=suite, pid=pid, scenario=scenario, objtag=this_objtag,
                     obj_metrics=tuple(cfg['obj_metrics']), constr_metric=cfg['constr_metric'],
                     threshold=threshold, mode=cfg['mode'], handler=handler, method=method,
                     seed=seed, pop_size=args.pop_size, n_gen=args.n_gen,
                     n_gen_inner=args.n_gen_inner, config='r3',
-                    **({'search_obj_metrics': b0_search_obj_metrics} if handler == 'b0-as-obj' else {}),
+                    **({'search_obj_metrics': b0_search_obj_metrics} if handler in B0_HANDLERS else {}),
                 )
                 with open(out_path, 'wb') as f:
                     pickle.dump(data, f)
