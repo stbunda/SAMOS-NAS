@@ -19,10 +19,12 @@
 # below, re-submitting a killed/interrupted array index resumes from the
 # next missing seed rather than seed 0.
 #
-# Task count: 304 = 100 rounds-1/2 tasks (indices 0-99, FROZEN -- same
+# Task count: 400 = 100 rounds-1/2 tasks (indices 0-99, FROZEN -- same
 # (suite,pid,scenario,method,handler) table as before) + 172 round-3
 # additions (indices 100-271, FROZEN -- same as before) + 32 round-4 B0
-# additions (indices 272-303, APPENDED after so 0-271 keep their meaning).
+# additions (indices 272-303, FROZEN) + 64 round-5 inner-GA controls (indices
+# 304-367, FROZEN) + 32 round-6 citysegmop additions (indices 368-399,
+# APPENDED after so 0-367 keep their meaning).
 #
 # Round-3 (instance axis: the constrained metric on every 3-objective problem
 # is its own "removed third objective" -- s1 constrains #Params with
@@ -75,6 +77,18 @@
 # by analyse_constraint.py; do not resubmit those specific indices expecting
 # new output.
 #
+# Round-6 (citysegmop suite, s5/s6: a hard constraint on H1 Lat., the
+# genuinely predictor-backed expensive metric on this suite -- see
+# run_constraint.py's module docstring, 'Scenarios'). Same per-instance shape
+# as a fresh scenario's round-3 block (random x default handler, random x
+# h1-rejection, then samos/samos-cheap x the scenario's full 7-handler row
+# including b0-as-obj):
+#   s5 on citysegmop:2 (16: random x {h4-cdp,h1-rejection}, samos/samos-cheap
+#       x {h1-rejection,h2-penalty,h3-adaptive-penalty,h4-cdp,h5-eps,h6-sr,
+#       b0-as-obj})
+#   s6 on citysegmop:3, same shape (16)
+#   total: 32, indices 368-399, APPENDED after the frozen 0-367 block.
+#
 # NB101 instances (c10mop/pid2, all its indices in the round-3 s1 block)
 # are the slow tasks here: NB101 issues one ORM query PER ARCHITECTURE
 # (thousands of tiny reads per outer generation), which the scratch-DB copy
@@ -106,15 +120,25 @@
 #   288-299  s3 x b0-as-obj on c10mop:2,3,9 / in1kmop:3,6,8, same shape (12)
 #   300-303  s2-union x b0-as-obj on c10mop:4, in1kmop:9 (4: 2 tasks per
 #            instance)
+#   ROUND-5 (304-367, inner-GA controls -- see below):
+#   304-335  h4-cdp-sms controls (16 s1-instances-worth: 2 tasks per instance
+#            x 8 instances) 336-367  b0-nsga2 controls, same shape
+#   ROUND-6 (368-399, citysegmop suite -- see above):
+#   368-383  s5 on citysegmop:2 (16: random x {h4-cdp,h1-rejection}, then
+#            samos/samos-cheap x s5's full 7-handler row)
+#   384-399  s6 on citysegmop:3, same shape (16)
 #
 # Submit everything (existing results are skipped, so this is safe):
 #   sbatch experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
 #
-# Submit only rounds 1-2, only round 3, or only round 4 / B0 (new
-# submissions should usually use one of these ranges):
+# Submit only rounds 1-2, only round 3, round 4 / B0, round 5 / inner-GA
+# controls, or round 6 / citysegmop (new submissions should usually use one
+# of these ranges):
 #   sbatch --array=0-99%10   experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
 #   sbatch --array=100-271%10 experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
 #   sbatch --array=272-303%10 experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
+#   sbatch --array=304-367%10 experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
+#   sbatch --array=368-399%10 experiments/constraint/CONSTRAINT_EVOXBENCH.sbatch
 #
 # Submit a single scenario (defaults + additions, per the index map):
 #   e.g. c10mop/pid4 s2 defaults: --array=3-5 ; its handler additions: --array=33-43
@@ -129,9 +153,10 @@
 
 #SBATCH -J constraint_s1s4
 #SBATCH -c 2
-#SBATCH --array=304-367%20            # round-5 inner-GA controls (368 tasks total)
+#SBATCH --array=368-399%20            # round-6 citysegmop additions (400 tasks total)
+##SBATCH --array=304-367%20           # round-5 inner-GA controls
 ##SBATCH --array=272-303%20           # round-4 B0 block only
-##SBATCH --array=0-367%10             # everything (existing results are skipped)
+##SBATCH --array=0-399%10             # everything (existing results are skipped)
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -155,8 +180,8 @@ N_GEN_INNER=${N_GEN_INNER:-20}
 # additions APPENDED after (COMPARE_METHODS 2026-07-06-additions pattern).
 default_handler() {
     case "$1" in
-        s1|s2) echo h4-cdp ;;
-        s3|s4) echo h2-penalty ;;
+        s1|s2|s5|s6) echo h4-cdp ;;
+        s3|s4)       echo h2-penalty ;;
     esac
 }
 nondefault_handlers() {    # = SCENARIO_HANDLERS row minus the default
@@ -171,9 +196,14 @@ nondefault_handlers() {    # = SCENARIO_HANDLERS row minus the default
 # against). Must mirror run_constraint.py's SCENARIO_HANDLERS exactly.
 scenario_handlers() {
     case "$1" in
-        s1) echo "h1-rejection h2-penalty h4-cdp h5-eps h6-sr" ;;
-        s3) echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h6-sr" ;;
-        s2) echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h5-eps h6-sr" ;;
+        s1)    echo "h1-rejection h2-penalty h4-cdp h5-eps h6-sr" ;;
+        s3)    echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h6-sr" ;;
+        s2)    echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h5-eps h6-sr" ;;
+        # s5/s6 (round-6, citysegmop) are single-pass fresh blocks (unlike
+        # s1/s2/s3's split round-3/round-4 additions above), so this row
+        # already includes b0-as-obj -- mirrors run_constraint.py's
+        # SCENARIO_HANDLERS['s5'/'s6'] exactly.
+        s5|s6) echo "h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h5-eps h6-sr b0-as-obj" ;;
     esac
 }
 # Output-path objective-set tag per scenario -- mirrors run_constraint.py's
@@ -192,12 +222,16 @@ objtag_for() {
             s1)       echo "obj-err-flops-params-b0" ;;
             s2|s4)    echo "obj-err-params-latency-b0" ;;
             s3)       echo "obj-err-params-flops-b0" ;;
+            s5)       echo "obj-err-flops-h1lat-b0" ;;
+            s6)       echo "obj-err-params-h1lat-b0" ;;
         esac
         return
     fi
     case "$scenario" in
         s1)          echo "obj-err-flops" ;;
         s2|s3|s4)    echo "obj-err-params" ;;
+        s5)          echo "obj-err-flops" ;;
+        s6)          echo "obj-err-params" ;;
     esac
 }
 
@@ -296,6 +330,21 @@ for HANDLER in h4-cdp-sms b0-nsga2; do
     for INSTANCE in c10mop:4 in1kmop:9; do
         for METHOD in samos samos-cheap; do
             COMBOS+=("${INSTANCE}:s2:${METHOD}:${HANDLER}")
+        done
+    done
+done
+# indices 368-399: round-6, citysegmop suite (s5 on pid2, s6 on pid3 -- a
+# hard constraint on H1 Lat., see header). 16 tasks per instance: random x
+# default handler, random x h1-rejection, then samos/samos-cheap x the
+# scenario's full 7-handler row (scenario_handlers(), which already includes
+# b0-as-obj for s5/s6 -- see above).
+for SCENARIO in s5 s6; do
+    INSTANCE=$([ "$SCENARIO" = "s5" ] && echo citysegmop:2 || echo citysegmop:3)
+    COMBOS+=("${INSTANCE}:${SCENARIO}:random:$(default_handler "$SCENARIO")")
+    COMBOS+=("${INSTANCE}:${SCENARIO}:random:h1-rejection")
+    for METHOD in samos samos-cheap; do
+        for HANDLER in $(scenario_handlers "$SCENARIO"); do
+            COMBOS+=("${INSTANCE}:${SCENARIO}:${METHOD}:${HANDLER}")
         done
     done
 done

@@ -38,6 +38,13 @@ random sample is feasible at each threshold, matching the ~50% design
 intent; the six 3-metric instances were checked against their own 10k
 samples the same way, see THRESHOLDS.md).
 
+  citysegmop (MoSegNAS, 24 vars) -- s5 and s6 -- both objectives sets keep
+  BENCHMARK_META's one cheap structural column (FLOPs/#Params respectively,
+  cheap_obj_indices=[2]) so the samos-cheap split still works; UNLIKE
+  c10mop/in1kmop, Err. is ALSO predictor-backed here (RankNet/lookup-table
+  surrogate), not just the constraint metric:
+    citysegmop/pid2 : Err/H1 Lat./FLOPs.    citysegmop/pid3 : Err/H1 Lat./#Params.
+
 Scenarios
 ---------
 Scenario definitions (objectives + constraint metric + handler mode) are
@@ -56,6 +63,14 @@ instance-independent; only the numeric threshold varies per instance
        compute byte-for-byte. --scenario s4 refuses here with a message
        pointing at s2; analyse_constraint.py reads s2's pkls under an s4
        view instead.
+  s5 : objectives {Err, FLOPs},   H1 Lat. <= T_h1lat, hard (citysegmop/pid2)
+  s6 : objectives {Err, #Params}, H1 Lat. <= T_h1lat, hard (citysegmop/pid3)
+       -- s2's role on the citysegmop suite: a hard constraint on a genuinely
+       expensive, predictor-backed metric (H1 Lat.), with the objective pair
+       chosen per pid so the OTHER objective is that pid's cheap structural
+       column (s5 keeps FLOPs for pid2, s6 keeps #Params for pid3), mirroring
+       s2's cheap-objectives / expensive-constraint split even though Err. is
+       predictor-backed here too (see Instances above).
 
 Handlers
 --------
@@ -229,6 +244,8 @@ Examples
   python experiments/constraint/run_constraint.py --migrate                     # copy round-1 flat pkls
   python experiments/constraint/run_constraint.py --scenario s2 --method samos-cheap \\
       --pop_size 8 --n_gen 3 --n_gen_inner 4 --results_root /tmp/smoke
+  python experiments/constraint/run_constraint.py --scenario s1 --threshold_set q25 \\
+      --results_root results/constraint_25   # ~25%-feasible thresholds (THRESHOLDS_Q25)
 """
 
 import argparse
@@ -285,6 +302,10 @@ from strategy.surrogate.samos2 import SAMOS2
 SUITE = 'c10mop'
 PID   = 4
 
+# --results_root default; also used in main()'s --threshold_set guard (a
+# non-q50 --threshold_set may never write into this tree, see main()).
+_DEFAULT_RESULTS_ROOT = os.path.join('results', 'constraint')
+
 # ─── per-instance thresholds (config, not code) ──────────────────────────────
 # Provenance: experiments/constraint/THRESHOLDS.md -- per instance, the
 # median of the constraint metric over a fixed-seed (0) 10k random sample, in
@@ -327,7 +348,64 @@ THRESHOLDS = {
         '#Params': 0.5542505032341564,
         'FLOPs':   0.49379317155236824,
     },
+    ('citysegmop', 2): {
+        'H1 Lat.': 0.785908199618216,
+    },
+    ('citysegmop', 3): {
+        'H1 Lat.': 0.785300373420361,
+    },
 }
+
+# Q25 variant of THRESHOLDS above: same (suite, pid) keys, same metric names,
+# but each value is the Q25 (not median) row of the quartile tables in
+# experiments/constraint/THRESHOLDS.md -- the SAME fixed-seed (0) 10k random
+# samples the medians came from, just the lower quartile instead of the
+# midpoint, so ~25% of the sample is feasible at each threshold instead of
+# ~50%. Selected via --threshold_set q25 (see THRESHOLD_SETS below); default
+# behavior (--threshold_set q50, THRESHOLDS above) is unaffected.
+THRESHOLDS_Q25 = {
+    ('c10mop', 4): {
+        '#Params': 0.3078135998873715,
+        'Latency': 0.36311633657280196,
+    },
+    ('in1kmop', 9): {
+        '#Params': 0.46727868434691233,
+        'Latency': 0.34752772487724964,
+    },
+    ('c10mop', 2): {
+        '#Params': 0.047260473500094415,
+        'FLOPs':   0.04731894337649006,
+    },
+    ('c10mop', 3): {
+        '#Params': 0.3078135998873715,
+        'FLOPs':   0.1814415868239766,
+    },
+    ('c10mop', 9): {
+        '#Params': 0.3468375,
+        'FLOPs':   0.3282217003685359,
+    },
+    ('in1kmop', 3): {
+        '#Params': 0.2617528196589368,
+        'FLOPs':   0.16534922735000696,
+    },
+    ('in1kmop', 6): {
+        '#Params': 0.2839906468663558,
+        'FLOPs':   0.28835792673038946,
+    },
+    ('in1kmop', 8): {
+        '#Params': 0.46660078570385494,
+        'FLOPs':   0.37242751750291636,
+    },
+    ('citysegmop', 2): {
+        'H1 Lat.': 0.5561883179426053,
+    },
+    ('citysegmop', 3): {
+        'H1 Lat.': 0.5569287648808446,
+    },
+}
+
+# Lookup by --threshold_set flag value.
+THRESHOLD_SETS = {'q50': THRESHOLDS, 'q25': THRESHOLDS_Q25}
 
 # SCENARIOS is data, not branching code, and is instance-independent: the
 # objective metric names, constraint metric and handler mode define the
@@ -340,13 +418,17 @@ SCENARIOS = {
     's2': dict(obj_metrics=('Err.', '#Params'), constr_metric='Latency', mode='hard'),
     's3': dict(obj_metrics=('Err.', '#Params'), constr_metric='FLOPs',   mode='soft'),
     's4': dict(obj_metrics=('Err.', '#Params'), constr_metric='Latency', mode='soft', view_of='s2'),
+    's5': dict(obj_metrics=('Err.', 'FLOPs'),   constr_metric='H1 Lat.', mode='hard'),   # citysegmop/pid2
+    's6': dict(obj_metrics=('Err.', '#Params'), constr_metric='H1 Lat.', mode='hard'),   # citysegmop/pid3
 }
 
 # Output-path tag per scenario's objective set (see module docstring, 'Output
 # layout'). Metric names are mapped to short slugs; every combination in
 # SCENARIOS today is covered explicitly, with a generic fallback for future
-# additions.
-_METRIC_SLUG = {'Err.': 'err', '#Params': 'params', 'FLOPs': 'flops', 'Latency': 'latency'}
+# additions. 'H1 Lat.' needs its own entry -- the generic fallback would
+# produce a slug containing a space (path-unsafe).
+_METRIC_SLUG = {'Err.': 'err', '#Params': 'params', 'FLOPs': 'flops', 'Latency': 'latency',
+                'H1 Lat.': 'h1lat'}
 
 
 def _objtag(obj_metrics):
@@ -397,6 +479,8 @@ SCENARIO_HANDLERS = {
     's2': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
     's3': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj'],
     's4': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h6-sr', 'b0-as-obj'],
+    's5': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
+    's6': ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj'],
 }
 
 # Handlers that act on selection pressure only are meaningless for RandomGA:
@@ -684,7 +768,7 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
 
 def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
                n_doe, n_infill, n_gen_inner, inner_pop_size, penalty,
-               compute_indicators=True):
+               threshold_set='q50', compute_indicators=True):
     np.random.seed(seed)
     random.seed(seed)
 
@@ -692,7 +776,7 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
     benchmark    = get_benchmark(suite, pid)
     obj_indices  = obj_indices_for(suite, pid, scenario)   # scenario's 2 scoring objectives -- always
     constr_index = metric_index(suite, pid, cfg['constr_metric'])
-    threshold    = THRESHOLDS[(suite, pid)][cfg['constr_metric']]
+    threshold    = THRESHOLD_SETS[threshold_set][(suite, pid)][cfg['constr_metric']]
 
     if handler in B0_HANDLERS:
         # B0: unconstrained search over the scenario's 2 objectives
@@ -770,6 +854,16 @@ def _resolve_handlers(scenario, args):
     return [default], default
 
 
+def _inner_ga(method, handler):
+    """meta['inner_ga']: which inner GA a run actually used (see
+    build_algorithm) -- 'sms' for the two SMS-EMOA handlers (b0-as-obj,
+    h4-cdp-sms), 'nsga2' for every other samos/samos-cheap handler, None for
+    method 'random' (no inner GA at all)."""
+    if method == 'random':
+        return None
+    return 'sms' if handler in ('b0-as-obj', 'h4-cdp-sms') else 'nsga2'
+
+
 def main(args):
     budget_folder = f'B{args.n_gen * args.pop_size}_P{args.pop_size}'
     scenario = args.scenario
@@ -784,16 +878,25 @@ def main(args):
               f"analyse_constraint.py reads its pkls under an {scenario} view too.")
         return 1
 
-    if (suite, pid) not in THRESHOLDS:
-        print(f'ERROR: no thresholds defined for {suite}/pid{pid} '
-              f'(available: {sorted(THRESHOLDS)}) -- see THRESHOLDS.md.')
+    if args.threshold_set != 'q50' and args.results_root == _DEFAULT_RESULTS_ROOT:
+        print(f"ERROR: --threshold_set {args.threshold_set} must not write into the default "
+              f"--results_root ({_DEFAULT_RESULTS_ROOT}) -- that tree holds q50 threshold data. "
+              f"Point --results_root at a dedicated tree for this threshold set (e.g. "
+              f"results/constraint_25 for q25) -- threshold sets must never be mixed in one "
+              f"results tree.")
         return 1
-    if cfg['constr_metric'] not in THRESHOLDS[(suite, pid)]:
+
+    thresholds = THRESHOLD_SETS[args.threshold_set]
+    if (suite, pid) not in thresholds:
+        print(f'ERROR: no thresholds defined for {suite}/pid{pid} '
+              f'(available: {sorted(thresholds)}) -- see THRESHOLDS.md.')
+        return 1
+    if cfg['constr_metric'] not in thresholds[(suite, pid)]:
         print(f"ERROR: {suite}/pid{pid} has no {cfg['constr_metric']!r} threshold "
               f"(scenario {scenario} constrains it) -- available: "
-              f"{sorted(THRESHOLDS[(suite, pid)])}; see THRESHOLDS.md.")
+              f"{sorted(thresholds[(suite, pid)])}; see THRESHOLDS.md.")
         return 1
-    threshold = THRESHOLDS[(suite, pid)][cfg['constr_metric']]
+    threshold = thresholds[(suite, pid)][cfg['constr_metric']]
 
     try:
         obj_indices_for(suite, pid, scenario)   # validate objectives resolve before any runs start
@@ -851,7 +954,7 @@ def main(args):
                 data = run_single(
                     method, scenario, suite, pid, handler, seed, args.pop_size,
                     args.n_gen, args.n_doe, args.n_infill, args.n_gen_inner,
-                    args.inner_pop_size, args.penalty)
+                    args.inner_pop_size, args.penalty, args.threshold_set)
                 # Self-describing pkl: everything needed to re-derive this
                 # run's config without consulting the output path or
                 # SCENARIOS/THRESHOLDS at whatever version they are when the
@@ -869,6 +972,7 @@ def main(args):
                     threshold=threshold, mode=cfg['mode'], handler=handler, method=method,
                     seed=seed, pop_size=args.pop_size, n_gen=args.n_gen,
                     n_gen_inner=args.n_gen_inner, config='r3',
+                    threshold_set=args.threshold_set, inner_ga=_inner_ga(method, handler),
                     **({'search_obj_metrics': b0_search_obj_metrics} if handler in B0_HANDLERS else {}),
                 )
                 with open(out_path, 'wb') as f:
@@ -904,7 +1008,7 @@ if __name__ == '__main__':
     p.add_argument('--scenario', default=None, choices=list(SCENARIOS),
                     help='Which of s1-s4 to run (see module docstring). '
                          'Required unless --migrate.')
-    p.add_argument('--suite', default=SUITE, choices=['c10mop', 'in1kmop'],
+    p.add_argument('--suite', default=SUITE, choices=['c10mop', 'in1kmop', 'citysegmop'],
                     help='Benchmark suite (instance must have an entry in THRESHOLDS).')
     p.add_argument('--pid', type=int, default=PID,
                     help='Benchmark problem id within --suite.')
@@ -933,10 +1037,17 @@ if __name__ == '__main__':
                     help='SAMOS2: inner NSGA-II generations')
     p.add_argument('--inner_pop_size', type=int, default=None,
                     help='SAMOS2: inner NSGA-II population size (default: pop_size x 10)')
-    p.add_argument('--results_root', default=os.path.join('results', 'constraint'),
+    p.add_argument('--results_root', default=_DEFAULT_RESULTS_ROOT,
                     help='Output root for per-seed pkls. Point at a dedicated '
                          'smoke-test folder when testing -- never write test '
-                         'data into results/ (see CLAUDE.md).')
+                         'data into results/ (see CLAUDE.md). --threshold_set '
+                         'q25 refuses this default (see --threshold_set).')
+    p.add_argument('--threshold_set', default='q50', choices=['q50', 'q25'],
+                    help='Constraint threshold table: q50 (median, ~50%% '
+                         'feasible, default, THRESHOLDS) or q25 (~25%% '
+                         'feasible, tighter, THRESHOLDS_Q25). q25 requires '
+                         'its own --results_root (e.g. results/constraint_25) '
+                         '-- never mixed with q50 data in one tree.')
     p.add_argument('--penalty', type=float, default=1.0,
                     help='ConstraintsAsPenalty weight for soft scenarios (s3/s4). '
                          'Unused for hard scenarios (s1/s2).')

@@ -176,8 +176,12 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
     Same archive bookkeeping and ``data`` layout as :class:`EvoxBenchCallback`
     (``var_pop``, ``obj_pop``, ``var_archive``, ``obj_archive``,
     ``test_obj_archive``, ``indicators``, ``time``) so downstream analysis
-    conventions carry over unchanged, plus two extra per-generation series:
-    ``n_feasible`` and ``n_total``. HV / IGD+ in ``indicators`` are computed
+    conventions carry over unchanged, plus four extra per-generation series:
+    ``n_feasible`` and ``n_total`` (dominance-filtered archive), and
+    ``n_evaluated`` / ``n_feasible_evaluated`` (the algorithm's complete
+    evaluated set this generation, never dominance-filtered -- the archive
+    counters above understate waste since infeasible/dominated infills are
+    discarded before being counted). HV / IGD+ in ``indicators`` are computed
     on the *feasible* subset of the true-eval archive only -- feasibility is
     ``true constraint metric <= threshold`` in the same benchmark-normalized
     space the objectives and thresholds already live in (see
@@ -255,15 +259,17 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
             self._hv_ind        = None
             self._igd_ind       = None
 
-        self.data['var_pop']          = []
-        self.data['obj_pop']          = []
-        self.data['var_archive']      = []
-        self.data['obj_archive']      = []
-        self.data['test_obj_archive'] = []
-        self.data['indicators']       = []
-        self.data['n_feasible']       = []
-        self.data['n_total']          = []
-        self.data['time']             = None
+        self.data['var_pop']              = []
+        self.data['obj_pop']              = []
+        self.data['var_archive']          = []
+        self.data['obj_archive']          = []
+        self.data['test_obj_archive']     = []
+        self.data['indicators']           = []
+        self.data['n_feasible']           = []
+        self.data['n_total']              = []
+        self.data['n_evaluated']          = []
+        self.data['n_feasible_evaluated'] = []
+        self.data['time']                 = None
 
     def notify(self, algorithm) -> None:
         if hasattr(algorithm, '_archive') and len(algorithm._archive) > 0:
@@ -273,6 +279,23 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
 
         var_pop = src_pop.get('X')
         obj_pop = src_pop.get('F')
+
+        # Waste counters: how many architectures the outer loop actually
+        # evaluated this generation and how many were feasible, read off
+        # src_pop's *complete* evaluated set (never dominance-filtered) --
+        # unlike n_total/n_feasible below, which count only the archive
+        # surviving the non-dominated filter and understate waste.
+        G = src_pop.get('G')
+        if G is not None and G.size > 0:
+            feasible_pop = G[:, 0] <= 0
+        else:
+            # Unconstrained outer problem (e.g. b0-as-obj / b0-nsga2): the
+            # constrained metric is an ordinary objective column instead of
+            # a pymoo constraint; locate it in F via obj_indices.
+            pos = algorithm.problem.obj_indices.index(self.constr_index)
+            feasible_pop = obj_pop[:, pos] <= self.threshold
+        self.data['n_evaluated'].append(len(src_pop))
+        self.data['n_feasible_evaluated'].append(int(feasible_pop.sum()))
 
         # Rebuild cumulative non-dominated archive (same helper as the base
         # class; non-domination here is w.r.t. the search objectives only,
