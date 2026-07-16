@@ -45,6 +45,55 @@ _SUITE_FACTORIES = {
 }
 
 
+def _patch_mnv3_decode(benchmark) -> None:
+    """Make the MobileNetV3 genotype->architecture mapping deterministic.
+
+    evoxbench's ``MobileNetV3SearchSpace.var2str`` substitutes a RANDOM
+    operation whenever a layer gene is 0, and ``_decode``'s depth semantics
+    ("use the first d layers of each stage") treat a skipped slot that
+    precedes an active one as ACTIVE. A genotype that skips a layer before
+    an active one in the same stage (~36% of the uniform space; routinely
+    produced by integer crossover/mutation) therefore decodes to a
+    different architecture on every call -- the random substitution is
+    materialized and the explicitly specified trailing gene is dropped --
+    so ``benchmark.evaluate`` is not a function of X: even #Params changes
+    between two evaluations of the same genotype.
+
+    The library's own ``_sample`` repairs exactly this pattern before
+    decoding (the active layer is shifted up into the skipped slot); this
+    wrapper applies that identical repair to EVERY decode, so ill-formed
+    genotypes map deterministically to the same architecture the repaired
+    sample would. The random filler that ``var2str`` puts in INACTIVE
+    (beyond-depth) ks/e slots is pinned to a fixed value as well -- every
+    predictor masks those slots by stage depth, so objective values are
+    unaffected, but the decoded phenotype becomes a pure function of the
+    genotype. No-op for non-MNV3 search spaces.
+    """
+    import numpy as np
+
+    ss = getattr(benchmark, 'search_space', None)
+    if type(ss).__name__ != 'MobileNetV3SearchSpace' or getattr(ss, '_decode_repaired', False):
+        return
+    orig_decode = ss._decode
+
+    def _det_var2str(v, ub):
+        if v > 0:
+            return ss.var2str_mapping[v]
+        return ss.var2str_mapping[1]     # inactive-slot filler: fixed, depth-masked everywhere
+
+    def _repaired_decode(x):
+        x = np.asarray(x, dtype=int).copy()
+        for indices in ss.stage_layer_indices:
+            if x[indices[-2]] == 0 and x[indices[-1]] > 0:
+                x[indices[-2]] = x[indices[-1]]
+                x[indices[-1]] = 0
+        return orig_decode(x)
+
+    ss.var2str = _det_var2str
+    ss._decode = _repaired_decode
+    ss._decode_repaired = True
+
+
 def get_benchmark(suite: str, pid: int):
     """Return the evoxbench benchmark for the given suite and problem id.
 
@@ -64,4 +113,6 @@ def get_benchmark(suite: str, pid: int):
         raise ValueError(
             f"Unknown suite {suite!r}. Choose from: {list(_SUITE_FACTORIES)}"
         )
-    return _SUITE_FACTORIES[suite](pid)
+    benchmark = _SUITE_FACTORIES[suite](pid)
+    _patch_mnv3_decode(benchmark)
+    return benchmark

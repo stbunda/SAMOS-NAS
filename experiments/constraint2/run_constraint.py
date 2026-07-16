@@ -21,9 +21,12 @@ Mode axis (hard vs soft) is PHYSICAL, not a handler default:
          np.inf by the outer problem and it never enters the archive, so
          objective surrogates train on feasible points only. The constraint
          surrogate trains on archive + rejection log (X and violation of
-         every discarded point). SAMOS2's DOE redraws counted batches until
-         >= 2 feasible points exist. Models a solution that cannot run
-         (e.g. too large for the device): its metrics are unobservable.
+         every discarded point). The rejection log is also persisted to the
+         pkl (``rejected_X`` / ``rejected_G``; RandomGA records rejected X
+         only, so its ``rejected_G`` is NaN) so discarded evaluations are
+         reconstructable post hoc. SAMOS2's DOE redraws counted batches
+         until >= 2 feasible points exist. Models a solution that cannot
+         run (e.g. too large for the device): its metrics are unobservable.
   soft : infeasible solutions are evaluated and archived with raw F and G;
          handlers decide how violation trades off against fitness. Models a
          solution that runs with degraded quality.
@@ -616,6 +619,23 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
     data = results.algorithm.callback.data
     if handler_state:
         data['handler_state'] = handler_state
+
+    # Hard mode: persist the rejection log so the discarded evaluations are
+    # reconstructable post hoc (X for every gate-discarded architecture,
+    # with its violation where the algorithm records one -- RandomGA keeps
+    # rejected X only, so its violations are NaN and must be re-evaluated).
+    algo = results.algorithm
+    if gated:
+        if getattr(algo, '_rejected_X', None) is not None:
+            data['rejected_X'] = np.asarray(algo._rejected_X)
+            data['rejected_G'] = np.asarray(algo._rejected_G)
+        elif getattr(algo, '_rejected_pop', None) is not None and len(algo._rejected_pop) > 0:
+            X_rej = np.asarray(algo._rejected_pop.get('X'))
+            data['rejected_X'] = X_rej
+            data['rejected_G'] = np.full(len(X_rej), np.nan)
+        else:
+            data['rejected_X'] = np.empty((0, problem.n_var))
+            data['rejected_G'] = np.empty((0,))
     return data
 
 
