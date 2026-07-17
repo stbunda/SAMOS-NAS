@@ -136,14 +136,14 @@ class RandomGA(GeneticAlgorithm):
 
     def _gate_keep(self, pop):
         """Count evaluated individuals; when hard_gate is on, return only the
-        feasible subset (G <= 0) and remember rejected X for dedup. No
-        replacement sampling ever happens here -- infeasible draws just
-        consume budget (random has no strategy)."""
+        feasible subset (every G column <= 0) and remember rejected X for
+        dedup. No replacement sampling ever happens here -- infeasible draws
+        just consume budget (random has no strategy)."""
         if pop is None or len(pop) == 0:
             return pop
         G = pop.get('G')
         if G is not None and np.asarray(G).size > 0:
-            viol = np.asarray(G, dtype=float).reshape(len(pop), -1)[:, 0]
+            viol = np.asarray(G, dtype=float).reshape(len(pop), -1).max(axis=1)
         else:
             viol = np.zeros(len(pop))
         self.n_hf_evaluated += len(pop)

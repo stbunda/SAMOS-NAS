@@ -100,16 +100,18 @@ class SAMOS2(Algorithm):
         surrogates=None) -> Population`` (see strategy/surrogate/infill.py).
         None -> DiversitySelector(use_subset_selection) (SAMOSMinimal
         behaviour).
-    constr_surrogate : object or None
-        Constraint-handling seam for the S1-S4 campaign. A model implementing
-        ``fit(X, y)`` / ``predict(X)``. When given, it is fitted each outer
-        generation on the archive's ``(X, G)`` right where the objective
-        surrogates are fitted, then passed as the *second* argument to
-        ``surrogate_problem_factory`` so the inner problem predicts G.
-        None (default) leaves every existing caller untouched -- the factory
-        is still called with a single argument, and cheap/exact constraints
-        (constr computed inside the inner problem via the benchmark) need no
-        surrogate here.
+    constr_surrogate : object, sequence, or None
+        Constraint-handling seam. A model implementing ``fit(X, y)`` /
+        ``predict(X)`` (single constraint), or a sequence with one slot per
+        constraint column -- a model to predict that G column, or None for
+        an exact column computed inside the inner problem (so a mixed
+        exact/predicted violation vector is expressible). Every non-None
+        slot is fitted each outer generation on the archive's ``(X, G[:, j])``
+        right where the objective surrogates are fitted, then the whole
+        object (model or sequence) is passed as the *second* argument to
+        ``surrogate_problem_factory``. None (default) leaves every existing
+        caller untouched -- the factory is still called with a single
+        argument, and all-exact constraints need no surrogate here.
 
         Note: the outer problem defines ``out['G']``, so archive individuals
         carry G/CV/feasible and the ``RankAndCrowding`` archive selection plus
@@ -118,10 +120,12 @@ class SAMOS2(Algorithm):
     hard_gate : bool
         Hard-evaluability gate. When True, every
         high-fidelity-evaluated individual whose violation is positive is
-        counted (``n_hf_evaluated`` / ``n_hf_feasible``), logged to the
-        rejection log (``_rejected_X`` / ``_rejected_G`` -- X and violation
-        only, never F: under gated-hard semantics the objective values of an
-        infeasible run are unobservable), and DISCARDED -- it never enters
+        counted (``n_hf_evaluated`` / ``n_hf_feasible``; infeasible = any
+        constraint violated), logged to the rejection log (``_rejected_X`` /
+        ``_rejected_G`` -- X and violation only, never F: under gated-hard
+        semantics the objective values of an infeasible run are
+        unobservable; one violation per row for a single constraint, the
+        full (n, n_constr) violation rows otherwise), and DISCARDED -- it never enters
         ``_archive``, so objective surrogates train on feasible points only.
         The constraint surrogate instead trains on archive UNION rejection
         log (the infeasibility signal must come from somewhere). Rejected X
@@ -137,10 +141,11 @@ class SAMOS2(Algorithm):
         callback can always prefer them over archive-derived counts.
     gate_g_fn : callable or None
         Violation source for the gate/counters when the outer problem defines
-        no ``G`` (the b0-as-obj / b0-nsga2 rows, where the constrained metric
-        is an ordinary objective column): ``gate_g_fn(pop) -> (n,) array``,
-        feasible <= 0, evaluated on the already-evaluated population. Ignored
-        whenever the population carries real G.
+        no ``G`` (the b0-as-obj / b0-nsga2 rows, where the constrained
+        metrics are ordinary objective columns): ``gate_g_fn(pop) -> (n,) or
+        (n, n_constr) array``, feasible <=> every entry of a row <= 0,
+        evaluated on the already-evaluated population. Ignored whenever the
+        population carries real G.
     gate_min_doe_feasible : int
         Gated-DOE viability floor (see ``hard_gate``). Default 2.
     """
@@ -193,7 +198,7 @@ class SAMOS2(Algorithm):
         self.n_hf_evaluated = 0
         self.n_hf_feasible  = 0
         self._rejected_X    = None   # (n_rej, n_var) float or None
-        self._rejected_G    = None   # (n_rej,) violations (> 0) or None
+        self._rejected_G    = None   # (n_rej,) violations, (n_rej, n_constr) for multi, or None
 
         if predict_obj_indices is None:
             if len(surrogates) > 1:
@@ -246,15 +251,17 @@ class SAMOS2(Algorithm):
     # ── hard-evaluability gate ───────────────────────────────────────────────
 
     def _violations_of(self, pop):
-        """Per-individual violation for the gate/counters: the population's
-        own G column when the outer problem defines one, else ``gate_g_fn``
-        (b0 rows), else zeros (unconstrained legacy callers)."""
+        """Per-individual violation matrix (n, n_constr) for the
+        gate/counters: the population's own G columns when the outer problem
+        defines them, else ``gate_g_fn`` (b0 rows; may return (n,) or
+        (n, k)), else zeros (unconstrained legacy callers). Feasible <=>
+        every column <= 0."""
         G = pop.get('G')
         if G is not None and np.asarray(G).size > 0:
-            return np.asarray(G, dtype=float).reshape(len(pop), -1)[:, 0]
+            return np.asarray(G, dtype=float).reshape(len(pop), -1)
         if self.gate_g_fn is not None:
-            return np.asarray(self.gate_g_fn(pop), dtype=float).reshape(-1)
-        return np.zeros(len(pop))
+            return np.asarray(self.gate_g_fn(pop), dtype=float).reshape(len(pop), -1)
+        return np.zeros((len(pop), 1))
 
     def _gate_merge(self, infills):
         """Count every evaluated infill, then merge into the archive -- all
@@ -264,20 +271,25 @@ class SAMOS2(Algorithm):
         Returns the merged (kept) subset."""
         if infills is None or len(infills) == 0:
             return infills
-        viol = self._violations_of(infills)
+        viol     = self._violations_of(infills)     # (n, n_constr)
+        viol_max = viol.max(axis=1)
         self.n_hf_evaluated += len(infills)
-        self.n_hf_feasible  += int(np.sum(viol <= 0))
+        self.n_hf_feasible  += int(np.sum(viol_max <= 0))
 
         kept = infills
         if self.hard_gate:
-            feas_mask = viol <= 0
+            feas_mask = viol_max <= 0
             kept      = infills[feas_mask]
             rejected  = infills[~feas_mask]
             if len(rejected) > 0:
                 rx = rejected.get('X').astype(float)
+                # Single constraint keeps the legacy 1-D log; multiple
+                # constraints log the full per-constraint violation rows.
                 rg = viol[~feas_mask]
+                if rg.shape[1] == 1:
+                    rg = rg[:, 0]
                 self._rejected_X = rx if self._rejected_X is None else np.vstack([self._rejected_X, rx])
-                self._rejected_G = rg if self._rejected_G is None else np.concatenate([self._rejected_G, rg])
+                self._rejected_G = rg if self._rejected_G is None else np.concatenate([self._rejected_G, rg], axis=0)
 
         self._archive = Population.merge(self._archive, kept)
         self._add_to_archive_keys(infills)   # kept AND rejected: never re-propose
@@ -368,21 +380,33 @@ class SAMOS2(Algorithm):
         for surrogate, orig_idx in zip(self.surrogates, self.predict_obj_indices):
             surrogate.fit(X_train, F_train[:, orig_idx])
 
-        # Constraint surrogate (campaign S1-S4): fit on the archive's (X, G)
-        # here, alongside the objective surrogates. ponytail: trains on the
-        # full archive X_arc/G_arc, not the (C2) collapsed objective training
-        # set -- constraint scenarios don't use collapse_training_set.
+        # Constraint surrogate(s): fit on the archive's (X, G) here, alongside
+        # the objective surrogates -- one model per predicted constraint
+        # column when a per-slot sequence is configured (None slots are exact,
+        # computed inside the inner problem). ponytail: trains on the full
+        # archive X_arc/G_arc, not the (C2) collapsed objective training set
+        # -- constraint scenarios don't use collapse_training_set.
         # Hard gate: a gated archive is all-feasible (G <= 0 only), so
         # the boundary signal lives in the rejection log -- train on archive
         # UNION rejected (X, violation). Realistic: which architectures
         # failed IS observable, their objective values are not.
         if self.constr_surrogate is not None:
-            X_c = X_arc
-            G_c = self._archive.get('G')[:, 0]
+            G_arc = self._archive.get('G').reshape(len(self._archive), -1)
+            rej_G = None
             if self.hard_gate and self._rejected_X is not None:
-                X_c = np.vstack([X_c, self._rejected_X])
-                G_c = np.concatenate([G_c, self._rejected_G])
-            self.constr_surrogate.fit(X_c, G_c)
+                rej_G = np.asarray(self._rejected_G, dtype=float
+                                   ).reshape(len(self._rejected_X), -1)
+            surr_list = (self.constr_surrogate
+                         if isinstance(self.constr_surrogate, (list, tuple))
+                         else [self.constr_surrogate])
+            for j, surrogate in enumerate(surr_list):
+                if surrogate is None:
+                    continue
+                X_c, g_c = X_arc, G_arc[:, j]
+                if rej_G is not None:
+                    X_c = np.vstack([X_c, self._rejected_X])
+                    g_c = np.concatenate([g_c, rej_G[:, j]])
+                surrogate.fit(X_c, g_c)
 
         top_pop  = RankAndCrowding().do(problem=self.problem, pop=self._archive, n_survive=self.ga_pop_size)
         n_rand   = self.ga_pop_size - len(top_pop)

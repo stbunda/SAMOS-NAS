@@ -1,12 +1,17 @@
 """
-Constrained pymoo Problems for the S1-S4 constraint-scenario campaign.
+Constrained pymoo Problems for the constraint-scenario campaigns.
 
 Two classes, mirroring the unconstrained pair
 (``baseline_problem.EvoXBenchProblem`` / ``surrogate_problem.SurrogateProblemEvox``)
-but adding a single inequality constraint ``G`` derived from one benchmark
-metric column:
+but adding one inequality constraint ``G`` column per constrained benchmark
+metric:
 
-    G = (metric - threshold) / threshold              (feasible <=> G <= 0)
+    G_j = (metric_j - threshold_j) / threshold_j      (feasible <=> all G_j <= 0)
+
+``constr_index`` / ``threshold`` accept either a scalar (single constraint,
+the S1-S4 campaign -- behaviour and shapes bit-identical to the original
+single-constraint classes) or parallel sequences (one G column per entry,
+``n_ieq_constr = len(constr_index)``).
 
 The metric and threshold live in the *same* space that ``benchmark.evaluate``
 returns after the baseline convention (``normalize()`` only when
@@ -51,6 +56,23 @@ def _violation(metric, threshold):
     return np.where(np.isfinite(g), g, 1.0)
 
 
+def _as_constraint_lists(constr_index, threshold):
+    """Normalize scalar-or-sequence constraint specs to parallel lists."""
+    indices    = [int(i) for i in np.atleast_1d(constr_index)]
+    thresholds = [float(t) for t in np.atleast_1d(threshold)]
+    if len(indices) != len(thresholds):
+        raise ValueError(
+            f'constr_index and threshold must have equal length, got '
+            f'{len(indices)} vs {len(thresholds)}')
+    return indices, thresholds
+
+
+def _violation_columns(F, constr_indices, thresholds):
+    """(n, n_constr) violation matrix, one column per constrained metric."""
+    return np.column_stack([_violation(F[:, i], t)
+                            for i, t in zip(constr_indices, thresholds)])
+
+
 class ConstrainedEvoXBenchProblem(Problem):
     """Outer pymoo problem: benchmark evaluated once per call.
 
@@ -61,16 +83,18 @@ class ConstrainedEvoXBenchProblem(Problem):
     obj_indices : list[int]
         Benchmark metric columns used as objectives, in output-column order.
         ``out['F']`` has ``len(obj_indices)`` columns in this order.
-    constr_index : int
-        Benchmark metric column used as the constrained metric.
-    threshold : float
-        Constraint threshold in the evaluated-metric space (post baseline
-        convention). ``G <= 0`` <=> feasible.
+    constr_index : int or sequence[int]
+        Benchmark metric column(s) used as the constrained metric(s). A
+        sequence declares one G column per entry (``n_ieq_constr = len``).
+    threshold : float or sequence[float]
+        Constraint threshold(s) in the evaluated-metric space (post baseline
+        convention), parallel to ``constr_index``. ``G <= 0`` <=> feasible;
+        an individual is feasible iff EVERY column satisfies its threshold.
     no_norm : bool
         Skip objective normalisation (matches EvoXBenchProblem.no_norm).
     gate : bool
         Hard-evaluability gate. When True, the F rows of infeasible
-        individuals (G > 0) are masked to ``np.inf`` AFTER the non-finite
+        individuals (any G > 0) are masked to ``np.inf`` AFTER the non-finite
         guard: under the gated-hard semantics those objective values are
         physically unobservable (the model cannot run), and inf is the
         fail-safe sentinel -- if a gated row ever leaks past the algorithm's
@@ -88,13 +112,16 @@ class ConstrainedEvoXBenchProblem(Problem):
                  no_norm: bool = False, gate: bool = False, **kwargs):
         ss = benchmark.search_space
         self.obj_indices  = list(obj_indices)
-        self.constr_index = int(constr_index)
-        self.threshold    = float(threshold)
+        self.constr_indices, self.thresholds = _as_constraint_lists(constr_index, threshold)
+        # Scalar aliases for the single-constraint campaign path (existing
+        # callers read problem.constr_index / .threshold).
+        self.constr_index = self.constr_indices[0]
+        self.threshold    = self.thresholds[0]
         self.gate         = bool(gate)
         super().__init__(
             n_var=ss.n_var,
             n_obj=len(self.obj_indices),
-            n_ieq_constr=1,
+            n_ieq_constr=len(self.constr_indices),
             xl=np.asarray(ss.lb, dtype=float),
             xu=np.asarray(ss.ub, dtype=float),
             **kwargs,
@@ -112,13 +139,13 @@ class ConstrainedEvoXBenchProblem(Problem):
             F = self.benchmark.normalize(F)
         F = np.where(np.isfinite(F), F, 1.0)
 
-        G = _violation(F[:, self.constr_index], self.threshold)[:, None]
+        G = _violation_columns(F, self.constr_indices, self.thresholds)
         F_out = F[:, self.obj_indices]
         if self.gate:
             # Hard gate: infeasible F is unobservable -- inf sentinel,
             # see the class docstring. Fancy indexing above returned a copy,
             # so the in-place mask never touches the shared benchmark matrix.
-            F_out[G[:, 0] > 0] = np.inf
+            F_out[G.max(axis=1) > 0] = np.inf
         out['F'] = F_out
         out['G'] = G
 
@@ -127,8 +154,10 @@ class ConstrainedEvoXBenchProblem(Problem):
 
 class ConstrainedSurrogateProblemEvox(Problem):
     """Inner surrogate problem: predicted objectives + real (cheap) objectives,
-    plus one constraint that is either predicted by a surrogate or computed
-    exactly via the benchmark.
+    plus one constraint COLUMN PER constrained metric, each independently
+    predicted by a surrogate or computed exactly via the benchmark (so a
+    mixed exact/predicted violation vector -- e.g. exact #Params G next to
+    predicted latency G -- is a first-class configuration).
 
     Objective handling mirrors ``SurrogateProblemEvox`` but works in the
     *reduced* objective space defined by ``obj_indices`` (so its F columns
@@ -152,13 +181,18 @@ class ConstrainedSurrogateProblemEvox(Problem):
         benchmark column read for position ``p`` is ``obj_indices[p]``.
     benchmark :
         The evoxbench benchmark instance.
-    constr_index : int
-        Benchmark metric column for the constraint (evaluated-metric space).
-    threshold : float
-        Constraint threshold in the evaluated-metric space.
-    constr_surrogate : object or None
-        If given (constr mode 'surrogate'), ``G = constr_surrogate.predict(X)``.
-        If None, G is computed exactly via the benchmark (constr mode 'exact').
+    constr_index : int or sequence[int]
+        Benchmark metric column(s) for the constraint(s) (evaluated-metric
+        space). A sequence declares one G column per entry.
+    threshold : float or sequence[float]
+        Constraint threshold(s) in the evaluated-metric space, parallel to
+        ``constr_index``.
+    constr_surrogate : object, sequence, or None
+        Per-constraint G source. A sequence parallel to ``constr_index``:
+        slot ``j`` predicts column ``G[:, j]`` via ``.predict(X)`` when it is
+        a model, or None for an exact benchmark computation of that column.
+        A bare object (single constraint) and a bare None (ALL columns
+        exact) keep the original scalar call signature working.
     no_norm : bool
         Skip objective normalisation.
     """
@@ -179,13 +213,30 @@ class ConstrainedSurrogateProblemEvox(Problem):
         self.obj_indices         = list(obj_indices)
         self.predict_obj_indices = list(predict_obj_indices)
         self.real_obj_indices    = list(real_obj_indices)
-        self.constr_index        = int(constr_index)
-        self.threshold           = float(threshold)
-        self.constr_surrogate    = constr_surrogate
+        self.constr_indices, self.thresholds = _as_constraint_lists(constr_index, threshold)
+        n_constr = len(self.constr_indices)
+        if constr_surrogate is None:
+            self.constr_surrogates = [None] * n_constr
+        elif isinstance(constr_surrogate, (list, tuple)):
+            if len(constr_surrogate) != n_constr:
+                raise ValueError(
+                    f'constr_surrogate sequence length {len(constr_surrogate)} '
+                    f'!= number of constraints {n_constr}')
+            self.constr_surrogates = list(constr_surrogate)
+        else:
+            if n_constr != 1:
+                raise ValueError(
+                    'a bare constr_surrogate object is only valid for a '
+                    'single constraint; pass a per-slot sequence instead')
+            self.constr_surrogates = [constr_surrogate]
+        # Scalar aliases for the single-constraint campaign path.
+        self.constr_index     = self.constr_indices[0]
+        self.threshold        = self.thresholds[0]
+        self.constr_surrogate = constr_surrogate
         super().__init__(
             n_var=ss.n_var,
             n_obj=len(self.obj_indices),
-            n_ieq_constr=1,
+            n_ieq_constr=n_constr,
             xl=np.asarray(ss.lb, dtype=float),
             xu=np.asarray(ss.ub, dtype=float),
         )
@@ -198,9 +249,10 @@ class ConstrainedSurrogateProblemEvox(Problem):
         F = np.zeros((n, self.n_obj))
 
         # A single benchmark call (baseline convention applied once) covers
-        # both the real objectives and an exact constraint -- avoid a double
-        # lookup and keep the same metric space as the outer problem.
-        need_bench = bool(self.real_obj_indices) or (self.constr_surrogate is None)
+        # both the real objectives and every exact constraint column -- avoid
+        # a double lookup and keep the same metric space as the outer problem.
+        need_bench = bool(self.real_obj_indices) or any(
+            s is None for s in self.constr_surrogates)
         F_bench = None
         if need_bench:
             X_int = np.round(X).astype(int)
@@ -220,9 +272,12 @@ class ConstrainedSurrogateProblemEvox(Problem):
 
         out['F'] = F
 
-        # ── constraint: predicted or exact ────────────────────────────────────
-        if self.constr_surrogate is not None:
-            G = np.asarray(self.constr_surrogate.predict(X_float)).reshape(n, 1)
-        else:
-            G = _violation(F_bench[:, self.constr_index], self.threshold)[:, None]
-        out['G'] = G
+        # ── constraints: per-column predicted or exact ────────────────────────
+        G_cols = []
+        for surrogate, idx, thr in zip(self.constr_surrogates,
+                                       self.constr_indices, self.thresholds):
+            if surrogate is not None:
+                G_cols.append(np.asarray(surrogate.predict(X_float)).reshape(n))
+            else:
+                G_cols.append(_violation(F_bench[:, idx], thr))
+        out['G'] = np.column_stack(G_cols)

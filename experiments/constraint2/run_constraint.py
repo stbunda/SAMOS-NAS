@@ -1,18 +1,44 @@
-"""experiments/constraint2/run_constraint.py --- 2x2 constraint-scenario campaign runner.
+"""experiments/constraint2/run_constraint.py --- constraint-scenario campaign runner.
 
-Four scenarios instantiate the full hard/soft x cheap/expensive taxonomy on a
-SHARED objective pair and (near-)shared instance set, so every scenario pair
-isolates exactly one axis:
+Four single-constraint scenarios instantiate the full hard/soft x
+cheap/expensive taxonomy on a SHARED objective pair and (near-)shared
+instance set, so every scenario pair isolates exactly one axis:
 
   s1 : #Params <= T, hard   (cheap constraint)
   s2 : latency <= T, hard   (expensive constraint)
   s3 : #Params <= T, soft   (cheap constraint)
   s4 : latency <= T, soft   (expensive constraint)
 
-Objectives are {Err., FLOPs} everywhere (OBJ_METRICS). The constrained metric
-is resolved per instance: '#Params' for the cheap scenarios, the instance's
-own latency column for the expensive ones (LATENCY_METRIC -- the column name
-is device-specific per benchmark).
+Eight multi-constraint scenarios stack every constraint-TYPE combination
+(C = cheap/structural, E = expensive/predictor-backed) plus an
+all-constraints scenario, each in both modes -- the stress test of the
+single-constraint campaign's constraint-as-objective (b0) headline result,
+whose Pareto-dominance search degrades with every added objective while
+CDP-style handlers scale to multiple G rows trivially:
+
+  s5  : #Params + FLOPs <= T, hard             (CC)
+  s6  : #Params + FLOPs <= T, soft             (CC)
+  s7  : #Params + latency <= T, hard           (CE)
+  s8  : #Params + latency <= T, soft           (CE)
+  s9  : latency + energy <= T, hard            (EE)
+  s10 : latency + energy <= T, soft            (EE)
+  s11 : #Params + FLOPs + latency + energy, hard  (ALL)
+  s12 : #Params + FLOPs + latency + energy, soft  (ALL)
+
+Objectives are {Err., FLOPs} everywhere (OBJ_METRICS). Constrained metrics
+are resolved per instance: '#Params'/'FLOPs' are structural everywhere; the
+latency/energy columns are device-specific per benchmark (LATENCY_METRIC /
+ENERGY_METRIC). Feasible <=> EVERY constrained metric is at or below its own
+~Q25 threshold; the JOINT design feasible fraction of a combination is a
+measured property recorded per (scenario, instance)
+(JOINT_DESIGN_FEASIBLE_FRACTION), never a design target.
+
+Note on CC/ALL: FLOPs is both a scoring objective and a constrained metric
+(a compute budget on top of FLOPs minimization). b0 rows never duplicate the
+column: their search objectives are the scoring objectives plus the
+constrained metrics NOT already among them (CC -> 3-obj {Err, FLOPs,
+#Params}; the FLOPs budget is enforced by the gate/scoring only), recorded
+in meta['search_obj_metrics'].
 
 Mode axis (hard vs soft) is PHYSICAL, not a handler default:
   hard : evaluability gate. Every infeasible high-fidelity evaluation is
@@ -45,6 +71,14 @@ constraint type (SCENARIO_INSTANCES):
                      the cheap scenarios: without the latency column it is
                      the identical experiment to citysegmop/5 (same
                      architectures, same Err/FLOPs/#Params values).
+  cc/ce (s5-s8):     the cheap set (structural metrics exist everywhere;
+                     citysegmop/10 stays excluded for the same duplication
+                     reason -- for CC entirely, and CE keeps the frozen
+                     cheap-set for seed-paired comparison against s1-s4).
+  ee/all (s9-s12):   instances exposing >= 2 expensive metric columns
+                     (latency AND energy): c10mop/5 (EdgeGPU), citysegmop/5
+                     (H1) and citysegmop/10 (H2). c10mop/4 and in1kmop/9
+                     expose latency only and cannot run EE/ALL.
 
 All five instances share cheap FLOPs/#Params columns (BENCHMARK_META
 cheap_obj_indices), so the samos-cheap split is uniform: Err. predicted,
@@ -57,14 +91,16 @@ Thresholds
 Per instance and metric, ~Q25 of a fixed-seed (0) 10k uniform random sample
 in the space the problem operates in (benchmark.evaluate output,
 normalize() applied only when not benchmark.normalized_objectives) -- so
-roughly 25% of the space is feasible. See experiments/constraint2/
-THRESHOLDS.md for exact values, provenance, and the two MoSegNAS
-exceptions: ~33.5% of random MoSegNAS genotypes collapse onto one fallback
-architecture whose normalized metrics all equal 1.0, so no 25% threshold
-exists for '#Params' (achievable: 17.6%) or 'H2 Lat.' (20.2%); those
-thresholds sit at the largest achieved value below that spike, and the
-exact design feasible fraction is recorded per run in
-meta['design_feasible_fraction'].
+roughly 25% of the space is feasible PER METRIC. Multi-constraint scenarios
+keep the per-metric Q25 thresholds and record the measured JOINT fraction.
+See experiments/constraint2/THRESHOLDS.md for exact values, provenance, and
+the MoSegNAS exceptions: ~33.5% of random MoSegNAS genotypes collapse onto
+one fallback architecture whose normalized metrics all equal 1.0, so no 25%
+threshold exists for metrics whose lower quartile hits that spike; those
+thresholds sit at the largest achieved value below it, the fallback arch is
+infeasible on every axis, and the exact design feasible fraction(s) are
+recorded per run in meta['design_feasible_fraction'] (plus
+meta['design_feasible_fraction_joint'] for multi-constraint runs).
 
 Methods
 -------
@@ -190,7 +226,7 @@ OBJ_METRICS = ('Err.', 'FLOPs')      # fixed for the whole campaign
 
 CHEAP_CONSTR_METRIC = '#Params'
 
-# The expensive (latency) column is device-specific per instance.
+# The expensive (latency/energy) columns are device-specific per instance.
 LATENCY_METRIC = {
     ('c10mop', 4):      'Latency',
     ('c10mop', 5):      'EdgeGPU Lat.',
@@ -199,49 +235,123 @@ LATENCY_METRIC = {
     ('citysegmop', 10): 'H2 Lat.',
 }
 
-SCENARIOS = {
-    's1': dict(constr='cheap',     mode='hard'),
-    's2': dict(constr='expensive', mode='hard'),
-    's3': dict(constr='cheap',     mode='soft'),
-    's4': dict(constr='expensive', mode='soft'),
+# Second expensive metric (EE/ALL combos); only instances exposing both a
+# latency AND an energy column qualify -- c10mop/4 and in1kmop/9 have
+# latency only and therefore cannot run EE/ALL.
+ENERGY_METRIC = {
+    ('c10mop', 5):      'EdgeGPU En.',
+    ('citysegmop', 5):  'H1 En.',
+    ('citysegmop', 10): 'H2 En.',
 }
+
+SCENARIOS = {
+    's1':  dict(constr='cheap',     mode='hard'),
+    's2':  dict(constr='expensive', mode='hard'),
+    's3':  dict(constr='cheap',     mode='soft'),
+    's4':  dict(constr='expensive', mode='soft'),
+    's5':  dict(constr='cc',        mode='hard'),
+    's6':  dict(constr='cc',        mode='soft'),
+    's7':  dict(constr='ce',        mode='hard'),
+    's8':  dict(constr='ce',        mode='soft'),
+    's9':  dict(constr='ee',        mode='hard'),
+    's10': dict(constr='ee',        mode='soft'),
+    's11': dict(constr='all',       mode='hard'),
+    's12': dict(constr='all',       mode='soft'),
+}
+
+# Constraint types with more than one constrained metric (s5-s12).
+MULTI_COMBOS = ('cc', 'ce', 'ee', 'all')
 
 # citysegmop/10 is expensive-only: without its latency column it is the
 # identical experiment to citysegmop/5 (same search space, same
 # Err/FLOPs/#Params values) -- see module docstring, 'Instances'.
+_CHEAP_SET = [('c10mop', 4), ('c10mop', 5), ('in1kmop', 9), ('citysegmop', 5)]
+_EE_SET    = [('c10mop', 5), ('citysegmop', 5), ('citysegmop', 10)]
+
 SCENARIO_INSTANCES = {
-    'cheap':     [('c10mop', 4), ('c10mop', 5), ('in1kmop', 9), ('citysegmop', 5)],
-    'expensive': [('c10mop', 4), ('c10mop', 5), ('in1kmop', 9), ('citysegmop', 5),
-                  ('citysegmop', 10)],
+    'cheap':     _CHEAP_SET,
+    'expensive': _CHEAP_SET + [('citysegmop', 10)],
+    'cc':        _CHEAP_SET,
+    'ce':        _CHEAP_SET,
+    'ee':        _EE_SET,
+    'all':       _EE_SET,
 }
 
 # ~Q25 thresholds (see THRESHOLDS.md for provenance and the MoSegNAS spike
-# exceptions), in the space the constrained problem operates in.
+# exceptions), in the space the constrained problem operates in. Every
+# metric keeps ONE threshold regardless of which scenario constrains it;
+# multi-constraint scenarios combine these per-metric values unchanged.
 THRESHOLDS = {
-    ('c10mop', 4):      {'#Params': 0.3078135998873715,  'Latency':      0.36311633657280196},
-    ('c10mop', 5):      {'#Params': 0.11198208286674133, 'EdgeGPU Lat.': 0.5728975060318674},
-    ('in1kmop', 9):     {'#Params': 0.46727868434691233, 'Latency':      0.34752772487724964},
-    ('citysegmop', 5):  {'#Params': 0.9997754995135822,  'H1 Lat.':      0.5579798323679069},
-    ('citysegmop', 10): {'H2 Lat.': 0.9999087009935012},
+    ('c10mop', 4):      {'#Params': 0.3078135998873715,  'Latency':      0.36311633657280196,
+                         'FLOPs':   0.1814415868239766},
+    ('c10mop', 5):      {'#Params': 0.11198208286674133, 'EdgeGPU Lat.': 0.5728975060318674,
+                         'FLOPs':   0.10810810810810814, 'EdgeGPU En.':  0.544715316639718},
+    ('in1kmop', 9):     {'#Params': 0.46727868434691233, 'Latency':      0.34752772487724964,
+                         'FLOPs':   0.37192471140932504},
+    ('citysegmop', 5):  {'#Params': 0.9997754995135822,  'H1 Lat.':      0.5579798323679069,
+                         'FLOPs':   0.9988584474885844,  'H1 En.':       0.4869375522655389},
+    ('citysegmop', 10): {'H2 Lat.': 0.9999087009935012,  '#Params':      0.9997754995135822,
+                         'FLOPs':   0.9988584474885844,  'H2 En.':       0.9999647471796245},
 }
 
 # Fraction of the fixed-seed 10k random sample feasible at each threshold --
 # 0.25 by quantile construction except at the MoSegNAS spike (recorded in
 # every pkl's meta as design_feasible_fraction).
 DESIGN_FEASIBLE_FRACTION = {
-    ('c10mop', 4):      {'#Params': 0.25,   'Latency':      0.25},
-    ('c10mop', 5):      {'#Params': 0.254,  'EdgeGPU Lat.': 0.250},
-    ('in1kmop', 9):     {'#Params': 0.25,   'Latency':      0.25},
-    ('citysegmop', 5):  {'#Params': 0.1762, 'H1 Lat.':      0.250},
-    ('citysegmop', 10): {'H2 Lat.': 0.2015},
+    ('c10mop', 4):      {'#Params': 0.25,   'Latency':      0.25,   'FLOPs': 0.25},
+    ('c10mop', 5):      {'#Params': 0.254,  'EdgeGPU Lat.': 0.250,  'FLOPs': 0.2544,
+                         'EdgeGPU En.': 0.25},
+    ('in1kmop', 9):     {'#Params': 0.25,   'Latency':      0.25,   'FLOPs': 0.25},
+    ('citysegmop', 5):  {'#Params': 0.1762, 'H1 Lat.':      0.250,  'FLOPs': 0.1646,
+                         'H1 En.': 0.25},
+    ('citysegmop', 10): {'H2 Lat.': 0.2015, '#Params':      0.1762, 'FLOPs': 0.1646,
+                         'H2 En.': 0.2292},
+}
+
+# Measured JOINT fraction of the same fixed-seed 10k sample satisfying EVERY
+# per-metric threshold of a combination -- a measured property per (combo,
+# instance), never a design target (see THRESHOLDS.md, multi-constraint
+# section; the MoSegNAS fallback arch is infeasible on every axis, so cs
+# joint fractions sit at or below the tightest single fraction). Note
+# cc @ c10mop/5: the #Params and FLOPs Q25-feasible sets coincide exactly
+# on NB201 (joint == both marginals) -- CC there is effectively a single
+# binding constraint.
+JOINT_DESIGN_FEASIBLE_FRACTION = {
+    ('cc',  ('c10mop', 4)):      0.1644,
+    ('cc',  ('c10mop', 5)):      0.2544,
+    ('cc',  ('in1kmop', 9)):     0.0825,
+    ('cc',  ('citysegmop', 5)):  0.1424,
+    ('ce',  ('c10mop', 4)):      0.1034,
+    ('ce',  ('c10mop', 5)):      0.0990,
+    ('ce',  ('in1kmop', 9)):     0.0837,
+    ('ce',  ('citysegmop', 5)):  0.1167,
+    ('ee',  ('c10mop', 5)):      0.2429,
+    ('ee',  ('citysegmop', 5)):  0.2216,
+    ('ee',  ('citysegmop', 10)): 0.1994,
+    ('all', ('c10mop', 5)):      0.0977,
+    ('all', ('citysegmop', 5)):  0.0966,
+    ('all', ('citysegmop', 10)): 0.1121,
 }
 
 
-def constr_metric_for(scenario, suite, pid):
-    """The scenario's constrained metric NAME at one instance."""
-    if SCENARIOS[scenario]['constr'] == 'cheap':
-        return CHEAP_CONSTR_METRIC
-    return LATENCY_METRIC[(suite, pid)]
+def constr_metrics_for(scenario, suite, pid):
+    """The scenario's constrained metric NAME(s) at one instance, as a tuple
+    (length 1 for s1-s4)."""
+    constr = SCENARIOS[scenario]['constr']
+    key = (suite, pid)
+    if constr == 'cheap':
+        return (CHEAP_CONSTR_METRIC,)
+    if constr == 'expensive':
+        return (LATENCY_METRIC[key],)
+    if constr == 'cc':
+        return ('#Params', 'FLOPs')
+    if constr == 'ce':
+        return ('#Params', LATENCY_METRIC[key])
+    if constr == 'ee':
+        return (LATENCY_METRIC[key], ENERGY_METRIC[key])
+    if constr == 'all':
+        return ('#Params', 'FLOPs', LATENCY_METRIC[key], ENERGY_METRIC[key])
+    raise ValueError(f'Unknown constraint type: {constr!r}')
 
 
 METHODS = ['random', 'samos', 'samos-cheap']
@@ -253,6 +363,13 @@ HANDLER_ROW = ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp',
 # Inner-GA controls: run explicitly (--handler / the sbatch control block),
 # not part of --all_handlers.
 CONTROL_HANDLERS = ['h4-cdp-sms', 'b0-nsga2']
+
+# Multi-constraint scenarios (s5-s12) run a reduced row: the two robust top
+# handlers plus BOTH b0 inner-GA variants -- at 4-6 search objectives the
+# inner GA may start to matter, so b0-nsga2 is a first-class row here, not a
+# control. h1/h3/h5/h6 variants are not needed for the constraint-count
+# hypothesis (explicit --handler still accepts them).
+MULTI_HANDLER_ROW = ['h2-penalty', 'h4-cdp', 'b0-as-obj', 'b0-nsga2']
 
 HANDLERS = HANDLER_ROW + CONTROL_HANDLERS
 
@@ -366,8 +483,8 @@ class B0SurrogateProblemEvox(Problem):
         out['F'] = F
 
 
-def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
-                     threshold, handler, seed, pop_size, n_doe, n_infill,
+def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_indices,
+                     thresholds, handler, seed, pop_size, n_doe, n_infill,
                      n_gen_inner, inner_pop_size, penalty, n_gen, gated):
     """Returns ``(algorithm, copy_algorithm, handler_state)``.
     ``copy_algorithm`` is False only for h3/h5 (their per-generation state
@@ -404,10 +521,11 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
         predict_pos = list(range(len(obj_indices)))
         real_pos    = []
         surrogates       = [XGBoost(100, seed=rng.randint(0, 2**31 - 1)) for _ in predict_pos]
-        # b0 rows: no constraint surrogate -- the constrained metric is an
-        # ordinary predicted objective column here, never a G.
+        # b0 rows: no constraint surrogate -- the constrained metrics are
+        # ordinary predicted objective columns here, never a G.
         constr_surrogate = (None if handler in B0_HANDLERS
-                             else XGBoost(100, seed=rng.randint(0, 2**31 - 1)))
+                             else [XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                                   for _ in constr_indices])
 
     elif method == 'samos-cheap':
         cheap_cols = set(BENCHMARK_META[suite][pid].get('cheap_obj_indices', []))
@@ -416,11 +534,22 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
         if handler in B0_HANDLERS:
             constr_surrogate = None   # same reason as the 'samos' branch above.
         else:
-            exact_constr = constr_index in cheap_cols   # cheap constraint -> exact
-            constr_surrogate = None if exact_constr else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+            # Per-slot split: cheap constraint columns are exact (None slot),
+            # expensive ones get a surrogate -- a mixed exact/predicted
+            # violation vector under CE.
+            constr_surrogate = [None if ci in cheap_cols
+                                else XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                                for ci in constr_indices]
+            if not any(s is not None for s in constr_surrogate):
+                constr_surrogate = None   # all exact -> no fit/factory seam needed
 
     else:
         raise ValueError(f'Unknown method: {method!r}')
+
+    # Single constraint keeps the scalar surrogate object of the original
+    # campaign path (bit-identical wiring); sequences are multi-only.
+    if isinstance(constr_surrogate, list) and len(constr_surrogate) == 1:
+        constr_surrogate = constr_surrogate[0]
 
     if handler in B0_HANDLERS:
         # Constraint-as-objective baseline: unconstrained 3-objective search,
@@ -432,13 +561,16 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
             return B0SurrogateProblemEvox(surrs, obj_indices, predict_pos, real_pos, benchmark)
 
         # The b0 outer problem defines no G, so the gate/waste counters read
-        # the constrained metric straight off evaluated F (it is the LAST
-        # search-objective column, appended by run_single): an infeasible
-        # evaluation fails the same way for every handler. Passed
-        # unconditionally: soft rows use it for exact counters only.
-        _constr_pos = len(obj_indices) - 1
+        # the constrained metrics straight off evaluated F -- every
+        # constrained metric's benchmark column is among the search
+        # objectives (run_single appends the ones not already there), so
+        # each is located by position: an infeasible evaluation fails the
+        # same way for every handler. Passed unconditionally: soft rows use
+        # it for exact counters only.
+        _constr_pos = np.array([obj_indices.index(ci) for ci in constr_indices])
+        _thr        = np.asarray(thresholds, dtype=float)
 
-        def b0_gate_g_fn(pop, _t=threshold, _p=_constr_pos):
+        def b0_gate_g_fn(pop, _t=_thr, _p=_constr_pos):
             return (pop.get('F')[:, _p] - _t) / _t
 
         algorithm = SAMOS2(
@@ -552,7 +684,7 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_index,
     def factory(surrs, fitted_constr_surrogate=None):
         inner = ConstrainedSurrogateProblemEvox(
             surrs, obj_indices, predict_pos, real_pos, benchmark,
-            constr_index, threshold, constr_surrogate=fitted_constr_surrogate,
+            constr_indices, thresholds, constr_surrogate=fitted_constr_surrogate,
         )
         return wrap_inner(inner) if wrap_inner is not None else inner
 
@@ -575,39 +707,44 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
     np.random.seed(seed)
     random.seed(seed)
 
-    cfg           = SCENARIOS[scenario]
-    benchmark     = get_benchmark(suite, pid)
-    obj_indices   = [metric_index(suite, pid, m) for m in OBJ_METRICS]
-    constr_metric = constr_metric_for(scenario, suite, pid)
-    constr_index  = metric_index(suite, pid, constr_metric)
-    threshold     = THRESHOLDS[(suite, pid)][constr_metric]
+    cfg            = SCENARIOS[scenario]
+    benchmark      = get_benchmark(suite, pid)
+    obj_indices    = [metric_index(suite, pid, m) for m in OBJ_METRICS]
+    constr_metrics = constr_metrics_for(scenario, suite, pid)
+    constr_indices = [metric_index(suite, pid, m) for m in constr_metrics]
+    thresholds     = [THRESHOLDS[(suite, pid)][m] for m in constr_metrics]
 
     # The mode axis is physical: hard gates evaluability, soft archives
     # infeasible points with raw F/G (see module docstring).
     gated = cfg['mode'] == 'hard'
 
     if handler in B0_HANDLERS:
-        # Unconstrained search over the two objectives PLUS the constrained
-        # metric as an ordinary 3rd objective -- no G. The callback below
-        # still only sees the two scoring objectives + constr_index/threshold,
-        # so indicators/feasibility scoring stay identical to every other
-        # handler row (search space differs, the scored space does not).
-        search_obj_indices = obj_indices + [constr_index]
+        # Unconstrained search over the scoring objectives PLUS each
+        # constrained metric not already among them as an ordinary extra
+        # objective -- no G, and no duplicated column when a constrained
+        # metric (FLOPs under CC/ALL) is itself a scoring objective; its
+        # budget is enforced by the gate/scoring only. The callback below
+        # still only sees the two scoring objectives + the constraint
+        # columns/thresholds, so indicators/feasibility scoring stay
+        # identical to every other handler row (search space differs, the
+        # scored space does not).
+        extra_indices = [ci for ci in constr_indices if ci not in obj_indices]
+        search_obj_indices = obj_indices + extra_indices
         problem = B0ObjectiveProblem(benchmark, search_obj_indices)
-        assert problem.n_obj == 3, (
-            f'{handler} requires exactly 3 search objectives, got {problem.n_obj} '
-            f'({scenario}/{suite}/pid{pid})')
+        assert problem.n_obj == len(OBJ_METRICS) + len(extra_indices), (
+            f'{handler} search objective mismatch: n_obj={problem.n_obj} vs '
+            f'{len(OBJ_METRICS)} + {len(extra_indices)} ({scenario}/{suite}/pid{pid})')
     else:
         search_obj_indices = obj_indices
-        problem = ConstrainedEvoXBenchProblem(benchmark, obj_indices, constr_index,
-                                              threshold, gate=gated)
+        problem = ConstrainedEvoXBenchProblem(benchmark, obj_indices, constr_indices,
+                                              thresholds, gate=gated)
 
     callback = FeasibilityAwareEvoxBenchCallback(
-        benchmark, obj_indices, constr_index, threshold,
+        benchmark, obj_indices, constr_indices, thresholds,
         compute_indicators=compute_indicators)
 
     algorithm, copy_algorithm, handler_state = build_algorithm(
-        method, benchmark, suite, pid, search_obj_indices, constr_index, threshold,
+        method, benchmark, suite, pid, search_obj_indices, constr_indices, thresholds,
         handler, seed, pop_size, n_doe, n_infill, n_gen_inner, inner_pop_size,
         penalty, n_gen, gated=gated)
 
@@ -626,27 +763,34 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
     # rejected X only, so its violations are NaN and must be re-evaluated).
     algo = results.algorithm
     if gated:
+        # rejected_G keeps the campaign's legacy 1-D shape for a single
+        # constraint and one column per constraint otherwise.
+        n_constr = len(constr_indices)
+        g_shape  = (lambda n: (n,) if n_constr == 1 else (n, n_constr))
         if getattr(algo, '_rejected_X', None) is not None:
             data['rejected_X'] = np.asarray(algo._rejected_X)
             data['rejected_G'] = np.asarray(algo._rejected_G)
         elif getattr(algo, '_rejected_pop', None) is not None and len(algo._rejected_pop) > 0:
             X_rej = np.asarray(algo._rejected_pop.get('X'))
             data['rejected_X'] = X_rej
-            data['rejected_G'] = np.full(len(X_rej), np.nan)
+            data['rejected_G'] = np.full(g_shape(len(X_rej)), np.nan)
         else:
             data['rejected_X'] = np.empty((0, problem.n_var))
-            data['rejected_G'] = np.empty((0,))
+            data['rejected_G'] = np.empty(g_shape(0))
     return data
 
 
 def _resolve_handlers(scenario, args):
     """Handler list for this invocation: explicit --handler > --all_handlers
-    (the shared HANDLER_ROW) > the scenario default."""
+    (the shared HANDLER_ROW; the reduced MULTI_HANDLER_ROW on s5-s12) > the
+    scenario default."""
     default = DEFAULT_HANDLER[SCENARIOS[scenario]['mode']]
     if args.handler is not None:
         return [args.handler], default
     if args.all_handlers:
-        return list(HANDLER_ROW), default
+        row = (MULTI_HANDLER_ROW if SCENARIOS[scenario]['constr'] in MULTI_COMBOS
+               else HANDLER_ROW)
+        return list(row), default
     return [default], default
 
 
@@ -671,9 +815,19 @@ def main(args):
               f"{SCENARIO_INSTANCES[cfg['constr']]}. See the module docstring, 'Instances'.")
         return 1
 
-    constr_metric = constr_metric_for(scenario, suite, pid)
-    threshold     = THRESHOLDS[(suite, pid)][constr_metric]
-    feas_frac     = DESIGN_FEASIBLE_FRACTION[(suite, pid)][constr_metric]
+    constr_metrics = constr_metrics_for(scenario, suite, pid)
+    multi          = len(constr_metrics) > 1
+    thresholds     = tuple(THRESHOLDS[(suite, pid)][m] for m in constr_metrics)
+    feas_fracs     = tuple(DESIGN_FEASIBLE_FRACTION[(suite, pid)][m] for m in constr_metrics)
+    joint_frac     = (JOINT_DESIGN_FEASIBLE_FRACTION[(cfg['constr'], (suite, pid))]
+                      if multi else None)
+
+    # Single-constraint pkls keep their original scalar meta values; multi
+    # runs carry tuples (plus the joint fraction added at meta-build time).
+    constr_metric = constr_metrics if multi else constr_metrics[0]
+    threshold     = thresholds     if multi else thresholds[0]
+    feas_frac     = feas_fracs     if multi else feas_fracs[0]
+    t_str         = ', '.join(f'{m}<={t:.4f}' for m, t in zip(constr_metrics, thresholds))
 
     handlers, default_handler = _resolve_handlers(scenario, args)
 
@@ -708,8 +862,8 @@ def main(args):
                     data = pickle.load(f)
             else:
                 print(f'\n[RUN {run_i}/{total_runs}] scenario={scenario} {suite}/pid{pid} '
-                      f'(mode={cfg["mode"]}, constr={constr_metric} [{cfg["constr"]}], '
-                      f'T={threshold:.4f})  method={method}  handler={handler}  '
+                      f'(mode={cfg["mode"]}, constr=[{cfg["constr"]}] {t_str})  '
+                      f'method={method}  handler={handler}  '
                       f'seed={seed}  pop={args.pop_size}  n_gen={args.n_gen}')
                 data = run_single(
                     method, scenario, suite, pid, handler, seed, args.pop_size,
@@ -717,10 +871,13 @@ def main(args):
                     args.inner_pop_size, args.penalty)
                 # Self-describing pkl: everything needed to re-derive this
                 # run's config without consulting the output path or the
-                # SCENARIOS/THRESHOLDS state at read time. b0 rows
-                # additionally record the 3-column search objective set;
-                # their obj_metrics/constr_metric stay the scoring config so
-                # analysis groups them with every other handler row.
+                # SCENARIOS/THRESHOLDS state at read time. Multi-constraint
+                # runs carry tuple-valued constr_metric/threshold/
+                # design_feasible_fraction (parallel, one entry per
+                # constraint) plus the measured joint fraction; b0 rows
+                # additionally record their deduplicated search objective
+                # set -- obj_metrics/constr_metric stay the scoring config
+                # so analysis groups them with every other handler row.
                 data['meta'] = dict(
                     suite=suite, pid=pid, scenario=scenario,
                     obj_metrics=OBJ_METRICS, constr_metric=constr_metric,
@@ -731,9 +888,15 @@ def main(args):
                     pop_size=args.pop_size, n_gen=args.n_gen,
                     n_gen_inner=args.n_gen_inner, penalty=args.penalty,
                     inner_ga=_inner_ga(method, handler), config='c2',
-                    **({'search_obj_metrics': OBJ_METRICS + (constr_metric,)}
-                       if handler in B0_HANDLERS else {}),
                 )
+                if multi:
+                    data['meta'].update(
+                        constr_metrics=constr_metrics,
+                        design_feasible_fraction_joint=joint_frac,
+                    )
+                if handler in B0_HANDLERS:
+                    data['meta']['search_obj_metrics'] = OBJ_METRICS + tuple(
+                        m for m in constr_metrics if m not in OBJ_METRICS)
                 with open(out_path, 'wb') as f:
                     pickle.dump(data, f)
                 print(f'  Saved -> {out_path}')
@@ -746,7 +909,7 @@ def main(args):
 
     print('\n' + '=' * 88)
     print(f'Scenario {scenario} on {suite}/pid{pid} (mode={cfg["mode"]}, '
-          f'constr={constr_metric}, T={threshold:.4f}) -- final feasible-HV summary '
+          f'constr: {t_str}) -- final feasible-HV summary '
           f'(mean +/- std over up to {len(args.seeds)} seeds)')
     for method, handler in pairs:
         rows = summary.get((method, handler))

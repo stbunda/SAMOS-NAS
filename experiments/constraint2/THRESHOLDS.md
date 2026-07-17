@@ -50,6 +50,87 @@ rescale that preserves dominance and the feasible set).
 Every run's pkl records its exact design fraction in
 `meta['design_feasible_fraction']`.
 
+## Multi-constraint campaign (s5–s12): new metrics + joint fractions
+
+Added 2026-07-17 for the constraint-type-combination scenarios (CC =
+#Params+FLOPs, CE = #Params+latency, EE = latency+energy, ALL = every
+constrained metric at once). **Per-metric thresholds stay at Q25 with the
+exact same convention as above** (fixed user decision 2026-07-16): the
+existing values are reused unchanged, the new FLOPs/energy (and
+citysegmop/10 structural) values below were computed 2026-07-17 with the
+same fixed-seed-0 10k sample, spike rule included. The JOINT feasible
+fraction of a combination is a **measured property**, never a design
+target.
+
+### Instance × combo availability
+
+EE/ALL need ≥ 2 expensive (predictor-/lookup-backed) metric columns —
+latency AND energy. From `benchmark_meta.py` obj_names:
+
+| Instance      | expensive columns          | CC | CE | EE | ALL |
+|---------------|----------------------------|----|----|----|-----|
+| c10mop/4      | Latency                    | ✓  | ✓  | –  | –   |
+| c10mop/5      | EdgeGPU Lat., EdgeGPU En.  | ✓  | ✓  | ✓  | ✓   |
+| in1kmop/9     | Latency                    | ✓  | ✓  | –  | –   |
+| citysegmop/5  | H1 Lat., H1 En.            | ✓  | ✓  | ✓  | ✓   |
+| citysegmop/10 | H2 Lat., H2 En.            | –  | –  | ✓  | ✓   |
+
+citysegmop/10 stays excluded from CC/CE for the same duplication reason as
+s1/s3 (without a device column in play it is citysegmop/5); c10mop/4 and
+in1kmop/9 expose no energy column and cannot run EE/ALL.
+
+### New per-metric Q25 thresholds
+
+| Instance      | Metric      | Threshold (T)        | Feasible fraction |
+|---------------|-------------|----------------------|-------------------|
+| c10mop/4      | FLOPs       | 0.1814415868239766   | 0.25              |
+| c10mop/5      | FLOPs       | 0.10810810810810814  | 0.2544            |
+| c10mop/5      | EdgeGPU En. | 0.544715316639718    | 0.25              |
+| in1kmop/9     | FLOPs       | 0.37192471140932504  | 0.25              |
+| citysegmop/5  | FLOPs       | 0.9988584474885844   | **0.1646**        |
+| citysegmop/5  | H1 En.      | 0.4869375522655389   | 0.25              |
+| citysegmop/10 | #Params     | 0.9997754995135822   | **0.1762**        |
+| citysegmop/10 | FLOPs       | 0.9988584474885844   | **0.1646**        |
+| citysegmop/10 | H2 En.      | 0.9999647471796245   | **0.2292**        |
+
+Bold fractions: the MoSegNAS fallback-architecture spike (33.5 % of the
+sample at normalized 1.0 on every column) again swallows the lower
+quartile — T sits at the largest achieved value below the spike, exactly
+as for the earlier #Params / H2 Lat. cases. citysegmop/10's #Params/FLOPs
+thresholds coincide numerically with citysegmop/5's (identical raw
+columns, near-identical normalization bounds on these metrics).
+
+Re-validation of the EXISTING thresholds against a fresh regeneration of
+the sample reproduced every recorded fraction to ±0.002; the residual on
+the citysegmop latency/energy columns is the intentional simulated
+measurement noise (±2 %/±5 %) those predictors carry per evaluate() call.
+
+### Measured JOINT feasible fractions (recorded per run in
+`meta['design_feasible_fraction_joint']`)
+
+| combo | c10mop/4 | c10mop/5 | in1kmop/9 | citysegmop/5 | citysegmop/10 |
+|-------|----------|----------|-----------|--------------|----------------|
+| CC    | 0.1644   | 0.2544   | 0.0825    | 0.1424       | –              |
+| CE    | 0.1034   | 0.0990   | 0.0837    | 0.1167       | –              |
+| EE    | –        | 0.2429   | –         | 0.2216       | 0.1994         |
+| ALL   | –        | 0.0977   | –         | 0.0966       | 0.1121         |
+
+Notes:
+
+- **c10mop/5 CC is degenerate**: the #Params and FLOPs Q25-feasible sets
+  coincide exactly (joint = both marginals = 0.2544) — on NB201 the two
+  structural metrics rank architectures identically at this quantile, so
+  CC there behaves as a single binding constraint. Kept (the comparison
+  against CE/EE on the same instance is still informative); flag in
+  analysis when reading the CC column.
+- MoSeg spike interaction, as predicted: the fallback architecture is
+  infeasible on every axis, so the cs joint fractions sit at or below the
+  tightest single fraction (e.g. ALL @ citysegmop/5: 0.0966 vs tightest
+  marginal 0.1646).
+- EE joint fractions are high (0.20–0.24): latency and energy are strongly
+  correlated on every device, so stacking them barely tightens the region;
+  CE (structural × device metric, weakly correlated) tightens to ~0.10.
+
 ## Generator script (new instances)
 
 Run from the repo root with the SAMOS311 environment:

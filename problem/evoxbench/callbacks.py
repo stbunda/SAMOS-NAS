@@ -206,11 +206,14 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
     obj_indices : list[int]
         Benchmark metric columns used as search objectives, output-column
         order -- must match ``ConstrainedEvoXBenchProblem.obj_indices``.
-    constr_index : int
-        Benchmark metric column used for the feasibility mask.
-    threshold : float
-        Feasibility threshold in the evaluated-metric space (post baseline
-        convention); feasible <=> metric <= threshold.
+    constr_index : int or sequence[int]
+        Benchmark metric column(s) used for the feasibility mask. With a
+        sequence, an archive member is feasible iff EVERY constrained metric
+        satisfies its threshold.
+    threshold : float or sequence[float]
+        Feasibility threshold(s) in the evaluated-metric space (post baseline
+        convention), parallel to ``constr_index``; feasible <=> metric <= T
+        for all constraints.
     no_norm : bool
         See ``EvoxBenchCallback``.
     compute_indicators : bool
@@ -228,8 +231,13 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
         self.no_norm            = no_norm
         self.compute_indicators = compute_indicators
         self.obj_indices        = list(obj_indices)
-        self.constr_index       = int(constr_index)
-        self.threshold          = float(threshold)
+        self.constr_indices     = [int(i) for i in np.atleast_1d(constr_index)]
+        self.thresholds         = [float(t) for t in np.atleast_1d(threshold)]
+        assert len(self.constr_indices) == len(self.thresholds), \
+            'constr_index and threshold must have equal length'
+        # Scalar aliases for the single-constraint campaign path.
+        self.constr_index       = self.constr_indices[0]
+        self.threshold          = self.thresholds[0]
 
         n_obj = len(self.obj_indices)
 
@@ -297,13 +305,16 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
         else:
             G = src_pop.get('G') if len(src_pop) > 0 else None
             if G is not None and G.size > 0:
-                feasible_pop = G[:, 0] <= 0
+                G = np.asarray(G, dtype=float).reshape(len(src_pop), -1)
+                feasible_pop = G.max(axis=1) <= 0
             elif len(src_pop) > 0:
                 # Unconstrained outer problem (e.g. b0-as-obj / b0-nsga2): the
-                # constrained metric is an ordinary objective column instead of
-                # a pymoo constraint; locate it in F via obj_indices.
-                pos = algorithm.problem.obj_indices.index(self.constr_index)
-                feasible_pop = obj_pop[:, pos] <= self.threshold
+                # constrained metrics are ordinary objective columns instead of
+                # pymoo constraints; locate each in F via obj_indices.
+                feasible_pop = np.ones(len(src_pop), dtype=bool)
+                for idx, thr in zip(self.constr_indices, self.thresholds):
+                    pos = algorithm.problem.obj_indices.index(idx)
+                    feasible_pop &= obj_pop[:, pos] <= thr
             else:
                 feasible_pop = np.zeros(0, dtype=bool)
             self.data['n_evaluated'].append(len(src_pop))
@@ -338,7 +349,9 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
             n_total       = len(test_obj_full)
 
             if n_total > 0:
-                feasible_mask = test_obj_full[:, self.constr_index] <= self.threshold
+                feasible_mask = np.ones(n_total, dtype=bool)
+                for idx, thr in zip(self.constr_indices, self.thresholds):
+                    feasible_mask &= test_obj_full[:, idx] <= thr
                 n_feasible    = int(feasible_mask.sum())
                 test_obj_feas = test_obj_full[feasible_mask][:, self.obj_indices]
                 if len(test_obj_feas) > 0:
