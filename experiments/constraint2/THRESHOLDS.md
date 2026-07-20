@@ -163,3 +163,75 @@ for suite, pid, metrics in TARGETS:
         print(f'{suite}/pid{pid} {m}: T={q25!r} '
               f'feasible={np.mean(col <= q25):.4f}')
 ```
+
+## Tightness sweep (Q10 / Q50): c10mop/4 Latency, citysegmop/5 H1 Lat.
+
+Added 2026-07-20 for the constraint-tightness sweep (see
+`TIGHTNESS_SWEEP_HANDOFF.md`). Same convention as above, same fixed-seed-0
+10k sample per instance, evaluated at the Q10 and Q50 quantiles instead of
+Q25.
+
+| Instance      | Metric  | Quantile | Threshold (T)         | Feasible fraction |
+|---------------|---------|----------|------------------------|--------------------|
+| c10mop/4      | Latency | Q10      | 0.2666071182319028     | 0.1000             |
+| c10mop/4      | Latency | Q50      | 0.45870737801039463    | 0.5000             |
+| citysegmop/5  | H1 Lat. | Q10      | 0.40797967144569786    | 0.1000             |
+| citysegmop/5  | H1 Lat. | Q50      | 0.7849565777046632     | 0.5000             |
+
+Achieved fractions land exactly on the nominal quantile at both operating
+points, for both instances — no tie/spike interference at Q10 or Q50.
+
+MoSeg spike check (citysegmop/5 H1 Lat.): 33.47% of the 10k sample sits
+exactly at the normalized value 1.0 (matches the ~33.5% fallback-mass figure
+above), and it is at the TOP of the distribution — both Q10 (0.408) and Q50
+(0.785) sit well below it, confirming the spike does not interact with
+either threshold.
+
+c10mop/4 Latency has no comparable spike: only 1/10,000 samples (0.01%)
+land at exactly 1.0, an ordinary tail value, not a mass point.
+
+Stale-value comparison: `experiments/constraint_deprecated/THRESHOLDS.md`
+carries a ~Q50 c10mop/pid4 Latency threshold from the earlier campaign,
+`0.45870737801039463` — an exact bit-for-bit match with the fresh Q50 above
+(NATS evaluation is deterministic, so this is expected). That file has no
+citysegmop/pid5 entry; its nearest analogues are citysegmop/pid2 and
+citysegmop/pid3 H1 Lat. medians (`0.785908199618216` and
+`0.785300373420361` respectively) — both close to but not identical with
+the fresh citysegmop/pid5 Q50 (`0.7849565777046632`), consistent with
+per-pid normalization bounds and the intentional ±2% latency measurement
+noise rather than a real discrepancy.
+
+### Generator script
+
+```python
+import numpy as np
+from problem.evoxbench.utils import get_benchmark
+from problem.evoxbench.benchmark_meta import metric_index
+
+N, SEED = 10_000, 0
+TARGETS = [('c10mop', 4, 'Latency'),
+           ('citysegmop', 5, 'H1 Lat.')]
+QUANTILES = [10, 50]
+
+for suite, pid, metric in TARGETS:
+    b = get_benchmark(suite, pid)
+    lb, ub = b.search_space.lb, b.search_space.ub
+    np.random.seed(SEED)
+    X = np.column_stack([np.random.randint(lo, hi + 1, size=N)
+                         for lo, hi in zip(lb, ub)])
+    F = b.evaluate(X, true_eval=False)
+    if not b.normalized_objectives:
+        F = b.normalize(F)
+    F = F[np.isfinite(F).all(axis=1)]
+    col = F[:, metric_index(suite, pid, metric)]
+
+    n_total = col.shape[0]
+    n_spike = int(np.sum(col == 1.0))
+    print(f'=== {suite}/pid{pid} {metric} === n_finite={n_total} '
+          f'spike_at_1.0={n_spike} ({n_spike / n_total:.4f})')
+
+    for q in QUANTILES:
+        val = float(np.percentile(col, q))
+        frac_le = float(np.mean(col <= val))
+        print(f'  Q{q}: T={val!r} achieved_fraction={frac_le:.4f}')
+```

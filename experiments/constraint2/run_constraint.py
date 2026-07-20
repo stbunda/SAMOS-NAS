@@ -294,6 +294,22 @@ THRESHOLDS = {
                          'FLOPs':   0.9988584474885844,  'H2 En.':       0.9999647471796245},
 }
 
+# Tightness sweep only: Q10/Q50 thresholds for the two sweep instances (see
+# THRESHOLDS.md, 'Tightness sweep' section). Only the metric each instance's
+# s2-style scenario actually constrains is populated; any other (suite, pid)
+# or metric raises a plain KeyError under these variants.
+THRESHOLDS_Q10 = {
+    ('c10mop', 4):     {'Latency': 0.2666071182319028},
+    ('citysegmop', 5): {'H1 Lat.': 0.40797967144569786},
+}
+
+THRESHOLDS_Q50 = {
+    ('c10mop', 4):     {'Latency': 0.45870737801039463},
+    ('citysegmop', 5): {'H1 Lat.': 0.7849565777046632},
+}
+
+THRESHOLDS_BY_VARIANT = {'q10': THRESHOLDS_Q10, 'q25': THRESHOLDS, 'q50': THRESHOLDS_Q50}
+
 # Fraction of the fixed-seed 10k random sample feasible at each threshold --
 # 0.25 by quantile construction except at the MoSegNAS spike (recorded in
 # every pkl's meta as design_feasible_fraction).
@@ -306,6 +322,25 @@ DESIGN_FEASIBLE_FRACTION = {
                          'H1 En.': 0.25},
     ('citysegmop', 10): {'H2 Lat.': 0.2015, '#Params':      0.1762, 'FLOPs': 0.1646,
                          'H2 En.': 0.2292},
+}
+
+# Tightness sweep only: achieved feasible fractions at Q10/Q50 for the two
+# sweep instances (see THRESHOLDS.md, 'Tightness sweep' section), sparse like
+# THRESHOLDS_Q10/Q50.
+DESIGN_FEASIBLE_FRACTION_Q10 = {
+    ('c10mop', 4):     {'Latency': 0.10},
+    ('citysegmop', 5): {'H1 Lat.': 0.10},
+}
+
+DESIGN_FEASIBLE_FRACTION_Q50 = {
+    ('c10mop', 4):     {'Latency': 0.50},
+    ('citysegmop', 5): {'H1 Lat.': 0.50},
+}
+
+DESIGN_FEASIBLE_FRACTION_BY_VARIANT = {
+    'q10': DESIGN_FEASIBLE_FRACTION_Q10,
+    'q25': DESIGN_FEASIBLE_FRACTION,
+    'q50': DESIGN_FEASIBLE_FRACTION_Q50,
 }
 
 # Measured JOINT fraction of the same fixed-seed 10k sample satisfying EVERY
@@ -703,7 +738,7 @@ def build_algorithm(method, benchmark, suite, pid, obj_indices, constr_indices,
 
 def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
                n_doe, n_infill, n_gen_inner, inner_pop_size, penalty,
-               compute_indicators=True):
+               compute_indicators=True, threshold_variant='q25'):
     np.random.seed(seed)
     random.seed(seed)
 
@@ -712,7 +747,8 @@ def run_single(method, scenario, suite, pid, handler, seed, pop_size, n_gen,
     obj_indices    = [metric_index(suite, pid, m) for m in OBJ_METRICS]
     constr_metrics = constr_metrics_for(scenario, suite, pid)
     constr_indices = [metric_index(suite, pid, m) for m in constr_metrics]
-    thresholds     = [THRESHOLDS[(suite, pid)][m] for m in constr_metrics]
+    thresholds     = [THRESHOLDS_BY_VARIANT[threshold_variant][(suite, pid)][m]
+                      for m in constr_metrics]
 
     # The mode axis is physical: hard gates evaluability, soft archives
     # infeasible points with raw F/G (see module docstring).
@@ -815,10 +851,12 @@ def main(args):
               f"{SCENARIO_INSTANCES[cfg['constr']]}. See the module docstring, 'Instances'.")
         return 1
 
+    thresh_dict    = THRESHOLDS_BY_VARIANT[args.threshold_variant]
+    feas_dict      = DESIGN_FEASIBLE_FRACTION_BY_VARIANT[args.threshold_variant]
     constr_metrics = constr_metrics_for(scenario, suite, pid)
     multi          = len(constr_metrics) > 1
-    thresholds     = tuple(THRESHOLDS[(suite, pid)][m] for m in constr_metrics)
-    feas_fracs     = tuple(DESIGN_FEASIBLE_FRACTION[(suite, pid)][m] for m in constr_metrics)
+    thresholds     = tuple(thresh_dict[(suite, pid)][m] for m in constr_metrics)
+    feas_fracs     = tuple(feas_dict[(suite, pid)][m] for m in constr_metrics)
     joint_frac     = (JOINT_DESIGN_FEASIBLE_FRACTION[(cfg['constr'], (suite, pid))]
                       if multi else None)
 
@@ -868,7 +906,8 @@ def main(args):
                 data = run_single(
                     method, scenario, suite, pid, handler, seed, args.pop_size,
                     args.n_gen, args.n_doe, args.n_infill, args.n_gen_inner,
-                    args.inner_pop_size, args.penalty)
+                    args.inner_pop_size, args.penalty,
+                    threshold_variant=args.threshold_variant)
                 # Self-describing pkl: everything needed to re-derive this
                 # run's config without consulting the output path or the
                 # SCENARIOS/THRESHOLDS state at read time. Multi-constraint
@@ -888,6 +927,7 @@ def main(args):
                     pop_size=args.pop_size, n_gen=args.n_gen,
                     n_gen_inner=args.n_gen_inner, penalty=args.penalty,
                     inner_ga=_inner_ga(method, handler), config='c2',
+                    threshold_variant=args.threshold_variant,
                 )
                 if multi:
                     data['meta'].update(
@@ -959,6 +999,12 @@ if __name__ == '__main__':
                          'data into results/ (see CLAUDE.md).')
     p.add_argument('--penalty', type=float, default=1.0,
                     help='Static penalty weight for h2-penalty.')
+    p.add_argument('--threshold_variant', default='q25', choices=['q10', 'q25', 'q50'],
+                    help='Which THRESHOLDS table to use (see THRESHOLDS.md, '
+                         '"Tightness sweep" section). q10/q50 are populated only '
+                         'for c10mop/4 and citysegmop/5 -- any other instance '
+                         'raises KeyError under those variants. Default q25 is '
+                         'the main campaign table, unchanged.')
     p.add_argument('--overwrite', action='store_true')
     args = p.parse_args()
     sys.exit(main(args))
