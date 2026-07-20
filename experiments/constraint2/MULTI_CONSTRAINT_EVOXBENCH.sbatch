@@ -13,7 +13,7 @@
 # directories; nothing collides), one analysis pass covers both files.
 #
 # This is a SEPARATE file from CONSTRAINT2_EVOXBENCH.sbatch (whose 0-377
-# index map is frozen); it owns its own 0-251 map.
+# index map is frozen); it owns its own 0-475 map.
 #
 # One array task == one (suite, pid, scenario, method, handler) tuple,
 # looping over all 20 seeds with one run_constraint.py call + one results
@@ -21,38 +21,40 @@
 # ever loses its in-flight seed; re-submitting resumes from the next
 # missing seed (skip-if-exists + results pre-copy below).
 #
-# Task table (252 tasks). Instance sets per combo (run_constraint.py,
+# Task table (476 tasks). Instance sets per combo (run_constraint.py,
 # SCENARIO_INSTANCES; EE/ALL need >= 2 expensive metric columns):
 #   cc/ce  (s5-s8):   c10mop:4, c10mop:5, in1kmop:9, citysegmop:5
 #   ee/all (s9-s12):  c10mop:5, citysegmop:5, citysegmop:10
-# Per (scenario, instance) cell -- 9 tasks:
+# Per (scenario, instance) cell -- 17 tasks:
 #   random x scenario-default handler (1)
-#   samos / samos-cheap x the reduced multi row {h2-penalty, h4-cdp,
-#     b0-as-obj, b0-nsga2} (8) -- the two robust top handlers plus BOTH b0
+#   samos / samos-cheap x the full multi row {h1-rejection, h2-penalty,
+#     h3-adaptive-penalty, h4-cdp, h5-eps, h6-sr, b0-as-obj, b0-nsga2} (16)
+#     -- the full HANDLER_ROW minus the h1-cdp-reject hybrid, plus BOTH b0
 #     inner-GA variants: at 4-6 search objectives the inner GA may start to
 #     matter, so b0-nsga2 is a first-class row here, not a control.
-# Totals: s5-s8 4x9=36 each, s9-s12 3x9=27 each -> 4*36 + 4*27 = 252.
+# Totals: s5-s8 4x17=68 each, s9-s12 3x17=51 each -> 4*68 + 4*51 = 476.
 #
 # Index map (each block contiguous, instances in the order above):
-#     0- 35  s5  (hard, #Params+FLOPs)          on the cc/ce set
-#    36- 71  s6  (soft, #Params+FLOPs)
-#    72-107  s7  (hard, #Params+latency)
-#   108-143  s8  (soft, #Params+latency)
-#   144-170  s9  (hard, latency+energy)         on the ee/all set
-#   171-197  s10 (soft, latency+energy)
-#   198-224  s11 (hard, all four metrics)
-#   225-251  s12 (soft, all four metrics)
-# Within a cell: random, samos x {h2-penalty, h4-cdp, b0-as-obj, b0-nsga2},
-# samos-cheap x the same four.
+#     0- 67  s5  (hard, #Params+FLOPs)          on the cc/ce set
+#    68-135  s6  (soft, #Params+FLOPs)
+#   136-203  s7  (hard, #Params+latency)
+#   204-271  s8  (soft, #Params+latency)
+#   272-322  s9  (hard, latency+energy)         on the ee/all set
+#   323-373  s10 (soft, latency+energy)
+#   374-424  s11 (hard, all four metrics)
+#   425-475  s12 (soft, all four metrics)
+# Within a cell: random, samos x {h1-rejection, h2-penalty,
+# h3-adaptive-penalty, h4-cdp, h5-eps, h6-sr, b0-as-obj, b0-nsga2},
+# samos-cheap x the same eight.
 #
 # Submit everything (existing results are skipped, so this is safe):
 #   sbatch experiments/constraint2/MULTI_CONSTRAINT_EVOXBENCH.sbatch
 #
 # Submit one scenario block:
-#   sbatch --array=72-107%10 experiments/constraint2/MULTI_CONSTRAINT_EVOXBENCH.sbatch   # s7 (CE hard)
+#   sbatch --array=136-203%10 experiments/constraint2/MULTI_CONSTRAINT_EVOXBENCH.sbatch   # s7 (CE hard)
 #
 # Priority order if capacity is tight (direct 2x test of the headline b0
-# claim first): CE (72-143) > ALL (198-251) > EE (144-197) > CC (0-71).
+# claim first): CE (136-271) > ALL (374-475) > EE (272-373) > CC (0-135).
 #
 # Force re-run (ignore existing pkls):
 #   sbatch --export=ALL,OVERWRITE=1 experiments/constraint2/MULTI_CONSTRAINT_EVOXBENCH.sbatch
@@ -63,7 +65,7 @@
 
 #SBATCH -J multiconstr2
 #SBATCH -c 2
-#SBATCH --array=0-251%20              # full multi-constraint block (252 tasks, existing results are skipped)
+#SBATCH --array=0-475%20              # full multi-constraint block (476 tasks, existing results are skipped)
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -88,7 +90,7 @@ default_handler() {
         s6|s8|s10|s12) echo h2-penalty ;;
     esac
 }
-MULTI_HANDLER_ROW="h2-penalty h4-cdp b0-as-obj b0-nsga2"
+MULTI_HANDLER_ROW="h1-rejection h2-penalty h3-adaptive-penalty h4-cdp h5-eps h6-sr b0-as-obj b0-nsga2"
 CCCE_INSTANCES="c10mop:4 c10mop:5 in1kmop:9 citysegmop:5"
 EEALL_INSTANCES="c10mop:5 citysegmop:5 citysegmop:10"
 

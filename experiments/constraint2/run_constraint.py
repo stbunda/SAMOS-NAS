@@ -399,12 +399,12 @@ HANDLER_ROW = ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty', 'h4-cdp',
 # not part of --all_handlers.
 CONTROL_HANDLERS = ['h4-cdp-sms', 'b0-nsga2']
 
-# Multi-constraint scenarios (s5-s12) run a reduced row: the two robust top
-# handlers plus BOTH b0 inner-GA variants -- at 4-6 search objectives the
-# inner GA may start to matter, so b0-nsga2 is a first-class row here, not a
-# control. h1/h3/h5/h6 variants are not needed for the constraint-count
-# hypothesis (explicit --handler still accepts them).
-MULTI_HANDLER_ROW = ['h2-penalty', 'h4-cdp', 'b0-as-obj', 'b0-nsga2']
+# Multi-constraint scenarios (s5-s12) run the full HANDLER_ROW (minus the
+# h1-cdp-reject hybrid) plus BOTH b0 inner-GA variants -- at 4-6 search
+# objectives the inner GA may start to matter, so b0-nsga2 is a first-class
+# row here, not a control.
+MULTI_HANDLER_ROW = ['h1-rejection', 'h2-penalty', 'h3-adaptive-penalty',
+                     'h4-cdp', 'h5-eps', 'h6-sr', 'b0-as-obj', 'b0-nsga2']
 
 HANDLERS = HANDLER_ROW + CONTROL_HANDLERS
 
