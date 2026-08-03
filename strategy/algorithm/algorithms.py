@@ -75,7 +75,49 @@ class MyNSGA2(NSGA2):
         return self._config
 
 
-class RandomGA(GeneticAlgorithm):
+class HardGateMixin:
+    """Shared hard-evaluability-gate bookkeeping for constrained algorithms.
+
+    Provides ``_init_hard_gate`` (call from ``__init__``) and ``_gate_keep``
+    (call after evaluating a population): counts every evaluated individual
+    (``n_hf_evaluated`` / ``n_hf_feasible``) and, when the gate is on, returns
+    only the feasible subset (every G column <= 0) while remembering
+    rejected X in ``_rejected_pop`` so duplicate elimination never re-proposes
+    a known-failed architecture. The counters are maintained even when the
+    gate is off so the feasibility-aware callback can always prefer them.
+    """
+
+    def _init_hard_gate(self, hard_gate):
+        self.hard_gate      = bool(hard_gate)
+        self.n_hf_evaluated = 0
+        self.n_hf_feasible  = 0
+        self._rejected_pop  = Population.empty()   # X-only, dedup reference
+
+    def _gate_keep(self, pop):
+        """Count evaluated individuals; when hard_gate is on, return only the
+        feasible subset (every G column <= 0) and remember rejected X for
+        dedup. No replacement sampling ever happens here -- infeasible draws
+        just consume budget (random has no strategy)."""
+        if pop is None or len(pop) == 0:
+            return pop
+        G = pop.get('G')
+        if G is not None and np.asarray(G).size > 0:
+            viol = np.asarray(G, dtype=float).reshape(len(pop), -1).max(axis=1)
+        else:
+            viol = np.zeros(len(pop))
+        self.n_hf_evaluated += len(pop)
+        self.n_hf_feasible  += int(np.sum(viol <= 0))
+        if not self.hard_gate:
+            return pop
+        feas_mask = viol <= 0
+        rejected  = pop[~feas_mask]
+        if len(rejected) > 0:
+            self._rejected_pop = Population.merge(
+                self._rejected_pop, Population.new('X', rejected.get('X')))
+        return pop[feas_mask]
+
+
+class RandomGA(HardGateMixin, GeneticAlgorithm):
     """Pure random search: sample, evaluate, accumulate -- no selection.
 
     ``hard_gate``: when True, evaluated
@@ -113,10 +155,7 @@ class RandomGA(GeneticAlgorithm):
         self.sampling = sampling
         self.n_max_iterations = n_max_iterations
         self.history = []
-        self.hard_gate = bool(hard_gate)
-        self.n_hf_evaluated = 0
-        self.n_hf_feasible  = 0
-        self._rejected_pop  = Population.empty()   # X-only, dedup reference
+        self._init_hard_gate(hard_gate)
 
         self._config = {
             "class": self.__class__.__name__,
@@ -133,29 +172,6 @@ class RandomGA(GeneticAlgorithm):
         super()._initialize()
         # self.pop is the initial random population
         self.history.append(self.pop.copy())
-
-    def _gate_keep(self, pop):
-        """Count evaluated individuals; when hard_gate is on, return only the
-        feasible subset (every G column <= 0) and remember rejected X for
-        dedup. No replacement sampling ever happens here -- infeasible draws
-        just consume budget (random has no strategy)."""
-        if pop is None or len(pop) == 0:
-            return pop
-        G = pop.get('G')
-        if G is not None and np.asarray(G).size > 0:
-            viol = np.asarray(G, dtype=float).reshape(len(pop), -1).max(axis=1)
-        else:
-            viol = np.zeros(len(pop))
-        self.n_hf_evaluated += len(pop)
-        self.n_hf_feasible  += int(np.sum(viol <= 0))
-        if not self.hard_gate:
-            return pop
-        feas_mask = viol <= 0
-        rejected  = pop[~feas_mask]
-        if len(rejected) > 0:
-            self._rejected_pop = Population.merge(
-                self._rejected_pop, Population.new('X', rejected.get('X')))
-        return pop[feas_mask]
 
     def _initialize_advance(self, infills=None, **kwargs):
         # Gate the DOE too: pymoo core has already set self.pop = infills

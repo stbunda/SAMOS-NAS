@@ -183,8 +183,9 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
     counters above understate waste since infeasible/dominated infills are
     discarded before being counted). HV / IGD+ in ``indicators`` are computed
     on the *feasible* subset of the true-eval archive only -- feasibility is
-    ``true constraint metric <= threshold`` in the same benchmark-normalized
-    space the objectives and thresholds already live in (see
+    ``true constraint metric <= threshold`` (or ``>= threshold`` when
+    ``sense=-1``) in the same benchmark-normalized space the objectives and
+    thresholds already live in (see
     ``problem/evoxbench/constrained_problem.py``). This is the one
     shared evaluator for both hard (CDP, native ``out['G']``) and soft
     (``ConstraintsAsPenalty``-wrapped inner problem) scenarios -- the
@@ -213,7 +214,19 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
     threshold : float or sequence[float]
         Feasibility threshold(s) in the evaluated-metric space (post baseline
         convention), parallel to ``constr_index``; feasible <=> metric <= T
-        for all constraints.
+        for all constraints (sense=+1) or metric >= T (sense=-1).
+    sense : float or sequence[float]
+        Constraint direction(s), parallel to ``constr_index``: +1 (default)
+        for a ceiling (feasible <=> metric <= T); -1 for a floor (feasible
+        <=> metric >= T). Default +1 everywhere => bit-identical behaviour.
+    ref_point : sequence[float] or None
+        HV reference point, length ``n_obj`` (the reduced ``obj_indices``
+        space). When None (default), falls back to the original
+        ``np.ones(n_obj) * 1.05`` -- valid when normalize() maps the
+        benchmark's nadir near 1.0, which does not hold for every benchmark
+        (e.g. MoSegNAS normalizes against its own Pareto utopian/nadir, not
+        the search-space range, so ~70% of architectures land above 1.05 and
+        contribute zero HV there). Explicit per-scenario ref points fix that.
     no_norm : bool
         See ``EvoxBenchCallback``.
     compute_indicators : bool
@@ -221,7 +234,8 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
     """
 
     def __init__(self, benchmark, obj_indices, constr_index, threshold,
-                 no_norm: bool = False, compute_indicators: bool = True) -> None:
+                 sense=1, ref_point=None, no_norm: bool = False,
+                 compute_indicators: bool = True) -> None:
         # Deliberately bypass EvoxBenchCallback.__init__: it sizes the
         # ref-point / Pareto front to benchmark.evaluator.n_objs, which is
         # wrong here since the search objectives are the *reduced*
@@ -235,11 +249,22 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
         self.thresholds         = [float(t) for t in np.atleast_1d(threshold)]
         assert len(self.constr_indices) == len(self.thresholds), \
             'constr_index and threshold must have equal length'
+        self.senses             = [float(s) for s in np.atleast_1d(sense)]
+        if len(self.senses) == 1:
+            self.senses = self.senses * len(self.constr_indices)
+        assert len(self.senses) == len(self.constr_indices), \
+            'sense must be a scalar or parallel to constr_index'
         # Scalar aliases for the single-constraint campaign path.
         self.constr_index       = self.constr_indices[0]
         self.threshold          = self.thresholds[0]
+        self.sense              = self.senses[0]
 
         n_obj = len(self.obj_indices)
+        if ref_point is not None:
+            ref_point = np.asarray(ref_point, dtype=float)
+            if ref_point.shape != (n_obj,):
+                raise ValueError(
+                    f'ref_point must have length {n_obj}, got shape {ref_point.shape}')
 
         if compute_indicators and not no_norm:
             pareto_front_raw = benchmark.pareto_front   # (n_pts, n_obj_full) or None
@@ -256,9 +281,9 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
                 # front) -- re-filter in the reduced objective space.
                 nd_idx = NonDominatedSorting().do(pf_norm, only_non_dominated_front=True)
                 self._pareto_front = pf_norm[nd_idx]
-                ref_point = np.ones(n_obj) * 1.05
             else:
                 self._pareto_front = None
+            if ref_point is None:
                 ref_point = np.ones(n_obj) * 1.05
             self._hv_ind  = HV(ref_point=ref_point)
             self._igd_ind = IGDPlus(self._pareto_front) if self._pareto_front is not None else None
@@ -312,9 +337,9 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
                 # constrained metrics are ordinary objective columns instead of
                 # pymoo constraints; locate each in F via obj_indices.
                 feasible_pop = np.ones(len(src_pop), dtype=bool)
-                for idx, thr in zip(self.constr_indices, self.thresholds):
+                for idx, thr, sns in zip(self.constr_indices, self.thresholds, self.senses):
                     pos = algorithm.problem.obj_indices.index(idx)
-                    feasible_pop &= obj_pop[:, pos] <= thr
+                    feasible_pop &= (sns * (obj_pop[:, pos] - thr) <= 0)
             else:
                 feasible_pop = np.zeros(0, dtype=bool)
             self.data['n_evaluated'].append(len(src_pop))
@@ -350,8 +375,8 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
 
             if n_total > 0:
                 feasible_mask = np.ones(n_total, dtype=bool)
-                for idx, thr in zip(self.constr_indices, self.thresholds):
-                    feasible_mask &= test_obj_full[:, idx] <= thr
+                for idx, thr, sns in zip(self.constr_indices, self.thresholds, self.senses):
+                    feasible_mask &= (sns * (test_obj_full[:, idx] - thr) <= 0)
                 n_feasible    = int(feasible_mask.sum())
                 test_obj_feas = test_obj_full[feasible_mask][:, self.obj_indices]
                 if len(test_obj_feas) > 0:

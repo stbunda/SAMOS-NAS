@@ -4,6 +4,8 @@ Utilities for the evoxbench integration.
 
 import os
 
+import numpy as np
+
 # ─── data paths ───────────────────────────────────────────────────────────────
 
 # When running as a SLURM array job, multiple tasks on the same node share
@@ -92,6 +94,30 @@ def _patch_mnv3_decode(benchmark) -> None:
     ss.var2str = _det_var2str
     ss._decode = _repaired_decode
     ss._decode_repaired = True
+
+
+def bounds_with_override(benchmark, lb_override=None):
+    """Return integer (xl, xu) arrays from ``benchmark.search_space``, with
+    per-index lower-bound overrides applied.
+
+    Single source of truth for the search-space bounds used by both the
+    pymoo Problem's ``xl`` and the sampler/mutation operators, so they never
+    drift apart. E.g. MoSegNAS architectures with x0 == 0 make EvoXBench
+    return a constant sentinel for every resource metric; overriding that
+    index's lower bound to 1 keeps the search from ever generating them.
+
+    Parameters
+    ----------
+    lb_override : dict[int, int] or None
+        Maps variable index -> new lower bound. Default None => plain lb/ub.
+    """
+    ss = benchmark.search_space
+    xl = np.asarray(ss.lb, dtype=int).copy()
+    xu = np.asarray(ss.ub, dtype=int).copy()
+    if lb_override:
+        for idx, val in lb_override.items():
+            xl[idx] = val
+    return xl, xu
 
 
 def get_benchmark(suite: str, pid: int):
