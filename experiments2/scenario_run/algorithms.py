@@ -1,44 +1,61 @@
 """experiments2/scenario_run/algorithms.py -- algorithm builder for the
 scenario_run constrained-NAS campaign (S1-S8, scenarios.py).
 
-Three methods:
-  random : delegates to run_constraint.build_algorithm (RandomGA). Runs only
-           the scenario default handler (scenarios.DEFAULT_HANDLER[mode]) --
-           random has no selection pressure or sampling strategy for a
-           handler to act on.
-  samos  : delegates to run_constraint.build_algorithm (SAMOS2), translating
-           the handler id via scenarios.HANDLER_CODE (b0-as-obj -> b0-nsga2,
-           an NSGA-II inner GA, never SMS-EMOA, per the campaign design).
-  nsga2  : plain pymoo NSGA2 over the real ConstrainedEvoXBenchProblem -- the
-           new work. Each of the 7 handlers acts on SURVIVAL only, never by
-           wrapping the real problem: SAMOS2 can wrap its inner surrogate
-           problem because the outer archive still records unpenalized F and
-           raw G, but plain NSGA-II has no inner/outer split, so wrapping the
-           real problem would write penalized/relaxed F straight into the
+Three methods, fully native to experiments2/ (no experiments/ import --
+see _problems.py for the ported problem classes):
+  random : RandomGA -- pure random search, exact evaluation, no selection
+           pressure. Runs only the scenario default handler
+           (scenarios.DEFAULT_HANDLER[mode]) -- random has no selection
+           pressure or sampling strategy for a handler to act on.
+  samos  : SAMOS2 with XGBoost surrogates on both objectives and, outside
+           b0-as-obj, an XGBoost constraint surrogate. Ported from
+           experiments/constraint2/run_constraint.py::build_algorithm's
+           'samos' branch, restricted to what scenarios.HANDLERS actually
+           uses (no samos-cheap, no h1-cdp-reject/h4-cdp-sms/b0-nsga2). The
+           b0-as-obj row always uses an NSGA-II inner GA (never SMS-EMOA --
+           this campaign's b0 row was always run_constraint's 'b0-nsga2'
+           code path under the old HANDLER_CODE translation, now dropped
+           since the ids are native).
+  nsga2  : plain pymoo NSGA2 over the real ConstrainedEvoXBenchProblem.
+           Each of the 7 handlers acts on SURVIVAL only, never by wrapping
+           the real problem: SAMOS2 can wrap its inner surrogate problem
+           because the outer archive still records unpenalized F and raw G,
+           but plain NSGA-II has no inner/outer split, so wrapping the real
+           problem would write penalized/relaxed F straight into the
            population the callback records. See the per-handler classes
            below for how each one stays survival-only.
 
 build(method, handler, sid, benchmark, seed, pop_size, ...) ->
     (algorithm, copy_algorithm, handler_state)
-mirrors experiments/constraint2/run_constraint.py::build_algorithm's return
-contract. ``copy_algorithm`` is False for h1/h3/h5: their handler_state dict
-(and, for h1, the live evaluator/counters) is mutated by the running
-instance during the run, and pymoo's default copy_algorithm=True deep-copies
-the algorithm (including its survival object's own handler_state dict, and
-any mutable state it closes over) before running the COPY -- the ORIGINAL
-handler_state dict returned by build() would then never see the trajectory
-appended to the copy's private one.
+``copy_algorithm`` is False for h1/h3/h5: their handler_state dict (and, for
+h1, the live evaluator/counters) is mutated by the running instance during
+the run, and pymoo's default copy_algorithm=True deep-copies the algorithm
+(including its survival object's own handler_state dict, and any mutable
+state it closes over) before running the COPY -- the ORIGINAL handler_state
+dict returned by build() would then never see the trajectory appended to
+the copy's private one.
 
 build_problem(sid, benchmark, mode, handler=None) builds the matching outer
 pymoo problem: ConstrainedEvoXBenchProblem for every handler except
-b0-as-obj (B0ObjectiveProblem, unconstrained, mirroring run_constraint's b0
-handling). Bounds always come from bounds_with_override, so MoSegNAS gets
-x0>=1 (scenarios.SEARCH_SPACE_LB_OVERRIDE) on both the problem's xl/xu and
-the nsga2 operators.
+b0-as-obj (B0ObjectiveProblem, unconstrained). Bounds always come from
+bounds_with_override, so MoSegNAS gets x0>=1
+(scenarios.SEARCH_SPACE_LB_OVERRIDE) on both the problem's xl/xu and the
+nsga2/samos operators.
+
+b0-as-obj on a floor constraint (S8, scenarios.constr_sense == -1): every
+EvoXBench objective is minimized, so appending the raw constrained metric as
+an extra objective optimizes AWAY from feasibility when higher is better.
+B0ObjectiveProblem/B0SurrogateProblemEvox (_problems.py) negate that column
+when sense < 0; the hard-gate counters (_HardGateNSGA2B0._count here, and
+this module's SAMOS2 gate_g_fn) read the same (possibly negated) column, so
+their violation formula is ``(F - sense*tau) / tau`` -- algebraically
+``sense*(metric - tau)/tau`` with ``metric = sense*F`` substituted in,
+reducing to the original ``(F - tau)/tau`` when sense=+1.
 """
 
 import os
 import sys
+from functools import partial
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, '..', '..'))
@@ -57,23 +74,26 @@ from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from pymoo.util.randomized_argsort import randomized_argsort
 
 import scenarios as SC
-from experiments.constraint2.run_constraint import (
-    B0ObjectiveProblem,
-    build_algorithm as _c2_build_algorithm,
+from _problems import B0ObjectiveProblem, B0SurrogateProblemEvox, _ConstraintsAsPenaltyMO
+from problem.evoxbench.constrained_problem import (
+    ConstrainedEvoXBenchProblem,
+    ConstrainedSurrogateProblemEvox,
 )
-from problem.evoxbench.constrained_problem import ConstrainedEvoXBenchProblem
 from problem.evoxbench.utils import bounds_with_override
-from strategy.algorithm.algorithms import HardGateMixin
+from strategy.algorithm.algorithms import HardGateMixin, RandomGA
 from strategy.constraints import (
     AdaptivePenaltyProblem,
     DominanceStochasticRanking,
     EpsilonRelaxation,
+    RejectionInfillSelector,
     feasible_fraction,
 )
 from strategy.genetics.duplicate import IntegerVectorDuplicateElimination
 from strategy.operations.crossover import IntegerUniformCrossover
 from strategy.operations.mutation import IntegerPointMutation
 from strategy.sampler import EvoxBenchSampler
+from strategy.surrogate.models import XGBoost
+from strategy.surrogate.samos2 import SAMOS2
 
 METHODS = SC.METHODS
 HANDLERS = SC.HANDLERS
@@ -120,8 +140,9 @@ def build_problem(sid, benchmark, mode, handler=None):
     xl, xu = bounds_with_override(benchmark, lb_override)
 
     if handler == 'b0-as-obj':
-        search_obj, _ = _b0_search_obj_indices(sid)
-        problem = B0ObjectiveProblem(benchmark, search_obj)
+        search_obj, constr_pos = _b0_search_obj_indices(sid)
+        problem = B0ObjectiveProblem(benchmark, search_obj, constr_pos=constr_pos,
+                                     sense=SC.constr_sense(sid))
     else:
         obj_idx = list(SC.obj_indices(sid))
         problem = ConstrainedEvoXBenchProblem(
@@ -170,9 +191,12 @@ class _HardGateNSGA2B0(HardGateMixin, NSGA2):
     """b0-as-obj hard-gate counters: the outer problem defines no G (the
     constrained metric is an ordinary extra objective column), so the
     gate/violation reads that column of evaluated F directly -- the same
-    convention as SAMOS2's gate_g_fn / run_constraint's b0_gate_g_fn. Search
-    stays fully unconstrained (no row is ever dropped from the population);
-    only the counters and the X-only rejection log are populated."""
+    convention as this module's SAMOS2 ``gate_g_fn`` (see ``_build_delegated``).
+    Search stays fully unconstrained (no row is ever dropped from the
+    population); only the counters and the X-only rejection log are
+    populated. F's constr_pos column is already sense-negated for a floor
+    constraint (B0ObjectiveProblem), so the violation formula un-negates it
+    algebraically -- see the module docstring."""
 
     def __init__(self, *args, hard_gate=False, constr_pos, threshold, sense=1, **kwargs):
         super().__init__(*args, **kwargs)
@@ -183,7 +207,7 @@ class _HardGateNSGA2B0(HardGateMixin, NSGA2):
 
     def _count(self, infills):
         F = infills.get('F')
-        viol = self._sense * (F[:, self._constr_pos] - self._threshold) / self._threshold
+        viol = (F[:, self._constr_pos] - self._sense * self._threshold) / self._threshold
         feas_mask = viol <= 0.0
         self.n_hf_evaluated += len(infills)
         self.n_hf_feasible += int(np.sum(feas_mask))
@@ -422,37 +446,205 @@ class H1RejectionNSGA2(HardGateMixin, NSGA2):
 
 def _build_delegated(method, handler, sid, benchmark, seed, pop_size, mode,
                       n_gen, n_doe, n_infill, n_gen_inner, inner_pop_size, penalty):
-    """'random' and 'samos': delegate straight to run_constraint's
-    build_algorithm, translating the handler id via scenarios.HANDLER_CODE.
-    The x0>=1 bound override reaches this path's sampler/mutation through
-    build_algorithm's lb_override argument, so every method searches the
-    same space."""
-    scenario = SC.SCENARIOS[sid]
-    suite, pid = scenario['suite'], scenario['pid']
-    constr_idx = [SC.constr_index(sid)]
-    thresholds = [scenario['tau']]
-    gated = (mode == 'hard')
-    c2_handler = SC.HANDLER_CODE[handler]
+    """'random' and 'samos': native port of
+    experiments/constraint2/run_constraint.py::build_algorithm's 'random' and
+    'samos' branches (ids kept exactly as scenarios.HANDLERS defines them --
+    no HANDLER_CODE translation). Only the ids this campaign runs are
+    supported: no samos-cheap, h1-cdp-reject, h4-cdp-sms or b0-nsga2 (the
+    b0-as-obj row here always uses the NSGA-II inner GA the old delegated
+    path reached via HANDLER_CODE's 'b0-as-obj' -> 'b0-nsga2' translation --
+    never SMS-EMOA). Bounds (xl/xu, sampler, mutation) all come from
+    bounds_with_override with scenarios.SEARCH_SPACE_LB_OVERRIDE, so every
+    method searches the same space as build_problem's outer problem."""
+    scenario     = SC.SCENARIOS[sid]
+    lb_override  = SC.SEARCH_SPACE_LB_OVERRIDE.get(scenario['space'])
+    xl, xu       = bounds_with_override(benchmark, lb_override)
+    gated        = (mode == 'hard')
+    sense        = SC.constr_sense(sid)
+    constr_indices = [SC.constr_index(sid)]
+    thresholds     = [scenario['tau']]
 
-    # b0 rows search objectives + the constrained metric (run_constraint's
-    # own B0_HANDLERS branch expects obj_indices to already contain it, see
-    # run_single's search_obj_indices).
-    if c2_handler in ('b0-nsga2', 'b0-as-obj'):
-        obj_idx, _ = _b0_search_obj_indices(sid)
+    sampler   = EvoxBenchSampler(xl, xu)
+    crossover = IntegerUniformCrossover(prob=0.9)
+    mutation  = IntegerPointMutation(xl, xu)
+    elim      = IntegerVectorDuplicateElimination()
+
+    n_doe_    = n_doe if n_doe is not None else pop_size
+    n_infill_ = n_infill if n_infill is not None else pop_size
+    inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+
+    handler_state = {}
+
+    if method == 'random':
+        # Pure random search: no surrogate, no selection pressure, no
+        # replacement -- runs only the scenario/mode default.
+        if handler != SC.DEFAULT_HANDLER[mode]:
+            raise ValueError(
+                f"random has no selection pressure for a handler to act on -- it "
+                f"only runs the scenario default ({SC.DEFAULT_HANDLER[mode]!r} for "
+                f"mode={mode!r}), got handler={handler!r}")
+        return RandomGA(pop_size=pop_size, sampling=sampler, eliminate_duplicates=elim,
+                        hard_gate=gated), True, handler_state
+
+    if method != 'samos':
+        raise ValueError(f'Unknown method for delegated build: {method!r}')
+
+    # b0-as-obj searches the scoring objectives + the constrained metric as
+    # an ordinary extra objective (B0ObjectiveProblem); every other handler
+    # searches just the two scoring objectives and defines G.
+    if handler == 'b0-as-obj':
+        obj_idx, constr_pos = _b0_search_obj_indices(sid)
     else:
-        obj_idx = list(SC.obj_indices(sid))
+        obj_idx, constr_pos = list(SC.obj_indices(sid)), None
 
-    if method == 'random' and handler != SC.DEFAULT_HANDLER[mode]:
-        raise ValueError(
-            f"random has no selection pressure for a handler to act on -- it "
-            f"only runs the scenario default ({SC.DEFAULT_HANDLER[mode]!r} for "
-            f"mode={mode!r}), got handler={handler!r}")
+    rng = np.random.RandomState(seed)
+    # method 'samos' always predicts every objective (no cheap/real split --
+    # that is samos-cheap, not ported, see module docstring).
+    predict_pos = list(range(len(obj_idx)))
+    real_pos    = []
+    surrogates  = [XGBoost(100, seed=rng.randint(0, 2**31 - 1)) for _ in predict_pos]
+    # b0 rows: no constraint surrogate -- the constrained metric is an
+    # ordinary predicted objective column here, never a G.
+    constr_surrogate = (None if handler == 'b0-as-obj'
+                        else [XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                              for _ in constr_indices])
+    # Single constraint keeps the scalar surrogate object of the original
+    # campaign path (bit-identical wiring); sequences are multi-only (unused
+    # here -- scenarios.py is single-constraint throughout).
+    if isinstance(constr_surrogate, list) and len(constr_surrogate) == 1:
+        constr_surrogate = constr_surrogate[0]
 
-    return _c2_build_algorithm(
-        method, benchmark, suite, pid, obj_idx, constr_idx, thresholds,
-        c2_handler, seed, pop_size, n_doe, n_infill, n_gen_inner,
-        inner_pop_size, penalty, n_gen, gated,
-        lb_override=SC.SEARCH_SPACE_LB_OVERRIDE.get(scenario['space']))
+    if handler == 'b0-as-obj':
+        def factory(surrs):
+            return B0SurrogateProblemEvox(surrs, obj_idx, predict_pos, real_pos, benchmark,
+                                          constr_pos=constr_pos, sense=sense)
+
+        # No G defined by the outer problem -- gate/waste counters read the
+        # constrained metric straight off evaluated F, at its search-obj
+        # position. F's constr_pos column is already sense-negated for a
+        # floor constraint (B0SurrogateProblemEvox), so the violation
+        # formula un-negates it algebraically -- see the module docstring.
+        _constr_pos_arr = np.array([obj_idx.index(ci) for ci in constr_indices])
+        _thr            = np.asarray(thresholds, dtype=float)
+
+        def b0_gate_g_fn(pop, _t=_thr, _p=_constr_pos_arr, _s=sense):
+            return (pop.get('F')[:, _p] - _s * _t) / _t
+
+        algorithm = SAMOS2(
+            sampling=sampler, surrogates=surrogates, surrogate_problem_factory=factory,
+            predict_obj_indices=predict_pos,
+            crossover=crossover, mutation=mutation, n_doe=n_doe_, n_infill=n_infill_,
+            n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
+            inner_algorithm=NSGA2,
+            hard_gate=gated, gate_g_fn=b0_gate_g_fn,
+        )
+        return algorithm, True, handler_state
+
+    # ── handler wiring (scenario-independent) ─────────────────────────────
+    # wrap_inner: callable(inner) applied inside the factory each outer
+    # generation, so only the inner surrogate problem is ever wrapped -- the
+    # outer archive / saved pkls always keep unpenalized F and raw,
+    # un-relaxed G. algo_ref is a late-bound handle to the live SAMOS2
+    # instance for the stateful handlers (h3/h5).
+    samos2_kwargs  = {}
+    wrap_inner     = None
+    algo_ref       = []
+    copy_algorithm = True
+
+    if handler == 'h4-cdp':
+        pass   # native CDP: out['G'] + RankAndCrowding do everything.
+
+    elif handler == 'h2-static_penalty':
+        def wrap_inner(inner):
+            # Static penalty on the inner problem only; _ConstraintsAsPenaltyMO,
+            # not the plain pymoo class -- see its docstring.
+            return _ConstraintsAsPenaltyMO(inner, penalty=penalty)
+
+    elif handler == 'h3-adaptive':
+        # w0=1.0 (not scenario['penalty']): matches the old delegated path's
+        # run_constraint.build_algorithm exactly -- unlike the nsga2 method's
+        # h3 (_build_nsga2 below), which deliberately starts at w0=penalty.
+        pen = AdaptivePenaltyProblem(w0=1.0, target=0.5, c=1.2)
+        handler_state['penalty_trajectory'] = []   # w(t), one entry per outer gen
+
+        def wrap_inner(inner):
+            algo = algo_ref[0]            # live handle (copy_algorithm=False)
+            if gated:
+                # A gated archive is all-feasible by construction -- the
+                # adaptive signal is the cumulative evaluated-feasible ratio.
+                if algo.n_hf_evaluated > 0:
+                    pen.adapt(algo.n_hf_feasible / algo.n_hf_evaluated)
+            else:
+                arc = algo._archive
+                if len(arc) > 0:
+                    pen.adapt(feasible_fraction(arc))
+            handler_state['penalty_trajectory'].append(float(pen.weight))
+            return pen.wrap(inner)
+
+        copy_algorithm = False            # live-archive handle, see docstring
+
+    elif handler == 'h5-epsilon':
+        eps = EpsilonRelaxation(n_gen_total=n_gen)
+        handler_state['eps_trajectory'] = []       # eps(t), one entry per outer gen
+
+        def wrap_inner(inner):
+            algo = algo_ref[0]
+            if gated:
+                # eps0 = mean CV over ALL DOE evaluations: gated archive
+                # members have CV 0, the rejected draws carry their
+                # violation in the rejection log.
+                if eps.eps0 is None and algo.n_hf_evaluated > 0:
+                    total_cv = (float(np.sum(np.maximum(0.0, algo._rejected_G)))
+                                if algo._rejected_G is not None else 0.0)
+                    eps.set_eps0(total_cv / algo.n_hf_evaluated)
+            else:
+                eps.maybe_init_eps0(algo._archive)   # eps0 = mean DOE CV
+            handler_state['eps_trajectory'].append(float(eps.eps))
+            wrapped = eps.wrap(inner)                # snapshots epsilon(t)
+            eps.advance()                            # t+1 for next generation
+            return wrapped
+
+        copy_algorithm = False            # live-archive handle, see docstring
+
+    elif handler == 'h6-DSR':
+        samos2_kwargs['inner_algorithm'] = partial(
+            NSGA2, survival=DominanceStochasticRanking(Pf=0.45, seed=seed))
+
+    elif handler == 'h1-rejection':
+        # Rejection on the infill seam (inner candidates already carry the
+        # inner problem's G -- predicted, or exact for a cheap constraint),
+        # with pure-rejection semantics: the inner survival must NOT be
+        # feasibility-first. pymoo 0.6.1.1's RankAndCrowding constructor
+        # hardcodes filter_infeasible=True (no kwarg), but it is a plain
+        # instance attribute, so it is flipped post-construction; the single
+        # instance is safely reused across outer generations (stateless).
+        samos2_kwargs['infill_selector'] = RejectionInfillSelector()
+        _surv = RankAndCrowding()
+        _surv.filter_infeasible = False
+        samos2_kwargs['inner_algorithm'] = partial(NSGA2, survival=_surv)
+
+    else:
+        raise ValueError(f'Unknown handler for samos: {handler!r}')
+
+    def factory(surrs, fitted_constr_surrogate=None):
+        inner = ConstrainedSurrogateProblemEvox(
+            surrs, obj_idx, predict_pos, real_pos, benchmark,
+            constr_indices, thresholds, sense=sense,
+            constr_surrogate=fitted_constr_surrogate,
+        )
+        return wrap_inner(inner) if wrap_inner is not None else inner
+
+    algorithm = SAMOS2(
+        sampling=sampler, surrogates=surrogates, surrogate_problem_factory=factory,
+        predict_obj_indices=predict_pos,
+        crossover=crossover, mutation=mutation, n_doe=n_doe_, n_infill=n_infill_,
+        n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
+        constr_surrogate=constr_surrogate,
+        hard_gate=gated,
+        **samos2_kwargs,
+    )
+    algo_ref.append(algorithm)   # late-bind the live handle for h3/h5 closures
+    return algorithm, copy_algorithm, handler_state
 
 
 def _build_nsga2(handler, sid, benchmark, seed, pop_size, mode, n_gen,

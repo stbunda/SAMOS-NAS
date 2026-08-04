@@ -87,16 +87,6 @@ HANDLERS = ['h1-rejection', 'h2-static_penalty', 'h3-adaptive', 'h4-cdp',
 
 METHODS = ['random', 'nsga2', 'samos']
 
-HANDLER_CODE = {
-    'h1-rejection':      'h1-rejection',
-    'h2-static_penalty': 'h2-penalty',
-    'h3-adaptive':       'h3-adaptive-penalty',
-    'h4-cdp':            'h4-cdp',
-    'h5-epsilon':        'h5-eps',
-    'h6-DSR':            'h6-sr',
-    'b0-as-obj':         'b0-nsga2',
-}
-
 DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-static_penalty'}
 
 SEARCH_SPACE_LB_OVERRIDE = {'MoSegNAS': {0: 1}}

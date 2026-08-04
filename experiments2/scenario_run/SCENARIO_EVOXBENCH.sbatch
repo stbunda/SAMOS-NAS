@@ -126,7 +126,6 @@ RSYNC_SOURCES=(
     problem/evoxbench
     problem/pymoo
     strategy
-    experiments/constraint2
     experiments2/scenario_run
 )
 

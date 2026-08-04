@@ -6,8 +6,8 @@ by run_scenario.py:
 
 Every pkl is self-describing via its ``meta`` dict (see run_scenario.run_single).
 
-Grid, vs. experiments/constraint2/analyse_constraint.py
---------------------------------------------------------
+Grid, vs. the constraint2 campaign
+-----------------------------------
 constraint2's comparison axis was HANDLER (methods samos/samos-cheap, one
 instance per scenario). Here the grid is scenario x mode x method x handler:
   scenarios : S1..S8 (scenarios.SCENARIOS), one fixed (space, suite, pid,
@@ -22,33 +22,35 @@ instance per scenario). Here the grid is scenario x mode x method x handler:
   handlers  : the 7 in scenarios.HANDLERS, run under BOTH modes (mode does
               not gate which handlers are legal, only the default).
 
-Reuse from analyse_constraint.py
----------------------------------
-Imported and reused UNCHANGED: true_feasible_front, sample_cloud,
-enumerate_full_space, space_size, attainment_surfaces, _hv, _paired_wilcoxon,
-_holm, _pad_mean, plus two lower-level, direction-agnostic helpers analyse_run
-itself is built from: _full_reeval (true-eval + normalize an archive, no
-feasibility direction baked in) and _norm_once.
+_metrics.py (local module)
+---------------------------
+true_feasible_front, sample_cloud, enumerate_full_space, space_size,
+attainment_surfaces, _hv, _paired_wilcoxon, _holm, _pad_mean, _full_reeval
+are self-contained ports of the single-constraint subset of the constraint2
+campaign's feasibility-region metrics -- no coupling to that campaign's own
+scenario/threshold config.
 
-NOT reused: analyse_run and _build_ref.
-  - _build_ref: instructed to write local (its assert cross-checks
-    run_constraint.py's DESIGN_FEASIBLE_FRACTION dicts, which do not exist
-    here; scenarios.py's own ``feasible_fraction`` is the right reference).
-  - analyse_run: hardcodes REF_POINT = np.ones(2) * 1.05 as a MODULE
-    GLOBAL for both its per-generation hv_traj and its soft_hv -- exactly
-    the bug this campaign must avoid (S6/S7 need (1.05, 2.626), or ~70% of
-    MoSegNAS architectures silently score zero HV). Monkeypatching that
-    global per call was considered and rejected as fragile spooky-action-
-    at-a-distance; analyse_run_scenario below is a local, single-constraint,
-    ref_point-parameterised port of its M1-M8/soft-HV logic instead, reusing
-    _full_reeval/_hv/NonDominatedSorting for the actual numeric work.
-  - true_feasible_front's own violation formula is ceiling-only (ravelled
-    into its _max_violation helper). Reused as-is for S1-S7; for S8 (a
-    floor: feasible <=> metric >= tau) _true_feasible_front_signed below
-    reflects the constrained column around tau (metric' = 2*tau - metric)
-    before calling it and reflects the returned column back afterwards --
-    an algebraic involution (feasible <=> metric' <= tau <=> metric >= tau),
-    so the ceiling-only helper is reused exactly, not forked.
+analyse_run_scenario/_build_ref below are NOT ports of that campaign's
+analyse_run/_build_ref, for two reasons:
+  - _build_ref there cross-checks that campaign's own DESIGN_FEASIBLE_FRACTION
+    dicts; here scenarios.py's own ``feasible_fraction`` is the right
+    reference.
+  - that campaign's analyse_run hardcodes REF_POINT = np.ones(2) * 1.05 as a
+    MODULE GLOBAL for both its per-generation hv_traj and its soft_hv --
+    exactly the bug this campaign must avoid (S6/S7 need (1.05, 2.626), or
+    ~70% of MoSegNAS architectures silently score zero HV). Monkeypatching
+    that global per call was considered and rejected as fragile
+    spooky-action-at-a-distance; analyse_run_scenario below is a local,
+    single-constraint, ref_point-parameterised port of its M1-M8/soft-HV
+    logic instead, reusing _full_reeval/_hv/NonDominatedSorting for the
+    actual numeric work.
+  - true_feasible_front's violation formula is ceiling-only. Used as-is for
+    S1-S7; for S8 (a floor: feasible <=> metric >= tau)
+    _true_feasible_front_signed below reflects the constrained column around
+    tau (metric' = 2*tau - metric) before calling it and reflects the
+    returned column back afterwards -- an algebraic involution (feasible <=>
+    metric' <= tau <=> metric >= tau), so the ceiling-only helper is reused
+    exactly, not forked.
   - analyse_run_scenario takes an explicit ``sense`` instead: the local
     equivalent has no such coupling to fix, so the sign is threaded straight
     into its own violation formula (sense * (metric - tau) / tau).
@@ -104,17 +106,16 @@ import sys
 
 _THIS_DIR  = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, '..', '..'))
-_CONSTRAINT2_DIR = os.path.abspath(os.path.join(_REPO_ROOT, 'experiments', 'constraint2'))
-for _p in (_CONSTRAINT2_DIR, _REPO_ROOT, _THIS_DIR):
+for _p in (_REPO_ROOT, _THIS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 import numpy as np
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
-from analyse_constraint import (true_feasible_front, sample_cloud, enumerate_full_space,
-                                space_size, attainment_surfaces, _hv, _paired_wilcoxon,
-                                _holm, _pad_mean, _full_reeval)
+from _metrics import (true_feasible_front, sample_cloud, enumerate_full_space,
+                      space_size, attainment_surfaces, _hv, _paired_wilcoxon,
+                      _holm, _pad_mean, _full_reeval)
 from problem.evoxbench.utils import get_benchmark, bounds_with_override
 import scenarios as SC
 
@@ -205,7 +206,7 @@ def _true_feasible_front_signed(F_all, obj_indices, constr_idx, tau, sense):
         F_signed[:, constr_idx] = 2.0 * tau - F_signed[:, constr_idx]
     else:
         F_signed = F_all
-    frac, front, front_c = true_feasible_front(F_signed, obj_indices, [constr_idx], [tau])
+    frac, front, front_c = true_feasible_front(F_signed, obj_indices, constr_idx, tau)
     if sense == -1 and len(front_c) > 0:
         front_c = front_c.copy()
         front_c[:, -1] = 2.0 * tau - front_c[:, -1]
@@ -273,11 +274,11 @@ def _build_ref(sid, enum_limit):
 def analyse_run_scenario(data, obj_idx, constr_idx, tau, sense, ref_point, benchmark, cache):
     """Per-run metrics: feasibility trajectories, feasible-HV trajectory
     (ref_point-aware), M2/M6/M8-style boundary metrics and soft-HV, single
-    constraint, sense-aware. Mirrors analyse_constraint.analyse_run's logic
-    (re-eval every generation's var_archive via _full_reeval, distinguish
-    feasible/infeasible via the signed violation, feasible HV against the
-    scenario's own ref_point) -- see module docstring for why analyse_run
-    itself is not reused directly."""
+    constraint, sense-aware (re-eval every generation's var_archive via
+    _full_reeval, distinguish feasible/infeasible via the signed violation,
+    feasible HV against the scenario's own ref_point) -- see module
+    docstring for why this is a local, ref_point-parameterised port rather
+    than a shared implementation."""
     var_archive      = data.get('var_archive', [])
     test_obj_archive = data.get('test_obj_archive', [])
     n_feasible = np.asarray(data.get('n_feasible', []), dtype=float)
@@ -578,6 +579,40 @@ def print_winloss_matrices(winloss_rows):
                          for b in handlers)
             print(f'  {a:>{col_w}s}{row}')
     print('=' * 110)
+
+
+def print_method_effect_summary(method_effect_rows, metric='hv_run'):
+    """nsga2-vs-samos outcome per (sid, mode, handler) on stdout."""
+    rows = [r for r in method_effect_rows if r['metric'] == metric]
+    print('\n' + '=' * 100)
+    print(f'Method effect (nsga2 vs samos, same handler, {STATS_METRIC_LABEL[metric]})')
+    print('=' * 100)
+    if not rows:
+        print('(no handler had enough common seeds under both methods; nothing to report)')
+        print('=' * 100)
+        return
+    for r in sorted(rows, key=lambda r: (int(r['sid'][1:]), r['mode'], _handler_sort_key(r['handler']))):
+        print(f"  {r['sid']}/{r['mode']:<4s} {r['handler']:<19s} n={r['n']:<2d} "
+             f"nsga2={r['median_nsga2']:.4f}  samos={r['median_samos']:.4f}  "
+             f"p_holm={r['p_holm']:.4f}  winner={r['better']}")
+    print('=' * 100)
+
+
+def print_hard_vs_soft_summary(hard_soft_rows, metric='hv_run'):
+    """hard-vs-soft outcome per (sid, method, handler) on stdout."""
+    rows = [r for r in hard_soft_rows if r['metric'] == metric]
+    print('\n' + '=' * 100)
+    print(f'Hard vs soft (same method/handler, {STATS_METRIC_LABEL[metric]})')
+    print('=' * 100)
+    if not rows:
+        print('(no method/handler had enough common seeds under both modes; nothing to report)')
+        print('=' * 100)
+        return
+    for r in sorted(rows, key=lambda r: (int(r['sid'][1:]), r['method'], _handler_sort_key(r['handler']))):
+        print(f"  {r['sid']}/{r['method']:<6s} {r['handler']:<19s} n={r['n']:<2d} "
+             f"hard={r['median_hard']:.4f}  soft={r['median_soft']:.4f}  "
+             f"p_holm={r['p_holm']:.4f}  winner={r['better']}")
+    print('=' * 100)
 
 
 # ─── plotting ───────────────────────────────────────────────────────────────
@@ -1067,6 +1102,8 @@ def main(args):
                          f'{nf:>5.1f}/{nt:<5.1f}  {waste:>7.3f}')
     print('=' * 118)
     print_winloss_matrices(winloss_rows)
+    print_method_effect_summary(method_effect_rows)
+    print_hard_vs_soft_summary(hard_soft_rows)
     return 0
 
 
