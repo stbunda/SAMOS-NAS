@@ -86,23 +86,53 @@ MODES = ('hard', 'soft')
 HANDLERS = ['h1-rejection', 'h2-static_penalty', 'h3-adaptive', 'h4-cdp',
             'h5-epsilon', 'h6-DSR', 'b0-as-obj']
 
-METHODS = ['random', 'nsga2', 'ctaea', 'samos']
+# Slots kept OUT of HANDLERS so the 7-handler row (--all_handlers, the
+# handler-pair statistics, the per-handler plots) is unchanged. They are still
+# runnable by any method that supports them: ssansga2 runs b1 as one of its two
+# fixed slots, and nsga2/samos build it on an explicit --handler (never via
+# --all_handlers), where it is the unconstrained-search reference for their
+# seven handled cells:
+#   b1-unconstrained : the constraint is hidden from the algorithm entirely --
+#       it optimizes the two scoring objectives and nothing else, and
+#       feasibility is scored post hoc by the callback. Distinct from
+#       b0-as-obj, which SHOWS the algorithm the constrained metric (as an
+#       extra objective). Under the hard gate the outer problem still masks
+#       infeasible F to inf, so 'hidden' means hidden from SELECTION, never
+#       'the gate is off' (mode governs the outer problem, not the slot).
+EXTRA_HANDLER_SLOTS = ['b1-unconstrained']
+
+ALL_HANDLERS = HANDLERS + EXTRA_HANDLER_SLOTS
+
+METHODS = ['random', 'nsga2', 'ctaea', 'ssansga2', 'samos']
 
 DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-static_penalty'}
 
-# Methods whose constraint handling is INTRINSIC: they run a SINGLE handler
-# slot instead of the 7-handler row. The value is that slot, or None for "the
-# scenario/mode default".
-#   random : no selection pressure and no sampling strategy for a handler to
-#            act on, so only the default slot means anything.
-#   ctaea  : the convergence/diversity archive pair and the CV-first
-#            restricted-mating tournament ARE the handler -- there is no seam
-#            to swap another one into. What they implement is feasibility-first
-#            constraint domination, so ctaea is filed under 'h4-cdp' in BOTH
-#            modes, which also lands it next to nsga2/samos x h4-cdp in the
-#            analysis grid (the mode axis still applies: it governs gating vs
-#            archiving in the outer problem, not the handler).
-FIXED_HANDLER_METHODS = {'random': None, 'ctaea': 'h4-cdp'}
+# Methods whose constraint handling is INTRINSIC: they run a FIXED, short list
+# of handler slots instead of the 7-handler row. The value is that list, or
+# None for "the scenario/mode default".
+#   random   : no selection pressure and no sampling strategy for a handler to
+#              act on, so only the default slot means anything.
+#   ctaea    : the convergence/diversity archive pair and the CV-first
+#              restricted-mating tournament ARE the handler -- there is no seam
+#              to swap another one into. What they implement is
+#              feasibility-first constraint domination, so ctaea is filed under
+#              'h4-cdp' in BOTH modes, which also lands it next to nsga2/samos
+#              x h4-cdp in the analysis grid (the mode axis still applies: it
+#              governs gating vs archiving in the outer problem, not the
+#              handler).
+#   ssansga2 : surrogate-assisted NSGA-II (pysamoo). Its seam is what the
+#              surrogate MODELS, not how survival ranks, so it runs the two
+#              slots that seam can take: 'h4-cdp' (the constraint is surrogated
+#              alongside the objectives and the inner NSGA-II ranks it by
+#              constraint domination) and 'b1-unconstrained' (the constraint is
+#              not modelled or seen at all). That pair is the whole point of
+#              including it -- it isolates "does handing a surrogate-assisted
+#              baseline the constraint help?" at fixed algorithm and budget.
+FIXED_HANDLER_METHODS = {
+    'random': None,
+    'ctaea': ['h4-cdp'],
+    'ssansga2': ['h4-cdp', 'b1-unconstrained'],
+}
 
 SEARCH_SPACE_LB_OVERRIDE = {'MoSegNAS': {0: 1}}
 
@@ -113,12 +143,14 @@ def eval_kind(sid):
     return EVAL_KIND_BY_SPACE[SCENARIOS[sid]['space']]
 
 
-def fixed_handler(method, mode):
-    """The single handler slot ``method`` runs under ``mode``, or None when it
-    runs the full HANDLERS row (nsga2, samos). See FIXED_HANDLER_METHODS."""
+def fixed_handlers(method, mode):
+    """The handler slot(s) ``method`` runs under ``mode`` as a list, or None
+    when it runs the full HANDLERS row (nsga2, samos). See
+    FIXED_HANDLER_METHODS."""
     if method not in FIXED_HANDLER_METHODS:
         return None
-    return FIXED_HANDLER_METHODS[method] or DEFAULT_HANDLER[mode]
+    slots = FIXED_HANDLER_METHODS[method]
+    return list(slots) if slots else [DEFAULT_HANDLER[mode]]
 
 
 def constr_sense(sid):

@@ -171,8 +171,8 @@ def run_single(sid, mode, method, handler, seed, pop_size, n_evals,
 def _resolve_handlers(mode, args):
     """Handler list for this invocation: explicit --handler > --all_handlers
     (every scenarios.HANDLERS entry) > the scenario/mode default. Applies to
-    the full-row methods only -- random/ctaea take their slot from
-    scenarios.fixed_handler (see main)."""
+    the full-row methods only -- random/ctaea/ssansga2 take their slots from
+    scenarios.fixed_handlers (see main)."""
     if args.handler is not None:
         return [args.handler]
     if args.all_handlers:
@@ -185,21 +185,26 @@ def main(args):
     scenario = SC.SCENARIOS[sid]
     handlers = _resolve_handlers(mode, args)
 
-    # (method, handler) work list. random and ctaea run ONE handler slot each
-    # (scenarios.fixed_handler): random has no selection pressure or sampling
-    # strategy for a handler to act on, and ctaea's handler is intrinsic to the
-    # algorithm. Their slot is used DIRECTLY rather than filtered out of
-    # ``handlers``, so e.g. `--method ctaea --mode soft` still runs its h4-cdp
-    # slot instead of silently producing nothing when the mode default differs.
+    # (method, handler) work list. random, ctaea and ssansga2 run a FIXED short
+    # list of handler slots (scenarios.fixed_handlers) instead of the 7-handler
+    # row: random has no selection pressure or sampling strategy for a handler
+    # to act on, ctaea's handler is intrinsic to the algorithm, and ssansga2's
+    # only seam is whether its surrogate models the constraint at all
+    # (h4-cdp vs b1-unconstrained). Those slots are used DIRECTLY rather than
+    # filtered out of ``handlers``, so e.g. `--method ctaea --mode soft` still
+    # runs its h4-cdp slot instead of silently producing nothing when the mode
+    # default differs. An explicit --handler still narrows them.
     pairs = []
     for method in args.method:
-        fixed = SC.fixed_handler(method, mode)
+        fixed = SC.fixed_handlers(method, mode)
         if fixed is not None:
-            if args.handler is not None and args.handler != fixed:
-                print(f'[SKIP] {method} x {args.handler}: {method} runs only its own '
-                      f'handler slot ({fixed!r} for mode={mode!r}).')
-            else:
-                pairs.append((method, fixed))
+            if args.handler is not None:
+                fixed = [h for h in fixed if h == args.handler]
+                if not fixed:
+                    print(f'[SKIP] {method} x {args.handler}: {method} runs only its own '
+                          f'handler slot(s) ({SC.fixed_handlers(method, mode)} '
+                          f'for mode={mode!r}).')
+            pairs.extend((method, h) for h in fixed)
             continue
         for handler in handlers:
             pairs.append((method, handler))
@@ -265,9 +270,12 @@ if __name__ == '__main__':
                     help='hard (evaluability gate) or soft (archive infeasible '
                          'with real F/G) -- tau is shared across both.')
     p.add_argument('--method', nargs='+', default=list(SC.METHODS), choices=SC.METHODS)
-    p.add_argument('--handler', default=None, choices=SC.HANDLERS,
+    p.add_argument('--handler', default=None, choices=SC.ALL_HANDLERS,
                     help='Constraint handler. Default: the scenario/mode default '
-                         '(scenarios.DEFAULT_HANDLER).')
+                         '(scenarios.DEFAULT_HANDLER). b1-unconstrained is not '
+                         'part of the --all_handlers row and must be asked for '
+                         'here explicitly (ssansga2 runs it as a fixed slot; '
+                         'nsga2/samos build it on request).')
     p.add_argument('--all_handlers', action='store_true',
                     help='Run every handler in scenarios.HANDLERS. Ignored when '
                          '--handler is given.')

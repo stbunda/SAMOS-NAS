@@ -248,7 +248,7 @@ def _region_cache(sdir, objset, c):
     return None
 
 
-def _grid(n, panel_w, panel_h, ncol=4):
+def _grid(n, panel_w, panel_h, ncol=3):
     ncol = min(ncol, n)
     nrow = int(np.ceil(n / ncol))
     fig, axes = plt.subplots(nrow, ncol, figsize=(panel_w * ncol, panel_h * nrow), squeeze=False)

@@ -25,12 +25,33 @@ see _problems.py for the ported problem classes):
            population the callback records. See the per-handler classes
            below for how each one stays survival-only.
   ctaea  : pymoo CTAEA (Li et al.) over the same real problem. Like random it
-           runs ONE handler slot (scenarios.fixed_handler -> 'h4-cdp' in both
+           runs ONE handler slot (scenarios.fixed_handlers -> 'h4-cdp' in both
            modes): its constraint handling is intrinsic -- the CA/DA archive
            pair and the CV-first restricted-mating tournament -- with no seam
            to swap another handler into. It is a constrained-MOEA reference
            point for the nsga2/samos x h4-cdp cells, not a fourth row of the
            handler grid.
+  ssansga2 : pysamoo SSA-NSGA-II (_ssansga2.ScenarioSSANSGA2), a
+           surrogate-assisted-MOEA reference point for the samos cells. Its
+           seam is what the surrogate MODELS, so it runs TWO fixed slots
+           (scenarios.fixed_handlers): 'h4-cdp', where the constraint gets its
+           own XGBoost surrogate and the inner NSGA-II ranks by constraint
+           domination, and 'b1-unconstrained', where the constraint is neither
+           modelled nor declared (build_problem returns
+           _problems.UnconstrainedGatedProblem) so selection is blind to it.
+           Everything else is shared between the two, so the pair isolates the
+           value of handing a surrogate-assisted baseline the constraint at
+           all.
+
+'b1-unconstrained' is not part of the 7-handler row (scenarios.HANDLERS), but
+nsga2 and samos DO build it on request -- an explicit --handler
+b1-unconstrained, never --all_handlers -- so the same
+constrained-vs-unconstrained contrast ssansga2 supplies exists for the two
+full-row methods. Neither needs handler machinery for it: the outer problem
+carries the whole difference (n_ieq_constr=0), so nsga2 is the ordinary
+_HardGateNSGA2 and samos is SAMOS2 with objective surrogates only and no
+constraint surrogate. Both keep their waste counters by reading the hidden
+violation column (HIDDEN_G_KEY) instead of 'G'.
 
 build(method, handler, sid, benchmark, seed, pop_size, ...) ->
     (algorithm, copy_algorithm, handler_state)
@@ -44,7 +65,9 @@ the copy's private one.
 
 build_problem(sid, benchmark, mode, handler=None) builds the matching outer
 pymoo problem: ConstrainedEvoXBenchProblem for every handler except
-b0-as-obj (B0ObjectiveProblem, unconstrained). Bounds always come from
+b0-as-obj (B0ObjectiveProblem, unconstrained) and b1-unconstrained
+(UnconstrainedGatedProblem: same evaluation and hard gate, n_ieq_constr
+dropped to 0). Bounds always come from
 bounds_with_override, so MoSegNAS gets x0>=1
 (scenarios.SEARCH_SPACE_LB_OVERRIDE) on both the problem's xl/xu and the
 nsga2/samos operators.
@@ -78,12 +101,20 @@ from pymoo.core.population import Population
 from pymoo.core.survival import Survival
 from pymoo.operators.survival.rank_and_crowding.classes import get_crowding_function
 from pymoo.util.display.multi import MultiObjectiveOutput
+from pymoo.util.display.output import Output
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from pymoo.util.randomized_argsort import randomized_argsort
 from pymoo.util.ref_dirs import get_reference_directions
 
 import scenarios as SC
-from _problems import B0ObjectiveProblem, B0SurrogateProblemEvox, _ConstraintsAsPenaltyMO
+from _problems import (
+    HIDDEN_G_KEY,
+    B0ObjectiveProblem,
+    B0SurrogateProblemEvox,
+    UnconstrainedGatedProblem,
+    _ConstraintsAsPenaltyMO,
+)
+from _ssansga2 import ScenarioSSANSGA2
 from problem.evoxbench.constrained_problem import (
     ConstrainedEvoXBenchProblem,
     ConstrainedSurrogateProblemEvox,
@@ -137,13 +168,19 @@ def _b0_search_obj_indices(sid):
 
 def build_problem(sid, benchmark, mode, handler=None):
     """Outer pymoo problem for scenario ``sid``: ConstrainedEvoXBenchProblem
-    for every handler except 'b0-as-obj' (B0ObjectiveProblem: unconstrained,
-    scoring objectives + the constrained metric as an extra objective, no G
-    -- mirrors run_constraint.run_single's branch). ``mode`` ('hard'/'soft')
-    sets the evaluability gate; sense comes from scenarios.constr_sense (S6
-    is a floor). Bounds are always overridden via bounds_with_override so a
-    plain-NSGA2 run and its outer problem never disagree on MoSegNAS's
-    x0>=1 floor."""
+    for every handler except two baselines --
+
+      'b0-as-obj'       : B0ObjectiveProblem (unconstrained, scoring
+          objectives + the constrained metric as an extra objective, no G --
+          mirrors run_constraint.run_single's branch);
+      'b1-unconstrained': UnconstrainedGatedProblem (identical evaluation and
+          hard gate to ConstrainedEvoXBenchProblem, but n_ieq_constr dropped
+          to 0 so no survival or surrogate can select on the constraint).
+
+    ``mode`` ('hard'/'soft') sets the evaluability gate; sense comes from
+    scenarios.constr_sense (S6 is a floor). Bounds are always overridden via
+    bounds_with_override so a plain-NSGA2 run and its outer problem never
+    disagree on MoSegNAS's x0>=1 floor."""
     scenario = SC.SCENARIOS[sid]
     lb_override = SC.SEARCH_SPACE_LB_OVERRIDE.get(scenario['space'])
     xl, xu = bounds_with_override(benchmark, lb_override)
@@ -153,8 +190,10 @@ def build_problem(sid, benchmark, mode, handler=None):
         problem = B0ObjectiveProblem(benchmark, search_obj, constr_pos=constr_pos,
                                      sense=SC.constr_sense(sid))
     else:
+        cls = (UnconstrainedGatedProblem if handler == 'b1-unconstrained'
+               else ConstrainedEvoXBenchProblem)
         obj_idx = list(SC.obj_indices(sid))
-        problem = ConstrainedEvoXBenchProblem(
+        problem = cls(
             benchmark, obj_idx, SC.constr_index(sid), scenario['tau'],
             sense=SC.constr_sense(sid), gate=(mode == 'hard'))
     problem.xl = xl.astype(float)
@@ -183,6 +222,18 @@ class _HardGateNSGA2(HardGateMixin, NSGA2):
         super().__init__(*args, **kwargs)
         self._init_hard_gate(hard_gate)
 
+    def _gate_violation(self, pop):
+        """b1-unconstrained's outer problem declares n_ieq_constr=0 and
+        publishes its violation under HIDDEN_G_KEY (UnconstrainedGatedProblem),
+        so the inherited 'G' lookup would find no constraint and count every
+        draw feasible. Read it from there instead -- the counters and the
+        hard-mode rejection log stay correct while SELECTION stays blind
+        (same override, same reason, as ScenarioSSANSGA2._gate_violation)."""
+        if getattr(self.problem, 'hidden_constraints', False):
+            hidden = np.asarray(pop.get(HIDDEN_G_KEY), dtype=float)
+            return hidden.reshape(len(pop), -1).max(axis=1)
+        return super()._gate_violation(pop)
+
     def _initialize_advance(self, infills=None, **kwargs):
         # Count the DOE too: advance_after_initial_infill routes the initial
         # population through _initialize_advance, never _advance.
@@ -194,6 +245,47 @@ class _HardGateNSGA2(HardGateMixin, NSGA2):
         if infills is not None:
             self._gate_keep(infills)
         super()._advance(infills=infills, **kwargs)
+
+
+class _FiniteOptOutput(MultiObjectiveOutput):
+    """MultiObjectiveOutput that shows its convergence metric the FINITE rows
+    of ``opt`` only. Needed by the b1-unconstrained nsga2 cells and nothing
+    else.
+
+    Their outer problem declares n_ieq_constr=0, so pymoo's ``filter_optimum``
+    has no feasibility split to make: the hard gate's inf-masked individuals
+    stay in ``opt`` and are marked feasible. The running ideal/nadir metric
+    then computes inf - inf = nan and trips pymoo's own
+    ``Termination.update`` assert. Every handler that declares a G is spared
+    this -- ``filter_optimum`` drops its infeasible rows first, and a
+    generation with no feasible row reaches the metric as an EMPTY F, which
+    the base class skips.
+
+    So do exactly that: pass the finite subset through, and skip the metric
+    entirely while there is none. The empty subset cannot simply be forwarded
+    -- the base class indexes F by opt's 'feas' array (float when opt is
+    empty) BEFORE it checks the length. Display only: ``algorithm.opt`` is
+    restored before returning, and the population, its survival and the
+    callback's archive are never touched.
+    """
+
+    def update(self, algorithm):
+        opt = algorithm.opt
+        F = (np.asarray(opt.get('F'), dtype=float) if opt is not None and len(opt) > 0
+             else np.empty((0, 1)))
+        finite = np.isfinite(F).all(axis=1)
+
+        if not finite.any():
+            Output.update(self, algorithm)          # n_gen / n_eval / n_nds
+            for col in (self.igd, self.gd, self.hv, self.eps, self.indicator):
+                col.set(None)
+            return
+
+        algorithm.opt = opt[finite]
+        try:
+            super().update(algorithm)
+        finally:
+            algorithm.opt = opt
 
 
 class _HardGateCTAEA(HardGateMixin, CTAEA):
@@ -211,6 +303,29 @@ class _HardGateCTAEA(HardGateMixin, CTAEA):
     def __init__(self, *args, hard_gate=False, **kwargs):
         super().__init__(*args, **kwargs)
         self._init_hard_gate(hard_gate)
+
+    def _initialize_infill(self):
+        # pymoo's Initialization drops duplicate DOE draws WITHOUT resampling,
+        # so a collision -- likely on a small tabular space, NB201 is 5**6 =
+        # 15625 architectures against a 20-draw DOE -- yields a population
+        # shorter than len(ref_dirs). CTAEA then passes that short length as
+        # n_survive while niche ids still span len(ref_dirs), and its
+        # _updateDA scans only range(n_survive): the top niche's member is
+        # unreachable, so `while len(S) < n_survive` can never exit and the run
+        # hangs in initialization, before generation 1, forever.
+        #
+        # Topping up only ever draws EXTRA samples when a collision actually
+        # happened, so every seed whose DOE was already distinct consumes an
+        # unchanged RNG stream and stays bit-reproducible against results
+        # computed before this fix.
+        pop = super()._initialize_infill()
+        for _ in range(100):
+            if len(pop) >= self.pop_size:
+                break
+            extra = self.initialization.do(self.problem, self.pop_size - len(pop),
+                                            algorithm=self)
+            pop = self.eliminate_duplicates.do(Population.merge(pop, extra))
+        return pop[:self.pop_size]
 
     def _initialize_advance(self, infills=None, **kwargs):
         if infills is not None:
@@ -514,10 +629,10 @@ def _build_delegated(method, handler, sid, benchmark, seed, pop_size, mode,
     if method == 'random':
         # Pure random search: no surrogate, no selection pressure, no
         # replacement -- runs only the scenario/mode default.
-        if handler != SC.fixed_handler('random', mode):
+        if handler not in SC.fixed_handlers('random', mode):
             raise ValueError(
                 f"random has no selection pressure for a handler to act on -- it "
-                f"only runs the scenario default ({SC.fixed_handler('random', mode)!r} "
+                f"only runs the scenario default ({SC.fixed_handlers('random', mode)} "
                 f"for mode={mode!r}), got handler={handler!r}")
         return RandomGA(pop_size=pop_size, sampling=sampler, eliminate_duplicates=elim,
                         hard_gate=gated), True, handler_state
@@ -539,9 +654,10 @@ def _build_delegated(method, handler, sid, benchmark, seed, pop_size, mode,
     predict_pos = list(range(len(obj_idx)))
     real_pos    = []
     surrogates  = [XGBoost(100, seed=rng.randint(0, 2**31 - 1)) for _ in predict_pos]
-    # b0 rows: no constraint surrogate -- the constrained metric is an
-    # ordinary predicted objective column here, never a G.
-    constr_surrogate = (None if handler == 'b0-as-obj'
+    # No constraint surrogate for the two baselines: b0 makes the constrained
+    # metric an ordinary predicted objective column, b1 hides it entirely --
+    # neither has a G for a surrogate to fill.
+    constr_surrogate = (None if handler in ('b0-as-obj', 'b1-unconstrained')
                         else [XGBoost(100, seed=rng.randint(0, 2**31 - 1))
                               for _ in constr_indices])
     # Single constraint keeps the scalar surrogate object of the original
@@ -573,6 +689,33 @@ def _build_delegated(method, handler, sid, benchmark, seed, pop_size, mode,
             n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
             inner_algorithm=NSGA2,
             hard_gate=gated, gate_g_fn=b0_gate_g_fn,
+        )
+        return algorithm, True, handler_state
+
+    if handler == 'b1-unconstrained':
+        # Two scoring objectives and nothing else: the inner problem is the
+        # same unconstrained surrogate problem b0 uses (B0SurrogateProblemEvox
+        # is generic over which benchmark columns it is handed -- b0 differs
+        # only by appending the constrained metric), and no constraint
+        # surrogate is fitted, so neither the infill selection nor the inner
+        # survival can see feasibility.
+        def factory(surrs):
+            return B0SurrogateProblemEvox(surrs, obj_idx, predict_pos, real_pos,
+                                          benchmark)
+
+        # The outer UnconstrainedGatedProblem declares no G, so the gate reads
+        # the violation off HIDDEN_G_KEY -- measurement stays exact while
+        # selection stays blind (see _problems.UnconstrainedGatedProblem).
+        def b1_gate_g_fn(pop):
+            return np.asarray(pop.get(HIDDEN_G_KEY), dtype=float)
+
+        algorithm = SAMOS2(
+            sampling=sampler, surrogates=surrogates, surrogate_problem_factory=factory,
+            predict_obj_indices=predict_pos,
+            crossover=crossover, mutation=mutation, n_doe=n_doe_, n_infill=n_infill_,
+            n_gen_inner=n_gen_inner, ga_pop_size=inner_ps, use_subset_selection=True,
+            inner_algorithm=NSGA2,
+            hard_gate=gated, gate_g_fn=b1_gate_g_fn,
         )
         return algorithm, True, handler_state
 
@@ -751,6 +894,18 @@ def _build_nsga2(handler, sid, benchmark, seed, pop_size, mode, n_gen,
             sense=SC.constr_sense(sid), **common)
         return algo, True, handler_state
 
+    if handler == 'b1-unconstrained':
+        # Plain NSGA-II over the two scoring objectives: build_problem hands
+        # it an UnconstrainedGatedProblem (n_ieq_constr=0), so RankAndCrowding
+        # has no feasibility split to make and there is no survival wiring to
+        # add -- the SAME class as h4-cdp, differing only in the outer problem
+        # it runs against and in the output (_FiniteOptOutput, which keeps the
+        # hard gate's inf-masked rows out of pymoo's convergence metric -- see
+        # its docstring). Counters read the hidden violation column
+        # (_HardGateNSGA2._gate_violation), so waste is still measured.
+        return (_HardGateNSGA2(hard_gate=gated, **{**common, 'output': _FiniteOptOutput()}),
+                True, handler_state)
+
     raise ValueError(f'Unknown handler for nsga2: {handler!r}')
 
 
@@ -774,12 +929,12 @@ def _build_ctaea(handler, sid, benchmark, seed, pop_size, mode):
     output=MultiObjectiveOutput(): a fresh instance per build for the same
     shared-default-argument reason documented in _build_nsga2.
     """
-    expected = SC.fixed_handler('ctaea', mode)
-    if handler != expected:
+    expected = SC.fixed_handlers('ctaea', mode)
+    if handler not in expected:
         raise ValueError(
             f"ctaea's constraint handling is intrinsic (CA/DA archives + CV-first "
             f'restricted mating) -- there is no seam for a handler to act on, so it '
-            f'only runs the {expected!r} slot, got handler={handler!r}')
+            f'only runs the {expected} slot, got handler={handler!r}')
 
     scenario = SC.SCENARIOS[sid]
     lb_override = SC.SEARCH_SPACE_LB_OVERRIDE.get(scenario['space'])
@@ -798,6 +953,65 @@ def _build_ctaea(handler, sid, benchmark, seed, pop_size, mode):
     return algorithm, True, {}
 
 
+def _build_ssansga2(handler, sid, benchmark, seed, pop_size, mode, n_doe,
+                     n_infill, n_gen_inner, inner_pop_size):
+    """pysamoo SSA-NSGA-II (_ssansga2.ScenarioSSANSGA2) over the same real
+    problem, with this campaign's integer operators and XGBoost surrogates.
+
+    Budget knobs are taken from the same defaults as method 'samos'
+    (n_doe = n_infill = pop_size, inner GA of pop_size*10 for n_gen_inner
+    generations) so the two surrogate-assisted methods differ in ALGORITHM,
+    not in how much inner search each one buys per real evaluation.
+
+    Two fixed slots (scenarios.fixed_handlers), differing only in whether the
+    constraint is modelled at all:
+      h4-cdp           : one extra XGBoost surrogate on the G column; the
+                         inner NSGA-II's RankAndCrowding then splits on
+                         predicted feasibility (Deb's CDP) with no extra
+                         wiring, since the outer problem declares
+                         n_ieq_constr=1.
+      b1-unconstrained : no constraint surrogate, and build_problem hands it an
+                         UnconstrainedGatedProblem (n_ieq_constr=0), so nothing
+                         in the loop can select on feasibility.
+
+    Surrogate seeds come off one RandomState(seed) draw sequence in the same
+    order method 'samos' uses (objectives first, constraint last), so a given
+    seed wires comparable models into both methods.
+    """
+    expected = SC.fixed_handlers('ssansga2', mode)
+    if handler not in expected:
+        raise ValueError(
+            f"ssansga2's seam is what its surrogate models, not how survival ranks "
+            f'-- it only runs the {expected} slots, got handler={handler!r}')
+
+    scenario    = SC.SCENARIOS[sid]
+    lb_override = SC.SEARCH_SPACE_LB_OVERRIDE.get(scenario['space'])
+    xl, xu      = bounds_with_override(benchmark, lb_override)
+
+    n_doe_    = n_doe if n_doe is not None else pop_size
+    n_infill_ = n_infill if n_infill is not None else pop_size
+    inner_ps  = inner_pop_size if inner_pop_size is not None else pop_size * 10
+
+    rng        = np.random.RandomState(seed)
+    obj_models = [XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                  for _ in SC.obj_indices(sid)]
+    constr_model = (XGBoost(100, seed=rng.randint(0, 2**31 - 1))
+                    if handler == 'h4-cdp' else None)
+
+    algorithm = ScenarioSSANSGA2(
+        obj_models=obj_models, constr_model=constr_model,
+        hard_gate=(mode == 'hard'),
+        sampling=EvoxBenchSampler(xl, xu),
+        crossover=IntegerUniformCrossover(prob=0.9),
+        mutation=IntegerPointMutation(xl, xu),
+        eliminate_duplicates=IntegerVectorDuplicateElimination(),
+        inner_seed=seed,
+        n_initial_doe=n_doe_, n_infills=n_infill_,
+        surr_pop_size=inner_ps, surr_n_gen=n_gen_inner,
+    )
+    return algorithm, True, {}
+
+
 def build(method, handler, sid, benchmark, seed, pop_size, *,
           mode='hard', n_gen=30, n_doe=None, n_infill=None, n_gen_inner=20,
           inner_pop_size=None, penalty=1.0, resample_cap=10):
@@ -806,8 +1020,9 @@ def build(method, handler, sid, benchmark, seed, pop_size, *,
 
     Parameters
     ----------
-    method : 'random' | 'nsga2' | 'ctaea' | 'samos'
-    handler : one of scenarios.HANDLERS
+    method : 'random' | 'nsga2' | 'ctaea' | 'ssansga2' | 'samos'
+    handler : one of scenarios.ALL_HANDLERS (the 7-handler row plus the
+        fixed-slot-only 'b1-unconstrained')
     sid : scenario id, e.g. 'S1'..'S6' (scenarios.SCENARIOS)
     benchmark : the evoxbench benchmark instance for sid's (suite, pid)
     mode : 'hard' (evaluability gate) | 'soft' (archive infeasible with real
@@ -820,7 +1035,7 @@ def build(method, handler, sid, benchmark, seed, pop_size, *,
     resample_cap : nsga2's h1-rejection batch-draw cap per generation
         (default 10, i.e. 10*pop_size individual attempts).
     """
-    if handler not in SC.HANDLERS:
+    if handler not in SC.ALL_HANDLERS:
         raise ValueError(f'Unknown handler: {handler!r}')
 
     if method in ('random', 'samos'):
@@ -832,4 +1047,7 @@ def build(method, handler, sid, benchmark, seed, pop_size, *,
                              n_gen, penalty, resample_cap)
     if method == 'ctaea':
         return _build_ctaea(handler, sid, benchmark, seed, pop_size, mode)
+    if method == 'ssansga2':
+        return _build_ssansga2(handler, sid, benchmark, seed, pop_size, mode,
+                                n_doe, n_infill, n_gen_inner, inner_pop_size)
     raise ValueError(f'Unknown method: {method!r}')

@@ -93,6 +93,16 @@ class HardGateMixin:
         self.n_hf_feasible  = 0
         self._rejected_pop  = Population.empty()   # X-only, dedup reference
 
+    def _gate_violation(self, pop):
+        """Per-individual violation the gate ranks on: the worst G column, or
+        zeros when the problem defines no constraints. Overridable for problems
+        that publish their violation under a key other than 'G' (e.g. one
+        declaring n_ieq_constr=0 so that no pymoo survival can select on it)."""
+        G = pop.get('G')
+        if G is not None and np.asarray(G).size > 0:
+            return np.asarray(G, dtype=float).reshape(len(pop), -1).max(axis=1)
+        return np.zeros(len(pop))
+
     def _gate_keep(self, pop):
         """Count evaluated individuals; when hard_gate is on, return only the
         feasible subset (every G column <= 0) and remember rejected X for
@@ -100,11 +110,7 @@ class HardGateMixin:
         just consume budget (random has no strategy)."""
         if pop is None or len(pop) == 0:
             return pop
-        G = pop.get('G')
-        if G is not None and np.asarray(G).size > 0:
-            viol = np.asarray(G, dtype=float).reshape(len(pop), -1).max(axis=1)
-        else:
-            viol = np.zeros(len(pop))
+        viol = self._gate_violation(pop)
         self.n_hf_evaluated += len(pop)
         self.n_hf_feasible  += int(np.sum(viol <= 0))
         if not self.hard_gate:

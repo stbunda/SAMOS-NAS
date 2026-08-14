@@ -22,6 +22,54 @@ from pymoo.core.individual import calc_cv
 from pymoo.core.problem import Problem
 from pymoo.util.misc import from_dict
 
+from problem.evoxbench.constrained_problem import ConstrainedEvoXBenchProblem
+
+
+# Output key carrying the b1-unconstrained slot's violation. Deliberately not
+# 'G': pymoo's Problem._format_dict validates G's width against n_ieq_constr
+# and raises on a (n, 1) array when 0 columns are declared, while any key it
+# does not know is passed straight through and set on every individual by the
+# Evaluator. So the violation still travels with the population -- just under a
+# name no pymoo feasibility path looks at.
+HIDDEN_G_KEY = 'G_hidden'
+
+
+class UnconstrainedGatedProblem(ConstrainedEvoXBenchProblem):
+    """Outer problem for the 'b1-unconstrained' slot: evaluation, the
+    normalize-once / non-finite guard, the violation columns and the hard
+    gate's inf-masking are all inherited UNCHANGED -- only ``n_ieq_constr`` is
+    dropped to 0 and the violation is renamed to ``HIDDEN_G_KEY``.
+
+    That is what "unconstrained" means here. pymoo gates every
+    feasibility-aware code path on ``problem.n_constr > 0``
+    (``Survival.do``'s ``filter_infeasible`` split, ``has_constraints()``,
+    pysamoo's default per-``n_ieq_constr`` surrogate targets), so with it at 0
+    no survival, no ranking and no surrogate ever sees the constraint: the
+    algorithm optimizes the two scoring objectives and nothing else.
+
+    The violation is renamed rather than dropped because the hard gate's
+    bookkeeping still needs it -- ``HardGateMixin._gate_keep``, the
+    n_evaluated / n_feasible_evaluated series, hard mode's rejection log. So
+    SELECTION is blind to the constraint, MEASUREMENT is not. Consumers read
+    the column straight from HIDDEN_G_KEY (``hidden_constraints`` flags that
+    they must); see _ssansga2.ScenarioSSANSGA2._gate_violation, which also
+    documents why copying it back onto 'G' is not an option.
+
+    Under the hard gate the inherited inf-masking still applies, so 'hidden'
+    never means 'the gate is off': mode governs the outer problem, the slot
+    governs what the algorithm is allowed to select on.
+    """
+
+    hidden_constraints = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.n_ieq_constr = 0
+
+    def _evaluate(self, X, out, *args, **kwargs):
+        super()._evaluate(X, out, *args, **kwargs)
+        out[HIDDEN_G_KEY] = out.pop('G')
+
 
 class _ConstraintsAsPenaltyMO(ConstraintsAsPenalty):
     """Multi-objective static penalty: F + penalty * CV broadcast across every

@@ -17,13 +17,19 @@ instance per scenario). Here the grid is scenario x mode x method x handler:
               vs. archive-and-penalise), not in what counts as feasible.
   methods   : nsga2, samos are the full-row methods (GRID_METHODS) and carry
               the handler axis -- theirs is the comparison the user cares
-              about. random and ctaea (REFERENCE_METHODS) exist ONLY for their
-              single scenarios.fixed_handler slot -- the mode default for
-              random, h4-cdp for ctaea, whose constraint handling is intrinsic
-              -- so the grid is RAGGED and handled explicitly everywhere below
+              about. random, ctaea and ssansga2 (REFERENCE_METHODS) exist ONLY
+              for their scenarios.fixed_handlers slots -- the mode default for
+              random, h4-cdp for ctaea (whose constraint handling is
+              intrinsic), and h4-cdp + b1-unconstrained for ssansga2 (whose
+              only seam is whether its surrogate models the constraint) -- so
+              the grid is RAGGED and handled explicitly everywhere below
               (never assumed present for every handler).
   handlers  : the 7 in scenarios.HANDLERS, run under BOTH modes (mode does
-              not gate which handlers are legal, only the default).
+              not gate which handlers are legal, only the default), plus
+              scenarios.EXTRA_HANDLER_SLOTS ('b1-unconstrained'), which is
+              deliberately NOT part of that row -- it exists only as
+              ssansga2's second slot, so it never enters the handler-pair
+              statistics or the per-handler figures' handler axis.
 
 _metrics.py (local module)
 ---------------------------
@@ -97,6 +103,19 @@ Output
                                         (scenario, mode) row.
   {output_dir}/tables/method_effect.tex   nsga2 vs samos outcome per handler,
                                         per (scenario, mode) row.
+  {output_dir}/critical_difference.csv  Friedman mean ranks over the same six
+                                        methods, blocks = (scenario, mode),
+                                        one row per (scope, metric, method).
+  {output_dir}/plots/cd_{both,hard,soft}.png   Demsar critical-difference
+                                        diagrams, one panel per metric.
+  {output_dir}/tables/critical_difference.tex  mean-rank table with CD and the
+                                        Friedman p per scope.
+  {output_dir}/tables/method_comparison.tex   headline eight-row slice
+                                        (random, nsga2/samos under h4-cdp and
+                                        b0-as-obj, ctaea, ssansga2 under
+                                        h4-cdp and b1-unconstrained): final and
+                                        anytime feasible HV, best feasible
+                                        accuracy, waste.
   stdout summary table + win/tie/loss blocks.
 
 Not re-doing work
@@ -172,25 +191,46 @@ HANDLER_COLOURS = {
     'h5-epsilon':        '#9467bd',
     'h6-DSR':            '#8c564b',
     'b0-as-obj':         '#7f7f7f',
+    'b1-unconstrained':  '#bcbd22',
 }
-METHOD_LINESTYLE = {'samos': '-', 'nsga2': '--', 'ctaea': '-.', 'random': ':'}
+METHOD_LINESTYLE = {'samos': '-', 'nsga2': '--', 'ctaea': '-.', 'random': ':',
+                    'ssansga2': '-.'}
 METHOD_COLOURS   = {'nsga2': '#0072B2', 'samos': '#D55E00', 'ctaea': '#CC79A7',
-                    'random': '#009E73'}
+                    'random': '#009E73', 'ssansga2': '#8c6bb1'}
+# Per-SLOT style for reference methods holding MORE than one fixed slot: with
+# one style per method, ssansga2's constrained and unconstrained curves would
+# be drawn identically in every reference legend and the pair -- the reason the
+# method is in the campaign at all -- would be unreadable.
+REF_SLOT_STYLE = {
+    ('ssansga2', 'h4-cdp'):           ('#8c6bb1', (0, (4, 1, 1, 1))),
+    ('ssansga2', 'b1-unconstrained'): ('#d4a6c8', (0, (1, 1))),
+}
 # Full-row methods: the handler axis is theirs, so they carry the handler
 # colouring and the handler-pair / method-effect statistics. REFERENCE_METHODS
-# (random, ctaea) hold a single scenarios.fixed_handler slot instead and are
-# drawn as reference curves/lines in every per-handler figure.
+# (random, ctaea, ssansga2) hold their scenarios.fixed_handlers slots instead
+# and are drawn as reference curves/lines in every per-handler figure.
 GRID_METHODS      = [m for m in SC.METHODS if m not in SC.FIXED_HANDLER_METHODS]
 REFERENCE_METHODS = [m for m in SC.METHODS if m in SC.FIXED_HANDLER_METHODS]
 CLOUD_FEASIBLE_COLOUR   = '#b8d4ea'
 CLOUD_INFEASIBLE_COLOUR = '#f4c7b8'
 
 
+def _ref_style(method, handler):
+    """(colour, linestyle) for one reference-method curve at one slot."""
+    return REF_SLOT_STYLE.get((method, handler),
+                              (METHOD_COLOURS[method], METHOD_LINESTYLE[method]))
+
+
+def _ref_sort_key(method_handler):
+    method, handler = method_handler
+    return (REFERENCE_METHODS.index(method), _handler_sort_key(handler))
+
+
 def _handler_sort_key(handler):
     try:
-        return (SC.HANDLERS.index(handler), handler)
+        return (SC.ALL_HANDLERS.index(handler), handler)
     except ValueError:
-        return (len(SC.HANDLERS), handler)
+        return (len(SC.ALL_HANDLERS), handler)
 
 
 # ─── scenarios.csv join (optional, per the analysis brief) ─────────────────
@@ -352,12 +392,66 @@ def _build_ref(sid, enum_limit, cache_dir=None):
     if hit is None:
         cache = {tuple(int(v) for v in x): np.asarray(f, dtype=float) for x, f in zip(X_cloud, F_cloud)}
 
+    # Scalars, not the benchmark handle: refs is stripped of `benchmark` before
+    # being pickled into plot_data.pkl, and these have to survive --plots_only.
+    err_utopian = float(benchmark.utopian_point[obj_idx[0]])
+    err_nadir   = float(benchmark.nadir_point[obj_idx[0]])
+    # NaN for non-enumerable scenarios (best_err_true is), which is what keeps
+    # the comparison table's dagger off a sampled, non-exact optimum.
+    best_acc_true = _accuracy_pct(best_err_true, err_utopian, err_nadir)
+
     return dict(sid=sid, scenario=scenario, benchmark=benchmark, obj_idx=obj_idx,
                 constr_idx=constr_idx, tau=tau, sense=sense, ref_point=ref_point,
                 eval_kind=SC.eval_kind(sid),
                 enumerable=enumerable, n_space=n_space, F_cloud=F_cloud, X_cloud=X_cloud,
                 cloud_label=cloud_label, true_front=true_front, true_front_c=true_front_c,
-                hv_true=hv_true, best_err_true=best_err_true, frac=frac, cache=cache)
+                hv_true=hv_true, best_err_true=best_err_true,
+                err_utopian=err_utopian, err_nadir=err_nadir, best_acc_true=best_acc_true,
+                frac=frac, cache=cache)
+
+
+# numpy renamed trapz -> trapezoid in 2.0 and dropped the old spelling; this
+# env is on 1.26, which has only the old one.
+_trapz = getattr(np, 'trapezoid', None) or np.trapz
+
+
+def _hv_auc(hv_traj, n_eval_traj):
+    """Anytime quality: mean feasible HV over the WHOLE evaluation budget --
+    the area under the HV-vs-evaluations curve divided by the budget spent.
+
+    Anchored at (0 evals, 0 HV) rather than integrated between a run's own
+    first and last recorded points, for two reasons: the HV really is zero
+    before anything has been evaluated, and every run then shares the same
+    [0, budget] window. Integrating over each run's own window would hand a
+    silent advantage to whichever method starts recording latest (a large DOE,
+    or h1-rejection burning evaluations on infeasible probes), because it
+    would simply skip the early low-HV stretch instead of being charged for
+    it."""
+    n = min(len(hv_traj or []), len(n_eval_traj or []))
+    if n < 1:
+        return float('nan')
+    x = np.concatenate([[0.0], np.asarray(n_eval_traj[:n], dtype=float)])
+    y = np.concatenate([[0.0], np.asarray(hv_traj[:n], dtype=float)])
+    ok = np.isfinite(x) & np.isfinite(y)
+    if ok.sum() < 2 or x[ok][-1] <= 0:
+        return float('nan')
+    return float(_trapz(y[ok], x[ok]) / x[ok][-1])
+
+
+def _accuracy_pct(err_norm, utopian, nadir):
+    """Benchmark-normalized first-objective (error) value -> test accuracy in
+    percent. Inverts Benchmark.normalize -- an affine map onto the
+    utopian/nadir box, so raw = utopian + err_norm * (nadir - utopian) -- and
+    complements the result.
+
+    The raw unit is NOT uniform across the suite: c10mop reports Err. as a
+    percentage (S1's nadir is 20.21, S4-S6's is 90.0) while in1kmop reports a
+    fraction (S2's nadir is 0.31, S3's is 0.30). A nadir above 1.0 cannot be a
+    fraction and one below 1.0 cannot be a percentage, so the nadir picks the
+    unit unambiguously for every scenario in this suite. NaN in (a
+    non-enumerable scenario's absent true optimum) gives NaN out."""
+    raw = utopian + float(err_norm) * (nadir - utopian)
+    return 100.0 - (raw if nadir > 1.0 else 100.0 * raw)
 
 
 # ─── per-run metrics (local analyse_run; see module docstring) ─────────────
@@ -442,11 +536,22 @@ def analyse_run_scenario(data, obj_idx, constr_idx, tau, sense, ref_point, bench
         m8_best_err = m8_best_err_slack = float('nan')
 
     if len(F_last_fin) > 0:
+        # hv_all: the SAME final archive as soft_hv, but unshifted and
+        # unfiltered -- feasibility ignored entirely, so it measures raw
+        # multi-objective search quality and hv_all - hv_run is what
+        # satisfying the constraint costs. Under the hard gate the two nearly
+        # coincide by construction: infeasible F is inf there, so those
+        # members are dominated out of the callback's archive before this ever
+        # sees them. That is the premise of hard mode, not a defect of the
+        # metric -- the column is informative for soft and b0 rows.
+        obj_all = F_last_fin[:, obj_idx]
+        nd_idx_all = NonDominatedSorting().do(obj_all, only_non_dominated_front=True)
+        hv_all = _hv(obj_all[nd_idx_all], ref_point)
         shifted = F_last_fin[:, obj_idx] + np.maximum(0.0, v_last)[:, None]
         nd_idx_soft = NonDominatedSorting().do(shifted, only_non_dominated_front=True)
         soft_hv = _hv(shifted[nd_idx_soft], ref_point)
     else:
-        soft_hv = 0.0
+        hv_all = soft_hv = 0.0
 
     hv_traj = [_hv(g, ref_point) for g in test_obj_archive]
 
@@ -475,7 +580,9 @@ def analyse_run_scenario(data, obj_idx, constr_idx, tau, sense, ref_point, bench
         m4_final=m4_front_size[-1] if m4_front_size else 0,
         m6_min_slack=m6_min_slack, m6_median_slack=m6_median_slack,
         m8_best_err=m8_best_err, m8_best_err_slack=m8_best_err_slack,
-        soft_hv=soft_hv, exact_waste=exact_waste, exact_waste_traj=exact_waste_traj,
+        hv_all=hv_all, soft_hv=soft_hv,
+        hv_auc=_hv_auc(hv_traj, n_evaluated_raw),
+        exact_waste=exact_waste, exact_waste_traj=exact_waste_traj,
         final_front=final_front, final_front_c=final_front_c, final_infeas_c=final_infeas_c,
         n_gen=n_gen,
     )
@@ -497,15 +604,14 @@ def _discover_seeds(run_dir):
 
 
 def _pairs_for_mode(mode, methods, handlers):
-    """(method, handler) work list for one mode: random and ctaea exist only
-    for their single scenarios.fixed_handler slot -- a ragged grid, mirroring
-    run_scenario.main()'s own pairing rule exactly."""
+    """(method, handler) work list for one mode: random, ctaea and ssansga2
+    exist only for their scenarios.fixed_handlers slots -- a ragged grid,
+    mirroring run_scenario.main()'s own pairing rule exactly."""
     pairs = []
     for method in methods:
-        fixed = SC.fixed_handler(method, mode)
+        fixed = SC.fixed_handlers(method, mode)
         if fixed is not None:
-            if fixed in handlers:
-                pairs.append((method, fixed))
+            pairs.extend((method, h) for h in fixed if h in handlers)
             continue
         for handler in handlers:
             pairs.append((method, handler))
@@ -606,9 +712,9 @@ def compute_method_effect(stat_records, alpha=STATS_ALPHA, min_seeds=STATS_MIN_S
 
 
 def compute_baseline_effect(stat_records, alpha=STATS_ALPHA, min_seeds=STATS_MIN_SEEDS):
-    """Each REFERENCE_METHODS baseline (random, ctaea) vs every full-row
-    method AT THE BASELINE'S OWN HANDLER SLOT, seed-paired, Holm-corrected
-    within each (sid, mode) group.
+    """Each REFERENCE_METHODS baseline (random, ctaea, ssansga2) vs every
+    full-row method AT EACH OF THE BASELINE'S OWN HANDLER SLOTS, seed-paired,
+    Holm-corrected within each (sid, mode) group.
 
     Slot-matched rather than baseline-vs-all-49-cells: ctaea's slot is h4-cdp
     because constraint domination is the mechanism it implements, so
@@ -617,7 +723,13 @@ def compute_baseline_effect(stat_records, alpha=STATS_ALPHA, min_seeds=STATS_MIN
     Testing it against all seven handlers instead would answer a different
     question with 7x the family size and correspondingly less power; the
     per-handler numbers are all in scenario_metrics.csv for anyone who wants
-    them."""
+    them.
+
+    ssansga2 contributes its h4-cdp slot here on the same grounds. Its second
+    slot, b1-unconstrained, has no full-row counterpart (nsga2/samos never run
+    it), so it drops out of this family by construction -- the constrained /
+    unconstrained contrast it exists for is read off the headline comparison
+    table's two ssansga2 rows, not from a slot-matched test."""
     by_cell = {}
     for r in stat_records:
         by_cell.setdefault((r['sid'], r['mode']), {}) \
@@ -628,26 +740,26 @@ def compute_baseline_effect(stat_records, alpha=STATS_ALPHA, min_seeds=STATS_MIN
         for metric in STATS_METRICS:
             pair_results = []
             for baseline in REFERENCE_METHODS:
-                slot = SC.fixed_handler(baseline, mode)
-                base_cell = cells.get((baseline, slot))
-                if not base_cell:
-                    continue
-                for method in GRID_METHODS:
-                    other = cells.get((method, slot))
-                    if not other:
+                for slot in SC.fixed_handlers(baseline, mode):
+                    base_cell = cells.get((baseline, slot))
+                    if not base_cell:
                         continue
-                    common = sorted(s for s in set(base_cell) & set(other)
-                                    if np.isfinite(base_cell[s][metric])
-                                    and np.isfinite(other[s][metric]))
-                    if len(common) < min_seeds:
-                        continue
-                    av = np.array([base_cell[s][metric] for s in common], dtype=float)
-                    bv = np.array([other[s][metric] for s in common], dtype=float)
-                    stat, p = _paired_wilcoxon(av, bv)
-                    pair_results.append(dict(baseline=baseline, method=method, handler=slot,
-                                             stat=stat, p_raw=p, n=len(common),
-                                             med_base=float(np.median(av)),
-                                             med_method=float(np.median(bv))))
+                    for method in GRID_METHODS:
+                        other = cells.get((method, slot))
+                        if not other:
+                            continue
+                        common = sorted(s for s in set(base_cell) & set(other)
+                                        if np.isfinite(base_cell[s][metric])
+                                        and np.isfinite(other[s][metric]))
+                        if len(common) < min_seeds:
+                            continue
+                        av = np.array([base_cell[s][metric] for s in common], dtype=float)
+                        bv = np.array([other[s][metric] for s in common], dtype=float)
+                        stat, p = _paired_wilcoxon(av, bv)
+                        pair_results.append(dict(baseline=baseline, method=method, handler=slot,
+                                                 stat=stat, p_raw=p, n=len(common),
+                                                 med_base=float(np.median(av)),
+                                                 med_method=float(np.median(bv))))
             if not pair_results:
                 continue
             p_holm = _holm([pr['p_raw'] for pr in pair_results])
@@ -829,9 +941,9 @@ def plot_trajectory_grids(trajectories, refs, plot_dir, plt):
     HIGH-FIDELITY EVALUATIONS (n_evaluated -- the budgeted axis; n_total is
     the archive size and is not monotone), y = feasible HV (mean over seeds),
     colour = handler. Split per full-row method and given the REFERENCE_METHODS
-    curves (random, ctaea -- one fixed handler slot each) plus, on enumerable
-    scenarios, the exact feasible-HV ceiling: 13 curves in one axes made the
-    combined figure unreadable."""
+    curves (random, ctaea, ssansga2 -- their fixed handler slots) plus, on
+    enumerable scenarios, the exact feasible-HV ceiling: 13 curves in one axes
+    made the combined figure unreadable."""
     from matplotlib.lines import Line2D
     written = []
     for mode, by_sid in sorted(trajectories.items()):
@@ -853,9 +965,9 @@ def plot_trajectory_grids(trajectories, refs, plot_dir, plt):
                     if curve is None:
                         continue
                     if m in REFERENCE_METHODS:
-                        ax.plot(*curve, color=METHOD_COLOURS[m], ls=METHOD_LINESTYLE[m],
-                                lw=1.2, zorder=1)
-                        seen_extra.add(m)
+                        colour, ls = _ref_style(m, handler)
+                        ax.plot(*curve, color=colour, ls=ls, lw=1.2, zorder=1)
+                        seen_extra.add((m, handler))
                     else:
                         ax.plot(*curve, color=HANDLER_COLOURS.get(handler, '#333333'), lw=1.3)
                         seen_handlers.add(handler)
@@ -881,11 +993,11 @@ def plot_trajectory_grids(trajectories, refs, plot_dir, plt):
             leg_ax.axis('off')
             handles = [Line2D([0], [0], color=HANDLER_COLOURS.get(h, '#333333'), lw=2, label=h)
                       for h in SC.HANDLERS if h in seen_handlers]
-            for m in REFERENCE_METHODS:
-                if m in seen_extra:
-                    handles.append(Line2D([0], [0], color=METHOD_COLOURS[m],
-                                          ls=METHOD_LINESTYLE[m], lw=1.2,
-                                          label=f'{m} ({SC.fixed_handler(m, mode)})'))
+            for m, h in sorted((x for x in seen_extra if isinstance(x, tuple)),
+                               key=_ref_sort_key):
+                colour, ls = _ref_style(m, h)
+                handles.append(Line2D([0], [0], color=colour, ls=ls, lw=1.2,
+                                      label=f'{m} ({h})'))
             if 'true' in seen_extra:
                 handles.append(Line2D([0], [0], color='black', ls='--', lw=0.9,
                                       label='HV of true feasible front'))
@@ -945,18 +1057,19 @@ def _draw_front_set(ax, fronts, colour, label, view, lw=1.6, band=True):
 def plot_attainment_grid(sid, mode, ref, fronts_by_mh, out_png, plt):
     """One figure per (sid, mode): subplot per handler, feasible/infeasible
     attainable cloud, true/sampled feasible front, per-method (nsga2, samos)
-    attainment staircases, with the REFERENCE_METHODS (random, ctaea) repeated
-    in every subplot as a fixed comparison."""
+    attainment staircases, with the REFERENCE_METHODS (random, ctaea,
+    ssansga2) repeated in every subplot as a fixed comparison -- one curve per
+    (method, slot), so ssansga2's constrained and unconstrained runs stay
+    separate rather than being pooled into one front."""
     handlers = [h for h in SC.HANDLERS
                 if any(mh[1] == h and mh[0] in GRID_METHODS for mh in fronts_by_mh)]
     if not handlers:
         return False
-    ref_fronts = {m: [f for (mm, _h), fr in fronts_by_mh.items() if mm == m for f in fr]
-                  for m in REFERENCE_METHODS}
-    ref_fronts = {m: fr for m, fr in ref_fronts.items() if fr}
-    # random is the floor of the figure, so it keeps its neutral grey; every
-    # other reference method uses its own METHOD_COLOURS entry.
-    ref_colour = lambda m: '#999999' if m == 'random' else METHOD_COLOURS[m]
+    ref_fronts = {mh: fr for mh, fr in fronts_by_mh.items()
+                  if mh[0] in REFERENCE_METHODS and fr}
+    # random is the floor of the figure, so it keeps a neutral grey; every
+    # other reference slot uses its own _ref_style colour.
+    ref_colour = lambda m, h: '#999999' if m == 'random' else _ref_style(m, h)[0]
 
     F_cloud, obj_idx, constr_idx = ref['F_cloud'], ref['obj_idx'], ref['constr_idx']
     tau, sense = ref['tau'], ref['sense']
@@ -996,8 +1109,8 @@ def plot_attainment_grid(sid, mode, ref, fronts_by_mh, out_png, plt):
             xs, ys = _extend_staircase(tf[:, 0], np.minimum.accumulate(tf[:, 1]), *view)
             ax.step(xs, ys, where='post', color='black', lw=1.0)
             ax.plot(tf[:, 0], tf[:, 1], '.', color='black', ms=3.5)
-        for m, fr in ref_fronts.items():
-            _draw_front_set(ax, fr, ref_colour(m), m, view, lw=1.0, band=False)
+        for (m, h), fr in ref_fronts.items():
+            _draw_front_set(ax, fr, ref_colour(m, h), m, view, lw=1.0, band=False)
         for method in GRID_METHODS:
             _draw_front_set(ax, fronts_by_mh.get((method, handler), []), METHOD_COLOURS[method],
                            method, view)
@@ -1017,9 +1130,9 @@ def plot_attainment_grid(sid, mode, ref, fronts_by_mh, out_png, plt):
                               label=('true feasible front' if ref['enumerable']
                                      else 'sampled feasible front')))
     from matplotlib.lines import Line2D
-    handles += [Line2D([0], [0], color=ref_colour(m), lw=1.0,
-                       label=f'{m} / {SC.fixed_handler(m, mode)} (median attainment)')
-               for m in ref_fronts]
+    handles += [Line2D([0], [0], color=ref_colour(m, h), lw=1.0,
+                       label=f'{m} / {h} (median attainment)')
+               for m, h in sorted(ref_fronts, key=_ref_sort_key)]
     handles += [Line2D([0], [0], color=METHOD_COLOURS[m], lw=1.6, label=f'{m} (median attainment)')
                for m in GRID_METHODS]
     leg_ax.legend(handles=handles, loc='center left', fontsize=8, frameon=False)
@@ -1077,15 +1190,17 @@ def plot_final_bars(metrics_rows, plot_dir, plt):
                         stds.append(np.std(vals) if vals else np.nan)
                     ax.errorbar(x + offsets[mi], means, yerr=stds, fmt='o', ms=5, capsize=3,
                                lw=1.2, label=method, color=METHOD_COLOURS.get(method, '#333333'))
-                # Reference methods hold one handler slot each, so they are a
-                # horizontal line across the handler axis rather than a series.
+                # Reference methods do not span the handler axis, so each of
+                # their slots is a horizontal line rather than a series.
                 for m in REFERENCE_METHODS:
-                    vals = [r[value_col] for r in rows_m if r['method'] == m
-                           and np.isfinite(r[value_col])]
-                    if vals:
-                        ax.axhline(np.mean(vals), color=METHOD_COLOURS[m],
-                                  ls=METHOD_LINESTYLE[m], lw=1.2,
-                                  label=f'{m} ({SC.fixed_handler(m, mode)})')
+                    for h in SC.fixed_handlers(m, mode):
+                        vals = [r[value_col] for r in rows_m if r['method'] == m
+                               and r['handler'] == h and np.isfinite(r[value_col])]
+                        if not vals:
+                            continue
+                        colour, ls = _ref_style(m, h)
+                        ax.axhline(np.mean(vals), color=colour, ls=ls, lw=1.2,
+                                  label=f'{m} ({h})')
                 ax.set_xticks(x)
                 ax.set_xticklabels(handlers, rotation=35, ha='right', fontsize=7)
                 ax.set_xlim(-0.6, len(handlers) - 0.4)
@@ -1171,6 +1286,483 @@ def write_handler_winloss_table(winloss_rows, tables_dir, metric='hv_run'):
             fh.write('\n'.join(lines) + '\n')
         written.append(out_path)
     return written
+
+
+# ─── headline method comparison table ──────────────────────────────────────
+
+# Rows of write_method_comparison_table, in display order. handler=None means
+# "whatever slot scenarios.fixed_handlers gives that method in this mode" (the
+# mode default for random; methods with more than one slot always name theirs
+# explicitly). The constrained/unconstrained row pairs are what the table
+# exists for -- same algorithm, constraint enforced by feasibility-first
+# domination vs not enforced -- and there are now three flavours of
+# "unconstrained" to keep distinct: b0-as-obj DEMOTES the constrained metric
+# to an ordinary objective (the algorithm still sees it), while
+# b1-unconstrained HIDES it entirely.
+COMPARISON_ROWS = [
+    ('random',   None,               'random'),
+    ('nsga2',    'h4-cdp',           r'NSGA-II (CDP)'),
+    ('samos',    'h4-cdp',           r'SAMOS (CDP)'),
+    ('ctaea',    None,               r'C-TAEA'),
+    ('ssansga2', 'h4-cdp',           r'SSA-NSGA-II (CDP)'),
+    ('nsga2',    'b0-as-obj',        r'NSGA-II (b0)'),
+    ('samos',    'b0-as-obj',        r'SAMOS (b0)'),
+    ('ssansga2', 'b1-unconstrained', r'SSA-NSGA-II (unc.)'),
+]
+
+# Stable colour per comparison row, keyed by LABEL. scikit-posthocs otherwise
+# assigns from its palette by RANK POSITION, so a method is drawn in a
+# different colour in every CD panel and the colour identifies nothing. Each
+# row keeps its method's METHOD_COLOURS hue; the unconstrained rows take a
+# lighter same-family tone of their constrained counterpart, so hue reads as
+# the algorithm and shade as the constraint treatment.
+COMPARISON_COLOURS = {
+    'random':              METHOD_COLOURS['random'],
+    'NSGA-II (CDP)':       METHOD_COLOURS['nsga2'],
+    'SAMOS (CDP)':         METHOD_COLOURS['samos'],
+    'C-TAEA':              METHOD_COLOURS['ctaea'],
+    'SSA-NSGA-II (CDP)':   REF_SLOT_STYLE[('ssansga2', 'h4-cdp')][0],
+    'NSGA-II (b0)':        '#56B4E9',
+    'SAMOS (b0)':          '#E69F00',
+    'SSA-NSGA-II (unc.)':  REF_SLOT_STYLE[('ssansga2', 'b1-unconstrained')][0],
+}
+
+# (metrics_rows key, column header, +1 = higher is better, decimals, scale)
+#
+# hv_auc, not hv_all. Every other column is a final-budget snapshot, so nothing
+# here tested how FAST a method gets to a good feasible front -- the claim a
+# surrogate method actually makes. hv_all was the weaker candidate to drop:
+# under the hard gate infeasible F is inf, so those members never reach the
+# archive and hv_all is bit-identical to hv_run in 83% of hard runs, leaving
+# half the pooled Friedman blocks near-degenerate. It stays in
+# scenario_metrics.csv, where it still separates the soft rows.
+COMPARISON_METRICS = [
+    ('hv_run',      r'HV$_{\mathrm{feas}}$',   +1, 3, 1.0),
+    ('hv_auc',      r'HV$_{\mathrm{any}}$',    +1, 3, 1.0),
+    ('best_acc',    r'Acc$_{\max}$ (\%)',      +1, 2, 1.0),
+    ('exact_waste', r'waste (\%)',             -1, 1, 100.0),
+]
+
+# Accuracy cells that reach the scenario's best attainable feasible accuracy
+# are daggered. The reference is exact only where the space was enumerated
+# (best_acc_true is NaN otherwise), so the marker can never fire off a sampled
+# optimum a run could legitimately beat. Comparing the CELL MEAN means a dagger
+# says every seed found it, not just the luckiest one.
+_ACC_OPTIMAL_ATOL = 1e-6
+
+
+def _comparison_cells(metrics_rows, sid, mode):
+    """{row_index: {metric_key: (mean, std, n)}} for one (sid, mode) block,
+    over COMPARISON_ROWS. Cells with no seeds are simply absent."""
+    out = {}
+    for i, (method, handler, _label) in enumerate(COMPARISON_ROWS):
+        slot = handler if handler is not None else SC.fixed_handlers(method, mode)[0]
+        rows_c = [r for r in metrics_rows if r['sid'] == sid and r['mode'] == mode
+                  and r['method'] == method and r['handler'] == slot]
+        if not rows_c:
+            continue
+        cell = {}
+        for key, _hdr, _dirn, _dec, scale in COMPARISON_METRICS:
+            vals = [r[key] * scale for r in rows_c
+                    if np.isfinite(r.get(key, float('nan')))]
+            if vals:
+                cell[key] = (float(np.mean(vals)), float(np.std(vals)), len(vals))
+        if cell:
+            out[i] = cell
+    return out
+
+
+def write_method_comparison_table(metrics_rows, tables_dir):
+    """Headline method comparison: rows = (scenario, method), columns =
+    COMPARISON_METRICS under each mode, cell = mean $\\pm$ std over seeds, best
+    per column within a scenario block in bold.
+
+    The row set is a fixed eight-way slice of the campaign grid, not every
+    cell: random as the floor, nsga2/samos under h4-cdp (constrained) and under
+    b0-as-obj (constraint demoted to an ordinary objective), ctaea as the
+    dedicated constrained MOEA, and ssansga2 under both of its slots -- h4-cdp
+    (constraint surrogated, inner CDP) and b1-unconstrained (constraint hidden
+    outright), the campaign's only strictly-unconstrained reference. The five
+    remaining handlers answer a different question (which handler, given a
+    method) and already have their own win/loss table.
+
+    The two b0 rows do NOT respond to mode the same way, which the caption
+    states rather than leaving a reader to infer a null result: build_problem
+    returns a B0ObjectiveProblem with no G at all for b0-as-obj, so nsga2's b0
+    row is literally the same run under both modes (its _HardGateNSGA2B0 only
+    counts, never drops). SAMOS2's b0 row still differs, because SAMOS2 gates
+    its own archive off the constrained metric's F column (``gate_g_fn``,
+    algorithms.py) whenever mode is hard."""
+    os.makedirs(tables_dir, exist_ok=True)
+    out_path = os.path.join(tables_dir, 'method_comparison.tex')
+    sids = sorted({r['sid'] for r in metrics_rows}, key=lambda s: int(s[1:]))
+    modes = [m for m in SC.MODES if any(r['mode'] == m for r in metrics_rows)]
+    blocks = {(sid, mode): _comparison_cells(metrics_rows, sid, mode)
+              for sid in sids for mode in modes}
+    if not any(blocks.values()):
+        with open(out_path, 'w') as fh:
+            fh.write('% ---- method comparison skipped: no matching (method, handler) cell ----\n')
+        return out_path
+
+    n_seen = [c[2] for blk in blocks.values() for cell in blk.values() for c in cell.values()]
+    n_note = (f'{min(n_seen)}' if min(n_seen) == max(n_seen) else f'{min(n_seen)}-{max(n_seen)}')
+    n_num = len(COMPARISON_METRICS) * len(modes)
+
+    lines = [
+        '% ---- Headline method comparison ----',
+        '%',
+        f'% Cells:   mean $\\pm$ std over seeds (n = {n_note} per cell); best per column',
+        '%          within a scenario block in bold.',
+        '% HV_feas: hypervolume of the FEASIBLE non-dominated final archive, against',
+        "%          the scenario's own reference point (scenarios.py ref_point).",
+        '% HV_any:  ANYTIME quality -- mean feasible HV over the whole evaluation',
+        '%          budget (area under the HV-vs-evaluations curve, anchored at zero',
+        '%          HV at zero evaluations, divided by the budget spent). HV_feas',
+        '%          says where a method finished; this says how fast it got there,',
+        '%          and a method can win one and lose the other.',
+        '% Acc_max: highest FEASIBLE test accuracy in the final archive, as a true',
+        "%          percentage -- the benchmark's normalised error column inverted",
+        '%          through its utopian/nadir box and complemented, NOT the normalised',
+        '%          value itself (which would read 0 at the best architecture in the',
+        '%          space and invite it being mistaken for zero error).',
+        '% Dagger:  the cell mean equals the best feasible accuracy attainable anywhere',
+        '%          in the space, i.e. EVERY seed found the optimum. Only fires on the',
+        '%          enumerable (tabular) scenarios, where that reference is exact; the',
+        "%          surrogate scenarios' optimum is a 10k sample a run could beat.",
+        '%          S6 daggers because its arithmetic-intensity floor does not bind on',
+        '%          the accuracy axis -- both globally most accurate NB201',
+        '%          architectures clear it, so the constrained optimum is the',
+        '%          unconstrained one.',
+        '% waste:   share of high-fidelity evaluations that landed infeasible,',
+        '%          from the algorithms own evaluated/feasible counters (not the',
+        '%          dominance-filtered archive, which understates it).',
+        '% b0 rows: the b0 problem defines no constraint at all, so NSGA-II (b0) is the',
+        '%          same run under both modes and repeats across both halves. SAMOS (b0)',
+        '%          is not: SAMOS2 still gates its own archive off the constrained',
+        '%          objective column under hard, so its two halves genuinely differ.',
+        '% random:  runs the scenario/mode default handler slot, h4-cdp under hard and',
+        '%          h2-static_penalty under soft.',
+        '% eval:    tab = tabular lookup (exact, enumerable), sur = surrogate predictor.',
+        '%',
+        r'\begin{table*}[t]', r'\centering',
+        r'\caption{Constrained vs.\ unconstrained search across the scenario suite: '
+        r'final and anytime feasible hypervolume, best feasible accuracy, and the share '
+        r'of the evaluation budget spent on infeasible architectures. Hypervolume is measured '
+        r"in the benchmark's normalised objective space; accuracy is a true percentage. "
+        r'Mean $\pm$ std over '
+        r'seeds; best per column within each scenario in bold. The b0 rows demote the '
+        r'constraint to an ordinary objective, so NSGA-II~(b0) sees no hard/soft '
+        r'distinction at all and repeats across both halves of the table.}',
+        r'\label{tab:scenario-method-comparison}',
+        r'\resizebox{\textwidth}{!}{%',
+        rf"\begin{{tabular}}{{lll{'r' * n_num}}}", r'\toprule',
+        r'& & & ' + ' & '.join(rf'\multicolumn{{{len(COMPARISON_METRICS)}}}{{c}}{{{m}}}'
+                               for m in modes) + r' \\',
+        ' '.join(rf'\cmidrule(lr){{{4 + i * len(COMPARISON_METRICS)}-'
+                 rf'{3 + (i + 1) * len(COMPARISON_METRICS)}}}' for i in range(len(modes))),
+        'scenario & eval & method & '
+        + ' & '.join(hdr for _m in modes for _k, hdr, _d, _p, _s in COMPARISON_METRICS)
+        + r' \\',
+        r'\midrule']
+
+    daggered = []
+    for b, sid in enumerate(sids):
+        if not any(blocks[(sid, m)] for m in modes):
+            continue
+        if b > 0:
+            lines.append(r'\midrule')
+        acc_true = next((r['best_acc_true'] for r in metrics_rows if r['sid'] == sid
+                         and np.isfinite(r.get('best_acc_true', float('nan')))),
+                        float('nan'))
+        # best per (mode, metric) column across the six rows, direction-aware
+        best = {}
+        for mode in modes:
+            for key, _hdr, dirn, _dec, _scale in COMPARISON_METRICS:
+                vals = [cell[key][0] for cell in blocks[(sid, mode)].values() if key in cell]
+                if vals:
+                    best[(mode, key)] = max(vals) if dirn > 0 else min(vals)
+        for i, (_method, _handler, label) in enumerate(COMPARISON_ROWS):
+            cells = []
+            for mode in modes:
+                cell = blocks[(sid, mode)].get(i, {})
+                for key, _hdr, _dirn, dec, _scale in COMPARISON_METRICS:
+                    if key not in cell:
+                        cells.append('--')
+                        continue
+                    mean, std, _n = cell[key]
+                    txt = f'{mean:.{dec}f}$\\pm${std:.{dec}f}'
+                    if np.isclose(mean, best.get((mode, key), np.nan)):
+                        txt = rf'\textbf{{{txt}}}'
+                    # rtol=0: np.isclose's DEFAULT rtol=1e-5 is ~9.4e-4 at a 94%
+                    # accuracy, wide enough to dagger a cell where one seed in
+                    # twenty missed the optimum -- which is exactly the claim
+                    # the footnote makes and must not make falsely.
+                    if (key == 'best_acc' and np.isfinite(acc_true)
+                            and np.isclose(mean, acc_true, rtol=0.0, atol=_ACC_OPTIMAL_ATOL)):
+                        txt += r'$^\dagger$'   # dagger outside the bold: it is a marker, not emphasis
+                        daggered.append(sid)
+                    cells.append(txt)
+            head = ([sid, _EVAL_KIND_TEX[SC.eval_kind(sid)]] if i == 0 else ['', ''])
+            lines.append(' & '.join(head + [label] + cells) + r' \\')
+    lines.extend([r'\bottomrule', r'\end{tabular}}'])
+    if daggered:
+        # note sits outside the resizebox so it keeps its own font size
+        lines += [r'\par\smallskip',
+                  r'{\footnotesize\raggedright $^\dagger$ every seed reached the best '
+                  r'feasible accuracy attainable anywhere in the search space '
+                  r'(exhaustively enumerated).\par}']
+    lines.extend([r'\end{table*}', ''])
+    with open(out_path, 'w') as fh:
+        fh.write('\n'.join(lines) + '\n')
+    return out_path
+
+
+# ─── critical difference (autorank + scikit-posthocs) ──────────────────────
+
+# Blocks for the Friedman test. 'both' pools the modes (N = 6 scenarios x 2
+# modes = 12); 'hard'/'soft' split them (N = 6 each, and Nemenyi's CD grows as
+# 1/sqrt(N), so those two are reported as a breakdown rather than as the
+# headline). One block is one (scenario, mode) cell, and its value is the cell
+# MEAN OVER SEEDS -- never one block per seed: seeds of the same scenario are
+# repeated runs of one problem, not independent problems, and blocking on them
+# would shrink CD by ~sqrt(20) on replication that carries no new information.
+CD_SCOPES = ('both', 'hard', 'soft')
+
+# Plain-text metric names for matplotlib titles. COMPARISON_METRICS' headers
+# are LaTeX for the .tex table and do not survive being dropped into a plot.
+CD_METRIC_LABEL = {
+    'hv_run':      'final feasible hypervolume',
+    'hv_auc':      'anytime feasible hypervolume',
+    'hv_all':      'total hypervolume',
+    'best_acc':    'best feasible accuracy',
+    'exact_waste': 'wasted evaluations',
+}
+
+
+def _cd_matrix(metrics_rows, metric, scope):
+    """(blocks x methods) DataFrame for one (metric, scope), or None when
+    fewer than three blocks are complete. Friedman needs every method present
+    in every block, so a block missing any of COMPARISON_ROWS is dropped whole
+    rather than imputed."""
+    import pandas as pd
+    modes = [scope] if scope in SC.MODES else list(SC.MODES)
+    labels = [lbl for _m, _h, lbl in COMPARISON_ROWS]
+    sids = sorted({r['sid'] for r in metrics_rows}, key=lambda s: int(s[1:]))
+    data = {}
+    for sid in sids:
+        for mode in modes:
+            cells = _comparison_cells(metrics_rows, sid, mode)
+            if len(cells) < len(COMPARISON_ROWS):
+                continue
+            vals = [cells[i].get(metric, (float('nan'),))[0]
+                    for i in range(len(COMPARISON_ROWS))]
+            if all(np.isfinite(v) for v in vals):
+                data[f'{sid}/{mode}'] = vals
+    if len(data) < 3:
+        return None
+    return pd.DataFrame.from_dict(data, orient='index', columns=labels)
+
+
+def compute_critical_difference(metrics_rows, alpha=STATS_ALPHA):
+    """Friedman + Nemenyi over COMPARISON_ROWS, one analysis per (scope,
+    metric) -> {(scope, metric): {frame, ranks, sig, cd, pvalue, omnibus,
+    n_blocks, all_normal, homoscedastic}}.
+
+    force_mode='nonparametric' -- autorank would otherwise pick between
+    repeated-measures ANOVA + Tukey and Friedman + Nemenyi per analysis, from a
+    normality screen run on 12 blocks. Flipping test families between the four
+    metric panels of one figure would make their CDs incomparable, and Demsar's
+    recommendation for comparing several methods over several problems is the
+    nonparametric route regardless. What the screen found is kept in the result
+    (all_normal / homoscedastic) and printed, so forcing it hides nothing.
+
+    The pairwise matrix comes from scikit-posthocs' posthoc_nemenyi_friedman,
+    which ranks within blocks itself; it is two-sided on rank differences and
+    so needs no direction argument, unlike autorank's ``order``."""
+    try:
+        from autorank import autorank
+        import scikit_posthocs as sp
+    except ImportError as exc:
+        print(f'[analyse] critical difference skipped: {exc} '
+              f'(pip install autorank scikit-posthocs).')
+        return {}
+
+    import contextlib
+    import io
+
+    out = {}
+    for scope in CD_SCOPES:
+        for metric, _hdr, dirn, _dec, _scale in COMPARISON_METRICS:
+            frame = _cd_matrix(metrics_rows, metric, scope)
+            if frame is None:
+                continue
+            order = 'descending' if dirn > 0 else 'ascending'
+            # autorank prints its rankdf and its forced-mode notice on every
+            # call; the concise per-scope summary below is printed instead.
+            with contextlib.redirect_stdout(io.StringIO()):
+                res = autorank(frame, alpha=alpha, verbose=False, order=order,
+                               force_mode='nonparametric')
+            out[(scope, metric)] = dict(
+                frame=frame, ranks=res.rankdf['meanrank'],
+                sig=sp.posthoc_nemenyi_friedman(frame),
+                cd=res.cd, pvalue=res.pvalue, omnibus=res.omnibus,
+                n_blocks=len(frame), all_normal=res.all_normal,
+                homoscedastic=res.homoscedastic)
+    return out
+
+
+def critical_difference_rows(cd_results):
+    """Flat CSV rows: one per (scope, metric, method)."""
+    rows = []
+    for (scope, metric), r in cd_results.items():
+        for method, rank in r['ranks'].items():
+            rows.append(dict(
+                scope=scope, metric=metric, method=method,
+                mean_rank=float(rank), n_blocks=r['n_blocks'], cd=float(r['cd']),
+                omnibus=r['omnibus'], omnibus_p=float(r['pvalue']),
+                significant=bool(r['pvalue'] < STATS_ALPHA),
+                median=float(r['frame'][method].median()),
+                all_normal=bool(r['all_normal']), homoscedastic=bool(r['homoscedastic'])))
+    return rows
+
+
+def plot_critical_difference(cd_results, plot_dir, plt):
+    """One figure per scope: a Demsar critical-difference diagram per metric,
+    drawn by scikit-posthocs from autorank's mean ranks and CD."""
+    import scikit_posthocs as sp
+    written = []
+    for scope in CD_SCOPES:
+        panels = [m for m, _hdr, _d, _p, _s in COMPARISON_METRICS
+                  if (scope, m) in cd_results]
+        if not panels:
+            continue
+        fig, axes = plt.subplots(len(panels), 1, figsize=(7.5, 2.5 * len(panels)),
+                                 squeeze=False)
+        axes = axes.ravel()
+        for ax, metric in zip(axes, panels):
+            r = cd_results[(scope, metric)]
+            sp.critical_difference_diagram(r['ranks'], r['sig'], cd=r['cd'], ax=ax,
+                                           color_palette=COMPARISON_COLOURS)
+            # The CD ruler is drawn at a hardcoded y=0.5/0.65 in data
+            # coordinates, right where the rank axis puts its tick labels;
+            # padding the labels clear of it is the only lever from out here.
+            ax.tick_params(axis='x', pad=16)
+            sig = 'significant' if r['pvalue'] < STATS_ALPHA else 'NOT significant'
+            # pad: scikit-posthocs draws its CD ruler and the rank axis ABOVE
+            # the number line, straight into where a default-placed title sits.
+            ax.set_title(f'{CD_METRIC_LABEL[metric]}   '
+                         f'(Friedman p={r["pvalue"]:.2g}, {sig};  '
+                         f'N={r["n_blocks"]} blocks, CD={r["cd"]:.2f})',
+                         fontsize=9, pad=26)
+        n = cd_results[(scope, panels[0])]['n_blocks']
+        scope_label = 'hard + soft pooled' if scope == 'both' else f'{scope} mode only'
+        fig.suptitle(f'Critical difference (Friedman + Nemenyi, '
+                     f'$\\alpha$={STATS_ALPHA}) -- {scope_label}, N={n}', fontsize=11)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        out_png = os.path.join(plot_dir, f'cd_{scope}.png')
+        fig.savefig(out_png, dpi=130)
+        plt.close(fig)
+        written.append(out_png)
+    return written
+
+
+def write_critical_difference_table(cd_results, tables_dir):
+    """Mean Friedman ranks: rows = method (a block per scope), columns =
+    metric, best (lowest) rank per column within a scope in bold. Rank 1 is
+    always best -- autorank's ``order`` already absorbs the fact that waste is
+    minimised while the other three are maximised."""
+    os.makedirs(tables_dir, exist_ok=True)
+    out_path = os.path.join(tables_dir, 'critical_difference.tex')
+    if not cd_results:
+        with open(out_path, 'w') as fh:
+            fh.write('% ---- critical difference skipped: autorank/scikit-posthocs '
+                     'unavailable or too few blocks ----\n')
+        return out_path
+
+    metrics = [(m, hdr) for m, hdr, _d, _p, _s in COMPARISON_METRICS
+               if any((sc, m) in cd_results for sc in CD_SCOPES)]
+    labels = [lbl for _m, _h, lbl in COMPARISON_ROWS]
+    lines = [
+        '% ---- Friedman mean ranks / critical difference ----',
+        '%',
+        '% Test:   Friedman omnibus + Nemenyi post-hoc (autorank, forced',
+        '%         nonparametric; scikit-posthocs for the pairwise matrix and the',
+        '%         diagrams in plots/cd_{both,hard,soft}.png).',
+        '% Blocks: one per (scenario, mode) cell, value = mean over seeds. NOT one',
+        '%         per seed -- seeds are repeated runs of one problem, not extra',
+        '%         problems, and blocking on them would shrink CD by ~sqrt(20) on',
+        '%         replication carrying no new information.',
+        '% Rank 1: always best; the direction of each metric is already absorbed',
+        '%         (waste is minimised, the other three maximised).',
+        '% CD:     two methods differ significantly iff their mean ranks differ by',
+        '%         more than CD. It scales as 1/sqrt(N), so the hard/soft blocks',
+        '%         (N=6) are a breakdown, not the headline -- read `both` first.',
+        '%',
+        r'\begin{table}[t]', r'\centering',
+        r'\caption{Mean Friedman ranks over the scenario suite (rank 1 = best). '
+        r'Blocks are (scenario, mode) cells; two methods differ significantly at '
+        r'$\alpha=' + str(STATS_ALPHA) + r'$ iff their mean ranks differ by more '
+        r'than the critical difference CD.}',
+        r'\label{tab:scenario-critical-difference}',
+        r'\resizebox{\columnwidth}{!}{%',
+        rf"\begin{{tabular}}{{l{'r' * len(metrics)}}}", r'\toprule',
+        'method & ' + ' & '.join(hdr for _m, hdr in metrics) + r' \\']
+    for scope in CD_SCOPES:
+        present = [(m, hdr) for m, hdr in metrics if (scope, m) in cd_results]
+        if not present:
+            continue
+        r0 = cd_results[(scope, present[0][0])]
+        scope_label = 'hard + soft pooled' if scope == 'both' else f'{scope} only'
+        lines += [r'\midrule',
+                  rf"\multicolumn{{{len(metrics) + 1}}}{{l}}{{\textit{{{scope_label}}} "
+                  rf"($N={r0['n_blocks']}$, $\mathrm{{CD}}={r0['cd']:.2f}$)}} \\"]
+        best = {m: min(cd_results[(scope, m)]['ranks']) for m, _h in present}
+        for lbl in labels:
+            cells = []
+            for m, _hdr in metrics:
+                r = cd_results.get((scope, m))
+                if r is None or lbl not in r['ranks'].index:
+                    cells.append('--')
+                    continue
+                txt = f"{r['ranks'][lbl]:.2f}"
+                if np.isclose(r['ranks'][lbl], best[m], rtol=0.0, atol=1e-9):
+                    txt = rf'\textbf{{{txt}}}'
+                cells.append(txt)
+            lines.append(' & '.join([lbl] + cells) + r' \\')
+        lines.append(' & '.join([r'\quad Friedman $p$']
+                                + [f"{cd_results[(scope, m)]['pvalue']:.1e}"
+                                   if (scope, m) in cd_results else '--'
+                                   for m, _h in metrics]) + r' \\')
+    lines.extend([r'\bottomrule', r'\end{tabular}}', r'\end{table}', ''])
+    with open(out_path, 'w') as fh:
+        fh.write('\n'.join(lines) + '\n')
+    return out_path
+
+
+def print_critical_difference_summary(cd_results):
+    """Mean ranks and the Nemenyi verdict per scope on stdout."""
+    print('\n' + '=' * 100)
+    print(f'Critical difference (Friedman + Nemenyi, alpha={STATS_ALPHA}), '
+          f'blocks = (scenario, mode) cells')
+    print('=' * 100)
+    if not cd_results:
+        print('(autorank / scikit-posthocs unavailable, or too few complete blocks)')
+        print('=' * 100)
+        return
+    for scope in CD_SCOPES:
+        present = [(m, hdr) for m, hdr, _d, _p, _s in COMPARISON_METRICS
+                   if (scope, m) in cd_results]
+        if not present:
+            continue
+        r0 = cd_results[(scope, present[0][0])]
+        print(f"\nscope={scope}  N={r0['n_blocks']} blocks  CD={r0['cd']:.3f}")
+        for metric, _hdr in present:
+            r = cd_results[(scope, metric)]
+            ranked = ', '.join(f'{m} {v:.2f}' for m, v in r['ranks'].sort_values().items())
+            flag = '' if r['pvalue'] < STATS_ALPHA else '  [omnibus NOT significant]'
+            print(f'  {metric:<12s} p={r["pvalue"]:.2e}{flag}')
+            print(f'    {ranked}')
+    print('=' * 100)
 
 
 # Scenarios whose runs collapse to a front this small cannot support a
@@ -1473,15 +2065,33 @@ def render_outputs(output_dir, refs, fronts, trajectories, metrics_rows, winloss
         if plot_attainment_grid(sid, mode, ref, fronts_by_mh, out_png, plt):
             written.append(out_png)
     written.extend(plot_final_bars(metrics_rows, plot_dir, plt))
+
+    # Derived purely from metrics_rows, so it lives here rather than in main():
+    # that keeps --plots_only able to regenerate the whole CD analysis (CSV
+    # included) without re-reading a single result pkl.
+    cd_results = compute_critical_difference(metrics_rows)
+    written.extend(plot_critical_difference(cd_results, plot_dir, plt))
     print(f'[analyse] wrote {len(written)} plot(s) -> {plot_dir}')
+
+    cd_rows = critical_difference_rows(cd_results)
+    cd_csv = os.path.join(output_dir, 'critical_difference.csv')
+    with open(cd_csv, 'w', newline='') as fh:
+        if cd_rows:
+            writer = csv.DictWriter(fh, fieldnames=list(cd_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(cd_rows)
+    print(f'[analyse] wrote {len(cd_rows)} rows -> {cd_csv}')
 
     written_tex = write_handler_winloss_table(winloss_rows, tables_dir)
     written_tex.append(write_method_effect_table(method_effect_rows, tables_dir))
     written_tex.append(write_method_effect_summary_table(method_effect_rows, tables_dir))
+    written_tex.append(write_method_comparison_table(metrics_rows, tables_dir))
+    written_tex.append(write_critical_difference_table(cd_results, tables_dir))
     if len(hard_soft_rows):
         written_tex.append(write_hard_vs_soft_table(hard_soft_rows, metrics_rows,
                                                     trajectories, tables_dir))
     print(f'[analyse] wrote {len(written_tex)} LaTeX table(s) -> {tables_dir}')
+    print_critical_difference_summary(cd_results)
 
 
 def main(args):
@@ -1537,9 +2147,13 @@ def main(args):
                         n_gen=meta.get('n_gen', m['n_gen']),
                         n_eval_realised=meta.get('n_eval_realised', float('nan')),
                         pop_size=meta.get('pop_size', float('nan')), n_evals=meta.get('n_evals', float('nan')),
-                        hv_run=hv_run, hv_true=ref['hv_true'], hv_ratio=hv_ratio,
+                        hv_run=hv_run, hv_all=m['hv_all'], hv_auc=m['hv_auc'],
+                        hv_true=ref['hv_true'], hv_ratio=hv_ratio,
                         best_err=m['m8_best_err'], best_err_slack=m['m8_best_err_slack'],
                         best_err_true=ref['best_err_true'],
+                        best_acc=_accuracy_pct(m['m8_best_err'], ref['err_utopian'],
+                                               ref['err_nadir']),
+                        best_acc_true=ref['best_acc_true'],
                         n_feasible_final=n_feasible_final, n_total_final=n_total_final,
                         m3_final_infeasible_waste=m['m3_final_cumulative'], exact_waste=m['exact_waste'],
                         m4_final_front_size=m['m4_final'],
@@ -1671,7 +2285,12 @@ if __name__ == '__main__':
     p.add_argument('--scenarios', nargs='+', default=list(SC.SCENARIOS), choices=list(SC.SCENARIOS))
     p.add_argument('--modes', nargs='+', default=list(SC.MODES), choices=list(SC.MODES))
     p.add_argument('--methods', nargs='+', default=list(SC.METHODS), choices=SC.METHODS)
-    p.add_argument('--handlers', nargs='+', default=list(SC.HANDLERS), choices=SC.HANDLERS)
+    p.add_argument('--handlers', nargs='+', default=list(SC.ALL_HANDLERS),
+                   choices=SC.ALL_HANDLERS,
+                   help='Handler subset. Defaults to the 7-handler row PLUS the '
+                        'fixed-slot-only b1-unconstrained, so ssansga2 keeps both '
+                        'of its cells; the per-handler figures still key their '
+                        'handler axis off GRID_METHODS only.')
     p.add_argument('--seeds', type=int, nargs='+', default=None,
                    help='Seed subset (default: discover every seed_*.pkl present per cell).')
     p.add_argument('--enum_limit', type=int, default=200_000,
