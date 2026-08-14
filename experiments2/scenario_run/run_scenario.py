@@ -1,6 +1,6 @@
 """experiments2/scenario_run/run_scenario.py -- scenario_run campaign runner.
 
-Runs one (scenario, mode, method, handler) cell of the S1-S8 campaign
+Runs one (scenario, mode, method, handler) cell of the S1-S6 campaign
 (scenarios.py) for a set of seeds. Mirrors experiments/constraint2/
 run_constraint.py's run_single/main shape and CLI conventions, with THREE
 deliberate differences:
@@ -23,15 +23,16 @@ deliberate differences:
 2. Per-scenario ``ref_point`` and ``penalty`` (scenarios.py) are threaded
    into the callback and the algorithm respectively -- see ``run_single``.
    Leaving either at its hardcoded default (1.05 / 1.0) would silently wrong
-   two things: S6/S7 (MoSegNAS) normalize ~70% of architectures above 1.05
-   on the #Params axis (TAU.md, 'Reference point'), so those runs would
-   score zero hypervolume for most of the archive; and a flat penalty=1.0
+   two things: the ref point is derived per scenario as max(1.05, p95) per
+   objective (TAU.md, 'Reference point'), so a space whose normalized
+   objectives run past 1.05 would score zero hypervolume over most of the
+   archive; and a flat penalty=1.0
    varies h2-static_penalty's effective pressure ~30x across the suite
    (TAU.md, 'Penalty'), collapsing it into unconstrained search on one end
    and into h4-cdp on the other.
 
 3. ``sense`` (scenarios.constr_sense) is threaded through explicitly since
-   S8 is a floor constraint (feasible <=> metric >= tau), not S1-S7's
+   S6 is a floor constraint (feasible <=> metric >= tau), not S1-S5's
    ceiling.
 
 Output layout
@@ -100,7 +101,7 @@ def run_single(sid, mode, method, handler, seed, pop_size, n_evals,
 
     problem = ALG.build_problem(sid, benchmark, mode, handler=handler)
 
-    # ref_point reaches the HV indicator here; sense makes S8's floor
+    # ref_point reaches the HV indicator here; sense makes S6's floor
     # constraint feasible in the right direction.
     callback = FeasibilityAwareEvoxBenchCallback(
         benchmark, obj_idx, constr_idx, tau, sense=sense, ref_point=ref_point,
@@ -169,31 +170,38 @@ def run_single(sid, mode, method, handler, seed, pop_size, n_evals,
 
 def _resolve_handlers(mode, args):
     """Handler list for this invocation: explicit --handler > --all_handlers
-    (every scenarios.HANDLERS entry) > the scenario/mode default."""
-    default = SC.DEFAULT_HANDLER[mode]
+    (every scenarios.HANDLERS entry) > the scenario/mode default. Applies to
+    the full-row methods only -- random/ctaea take their slot from
+    scenarios.fixed_handler (see main)."""
     if args.handler is not None:
-        return [args.handler], default
+        return [args.handler]
     if args.all_handlers:
-        return list(SC.HANDLERS), default
-    return [default], default
+        return list(SC.HANDLERS)
+    return [SC.DEFAULT_HANDLER[mode]]
 
 
 def main(args):
     sid, mode = args.scenario, args.mode
     scenario = SC.SCENARIOS[sid]
-    handlers, default_handler = _resolve_handlers(mode, args)
+    handlers = _resolve_handlers(mode, args)
 
-    # (method, handler) work list; random runs ONLY the scenario/mode default
-    # -- it has no selection pressure or sampling strategy for any handler to
-    # act on.
+    # (method, handler) work list. random and ctaea run ONE handler slot each
+    # (scenarios.fixed_handler): random has no selection pressure or sampling
+    # strategy for a handler to act on, and ctaea's handler is intrinsic to the
+    # algorithm. Their slot is used DIRECTLY rather than filtered out of
+    # ``handlers``, so e.g. `--method ctaea --mode soft` still runs its h4-cdp
+    # slot instead of silently producing nothing when the mode default differs.
     pairs = []
     for method in args.method:
+        fixed = SC.fixed_handler(method, mode)
+        if fixed is not None:
+            if args.handler is not None and args.handler != fixed:
+                print(f'[SKIP] {method} x {args.handler}: {method} runs only its own '
+                      f'handler slot ({fixed!r} for mode={mode!r}).')
+            else:
+                pairs.append((method, fixed))
+            continue
         for handler in handlers:
-            if method == 'random' and handler != default_handler:
-                print(f'[SKIP] random x {handler}: random has no selection pressure or '
-                      f'sampling strategy for a handler to act on -- it runs only the '
-                      f"scenario default ({default_handler!r} for mode={mode!r}).")
-                continue
             pairs.append((method, handler))
 
     total_runs = len(args.seeds) * len(pairs)
@@ -252,7 +260,7 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--scenario', required=True, choices=list(SC.SCENARIOS),
-                    help='Which of S1-S8 to run (see scenarios.py).')
+                    help='Which of S1-S6 to run (see scenarios.py).')
     p.add_argument('--mode', required=True, choices=list(SC.MODES),
                     help='hard (evaluability gate) or soft (archive infeasible '
                          'with real F/G) -- tau is shared across both.')

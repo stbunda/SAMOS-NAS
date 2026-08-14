@@ -1,6 +1,6 @@
 """Scenario configurations for scenario_run campaign.
 
-Eight scenarios (S1-S8) at a single 10% feasibility operating point, with tau
+Six scenarios (S1-S6) at a single 10% feasibility operating point, with tau
 shared by hard and soft modes (differing only in treatment: gate vs archive).
 Tau lives in the normalized benchmark-evaluate space (when the benchmark is
 not already normalized, affine scaling is applied as ConstrainedEvoXBenchProblem
@@ -20,7 +20,7 @@ architecture is penalised by one objective range::
 
 G is a *relative* violation (it divides by tau), so a tight tau inflates CV
 mechanically. A flat weight of 1.0 therefore varies ~30x in effective pressure
-across the suite -- 0.2x of the objective span on S6/S7 up to 6.0x on S4, whose
+across the suite -- 0.3x of the objective span on S3 up to 8x on S4, whose
 tau of 0.028 sits on the NB201 #Params tie plateau -- which collapses h2 toward
 unconstrained search at one end and toward h4-cdp at the other. Only h2 needs
 this: h5's eps0 is the mean DOE CV so it self-scales, h6's Pf is a probability,
@@ -61,18 +61,6 @@ SCENARIOS = {
         ref_point=(1.05, 1.05), penalty=1.1675723922069405
     ),
     'S6': dict(
-        space='MoSegNAS', suite='citysegmop', pid=15,
-        obj_metrics=('Err.', '#Params'), constr_metric='H1 Lat.',
-        direction='min', tau=0.36661331274859266, feasible_fraction=0.10000119865989823,
-        ref_point=(1.05, 2.626431190600913), penalty=3.690633954979857
-    ),
-    'S7': dict(
-        space='MoSegNAS', suite='citysegmop', pid=15,
-        obj_metrics=('Err.', '#Params'), constr_metric='H2 Lat.',
-        direction='min', tau=0.7076894651685864, feasible_fraction=0.10000119865989823,
-        ref_point=(1.05, 2.626431190600913), penalty=3.681586082300617
-    ),
-    'S8': dict(
         space='NB201', suite='c10mop', pid=7,
         obj_metrics=('Err.', 'Eyeriss Lat.'), constr_metric='Eyeriss AI',
         direction='max', tau=0.8965967893600464, feasible_fraction=0.101504,
@@ -80,16 +68,57 @@ SCENARIOS = {
     ),
 }
 
+# EvoXBench looks NB101/NATS/NB201 metrics up in a table and produces every
+# other space's through trained predictors (MLP accuracy predictors for
+# ResNet-50D/MobileNetV3/Transformer, a RankNet for MoSegNAS). The distinction
+# matters for analysis, not just provenance: on a tabular space the search
+# space is small enough to enumerate, so the true feasible front and its HV are
+# exact; on a surrogate space they can only be approximated from a sample, and
+# the objective values themselves carry predictor error.
+EVAL_KIND_BY_SPACE = {
+    'NB101': 'tabular', 'NATS': 'tabular', 'NB201': 'tabular',
+    'DARTS': 'surrogate', 'ResNet-50D': 'surrogate', 'Transformer': 'surrogate',
+    'MobileNetV3': 'surrogate', 'MoSegNAS': 'surrogate',
+}
+
 MODES = ('hard', 'soft')
 
 HANDLERS = ['h1-rejection', 'h2-static_penalty', 'h3-adaptive', 'h4-cdp',
             'h5-epsilon', 'h6-DSR', 'b0-as-obj']
 
-METHODS = ['random', 'nsga2', 'samos']
+METHODS = ['random', 'nsga2', 'ctaea', 'samos']
 
 DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-static_penalty'}
 
+# Methods whose constraint handling is INTRINSIC: they run a SINGLE handler
+# slot instead of the 7-handler row. The value is that slot, or None for "the
+# scenario/mode default".
+#   random : no selection pressure and no sampling strategy for a handler to
+#            act on, so only the default slot means anything.
+#   ctaea  : the convergence/diversity archive pair and the CV-first
+#            restricted-mating tournament ARE the handler -- there is no seam
+#            to swap another one into. What they implement is feasibility-first
+#            constraint domination, so ctaea is filed under 'h4-cdp' in BOTH
+#            modes, which also lands it next to nsga2/samos x h4-cdp in the
+#            analysis grid (the mode axis still applies: it governs gating vs
+#            archiving in the outer problem, not the handler).
+FIXED_HANDLER_METHODS = {'random': None, 'ctaea': 'h4-cdp'}
+
 SEARCH_SPACE_LB_OVERRIDE = {'MoSegNAS': {0: 1}}
+
+
+def eval_kind(sid):
+    """'tabular' or 'surrogate' -- how this scenario's benchmark produces its
+    metrics (see EVAL_KIND_BY_SPACE)."""
+    return EVAL_KIND_BY_SPACE[SCENARIOS[sid]['space']]
+
+
+def fixed_handler(method, mode):
+    """The single handler slot ``method`` runs under ``mode``, or None when it
+    runs the full HANDLERS row (nsga2, samos). See FIXED_HANDLER_METHODS."""
+    if method not in FIXED_HANDLER_METHODS:
+        return None
+    return FIXED_HANDLER_METHODS[method] or DEFAULT_HANDLER[mode]
 
 
 def constr_sense(sid):

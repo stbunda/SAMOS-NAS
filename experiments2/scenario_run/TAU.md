@@ -1,14 +1,15 @@
 # TAU — scenario-run campaign operating point
 
-Single 10% feasibility budget across all eight scenarios (S1–S8), with tau (the constraint threshold) shared by hard and soft modes. Hard mode gates evaluability; soft mode archives infeasible points.
+Single 10% feasibility budget across all six scenarios (S1–S6), with tau (the constraint threshold) shared by hard and soft modes. Hard mode gates evaluability; soft mode archives infeasible points.
+
+The two MoSegNAS scenarios that used to sit at S6/S7 were dropped from the suite; the scenario formerly numbered S8 is now S6. Their runs are preserved under `results2/scenario_run/depreciated/`.
 
 ## Tau definition and normalization
 
-Tau is the percentile threshold in benchmark-evaluate space, exactly as `ConstrainedEvoXBenchProblem` operates on it. When `benchmark.normalized_objectives` is `False`, parquet samples are scaled via `(F - utopian) / (nadir - utopian)` before tau is computed or applied. Three scenarios are non-normalized:
+Tau is the percentile threshold in benchmark-evaluate space, exactly as `ConstrainedEvoXBenchProblem` operates on it. When `benchmark.normalized_objectives` is `False`, parquet samples are scaled via `(F - utopian) / (nadir - utopian)` before tau is computed or applied. Two scenarios are non-normalized:
 
 - S2: ResNet-50D in1kmop/3 (objective set: Err., FLOPs)
 - S3: MobileNetV3 in1kmop/9 (objective set: Err., FLOPs)
-- S6, S7: MoSegNAS citysegmop/15 (objective set: Err., #Params; constrained on latency)
 
 ## Verification against results2/constraint_analysis/full/
 
@@ -22,11 +23,7 @@ Tau is the percentile threshold in benchmark-evaluate space, exactly as `Constra
 
 **S5 NB201 c10mop/7**: tau=0.32976839542388914 (direct match)
 
-**S6 MoSegNAS citysegmop/15**: tau=0.36661331274859266 (affine-converted); matches hv_curve.csv to 1e-9 after normalization. Ref point = 2.626431190600913 on #Params axis (see Ref point section below).
-
-**S7 MoSegNAS citysegmop/15**: tau=0.7076894651685864 (affine-converted); matches hv_curve.csv to 1e-9 after normalization. Same ref point as S6.
-
-**S8 NB201 c10mop/7**: tau=0.8965967893600464 (achieves 10.15% feasible). Eyeriss AI is a maximize metric, so this is a **floor**: tau is the *90th* percentile and feasibility is `metric >= tau`. Same tie-block effect as S4 — Eyeriss AI has only 84 distinct values across 15,625 architectures — giving 10.15% rather than exactly 10.00%.
+**S6 NB201 c10mop/7**: tau=0.8965967893600464 (achieves 10.15% feasible). Eyeriss AI is a maximize metric, so this is a **floor**: tau is the *90th* percentile and feasibility is `metric >= tau`. Same tie-block effect as S4 — Eyeriss AI has only 84 distinct values across 15,625 architectures — giving 10.15% rather than exactly 10.00%.
 
 ## Reference point per scenario
 
@@ -39,11 +36,9 @@ HV ref point = `max(1.05, p95)` per normalized objective column within each scen
 | S3       | Err., FLOPs | (1.05, 1.05) |
 | S4       | Err., EdgeGPU Lat. | (1.05, 1.05) |
 | S5       | Err., #Params | (1.05, 1.05) |
-| S6       | Err., #Params | (1.05, 2.626431190600913) |
-| S7       | Err., #Params | (1.05, 2.626431190600913) |
-| S8       | Err., Eyeriss Lat. | (1.05, 1.05) |
+| S6       | Err., Eyeriss Lat. | (1.05, 1.05) |
 
-**Why S6/S7 use 2.626 instead of 1.05**: `normalize()` is `(F - utopian) / (nadir - utopian)`, and EvoXBench's utopian/nadir are the benchmark's *Pareto front* extremes, not the range of the search space. For MoSegNAS #Params they are 1.325e+05 / 4.532e+05, both well inside the reachable range, so normalized #Params has median 1.40 and reaches 4.58 — about 70% of sampled architectures normalize above 1.05. A ref point of 1.05 would credit all of them with zero hypervolume, leaving HV signal in only the bottom ~27% of the distribution. The measured p95 is 2.626.
+**Why the `max(1.05, p95)` rule and not a flat 1.05**: `normalize()` is `(F - utopian) / (nadir - utopian)`, and EvoXBench's utopian/nadir are the benchmark's *Pareto front* extremes, not the range of the search space, so on some spaces a large share of the reachable region normalizes above 1.05 and a flat ref point would credit all of it with zero hypervolume. That was the case for the dropped MoSegNAS scenarios (#Params p95 = 2.626, ~70% of samples above 1.05); every scenario in the current suite has p95 <= 1.05, so all six land on (1.05, 1.05) — but by derivation, not by assumption.
 
 ## Penalty (h2-static_penalty weight)
 
@@ -65,9 +60,7 @@ penalty   = span / CV_median
 | S3       | 0.4103    | 1.546 | 3.76896 |
 | S4       | 8.6800    | 1.050 | 0.12097 |
 | S5       | 0.8993    | 1.050 | 1.16757 |
-| S6       | 0.6978    | 2.575 | 3.69063 |
-| S7       | 0.6995    | 2.575 | 3.68159 |
-| S8       | 0.4405    | 1.050 | 2.38340 |
+| S6       | 0.4405    | 1.050 | 2.38340 |
 
 **Why it exists**: `G = (m - tau) / tau` is a *relative* violation, so a tight
 tau inflates CV -- the same absolute distance past the threshold produces a
@@ -80,8 +73,8 @@ regardless of how tight or loose tau happens to be on that scenario's raw
 metric scale.
 
 Without this correction, a flat `penalty=1.0` would vary the EFFECTIVE
-pressure ~30x across the suite: from 0.2x of the objective span on S6/S7 (tau
-loose relative to CV) up to 6.0x on S4 (tau=0.028 sits on the #Params tie
+pressure ~30x across the suite: from 0.3x of the objective span on S3 (tau
+loose relative to CV) up to 8x on S4 (tau=0.028 sits on the #Params tie
 plateau -- see the S4 note above -- so CV is inflated by the small
 denominator). At the low end that collapses h2-static_penalty into
 effectively unconstrained search; at the high end it collapses it into
@@ -110,9 +103,7 @@ S2: 0.194
 S3: 0.392
 S4: 0.028
 S5: 0.330
-S6: 0.367
-S7: 0.708
-S8: 0.897
+S6: 0.897
 ```
 
 This matters because `G = sense * (metric - tau) / tau` divides by tau: a tau <= 0 would invert the inequality and silently turn the constraint inside out. Only `Err.` normalizes negative on any of these spaces, and `Err.` is never a constrained metric.
@@ -125,4 +116,4 @@ Run `derive_tau.py --check` with the SAMOS_311 Python environment to verify:
 "$USERPROFILE/AppData/Local/anaconda3/envs/SAMOS_311/python.exe" experiments2/scenario_run/derive_tau.py --check
 ```
 
-This reads from `results2/constraint_analysis/full/<space>/`, applies the same normalization as `ConstrainedEvoXBenchProblem`, filters MoSegNAS x0≠0, and re-derives all tau, ref_point, and penalty values. The `--check` flag compares against `scenarios.py` and exits nonzero on any mismatch (tolerance 1e-9).
+This reads from `results2/constraint_analysis/full/<space>/`, applies the same normalization as `ConstrainedEvoXBenchProblem`, and re-derives all tau, ref_point, and penalty values. The `--check` flag compares against `scenarios.py` and exits nonzero on any mismatch (tolerance 1e-9).

@@ -1,76 +1,64 @@
 #!/bin/bash
-# --------- SCENARIO_EVOXBENCH.sbatch ----------------------------------------------------------------------------------------------------------------
-# The scenario_run campaign: S1-S6 (experiments2/scenario_run/scenarios.py)
-# at a single 10% feasibility operating point, hard/soft mode x
-# {nsga2, samos} x 7 handlers + random x 1 (scenario/mode default) handler.
+# --------- CTAEA_EVOXBENCH.sbatch ------------------------------------------------------------------------------------------------------------------
+# CTAEA add-on to the scenario_run campaign: S1-S6
+# (experiments2/scenario_run/scenarios.py) at the same 10% feasibility
+# operating point, hard/soft mode, pymoo CTAEA only.
+#
+# Its own sbatch rather than extra rows in SCENARIO_EVOXBENCH.sbatch: that
+# file's COMBOS array is 15 tasks per (scenario, mode) block, so adding a
+# 16th item would re-number every index in its documented map (and therefore
+# every already-submitted / re-submittable array index). CTAEA writes into
+# the SAME results tree and is read by the same analyse_scenarios.py, so the
+# split is purely a submission-side one.
+#
+# CTAEA runs a SINGLE handler slot, 'h4-cdp' in BOTH modes
+# (scenarios.FIXED_HANDLER_METHODS / fixed_handler): its constraint handling
+# is intrinsic -- the convergence/diversity archive pair plus the CV-first
+# restricted-mating tournament -- so there is no seam for one of the 7
+# handlers to act on. h4-cdp is the mechanism it implements (feasibility-first
+# constraint domination), which also puts it next to nsga2/samos x h4-cdp in
+# the analysis grid. The mode axis still applies: it governs gating vs
+# archiving in the outer problem, not the handler.
+#
 # Termination is EVALUATION-based (('n_evals', N), never ('n_gen', N)) --
-# see run_scenario.py's module docstring for why this matters (h1-rejection
-# and SAMOS2's hard-gate DOE retries spend real evaluations beyond the
-# nominal pop_size-per-generation rate; under n_gen termination those would
-# be bought off-budget). Results ->
-# results2/scenario_run/{sid}/{mode}/{method}/{handler}/seed_N.pkl.
+# see run_scenario.py's module docstring. Results ->
+# results2/scenario_run/{sid}/{mode}/ctaea/h4-cdp/seed_N.pkl.
 #
-# One array task == one (scenario, mode, method, handler) tuple, looping
-# over all 20 seeds with one run_scenario.py call + one results rsync-back
-# PER SEED (not one call for all 20 seeds). The scratch directory is
-# destroyed when a task ends for any reason -- normal exit, walltime,
-# preemption, node failure -- so per-seed rsync-back means a killed task
-# only ever loses its current in-flight seed, not every seed it had already
-# finished. Combined with run_scenario.py's own skip-if-exists check and the
-# results pre-copy below, re-submitting a killed/interrupted array index
-# resumes from the next missing seed rather than seed 0.
+# One array task == one (scenario, mode) tuple, looping over all 20 seeds
+# with one run_scenario.py call + one results rsync-back PER SEED (not one
+# call for all 20 seeds). The scratch directory is destroyed when a task ends
+# for any reason -- normal exit, walltime, preemption, node failure -- so
+# per-seed rsync-back means a killed task only ever loses its current
+# in-flight seed, not every seed it had already finished. Combined with
+# run_scenario.py's own skip-if-exists check and the results pre-copy below,
+# re-submitting a killed/interrupted array index resumes from the next
+# missing seed rather than seed 0.
 #
-# The ctaea method is NOT in this task table -- it is submitted separately by
-# CTAEA_EVOXBENCH.sbatch (12 tasks) so this file's index map stays fixed. It
-# writes into the same results tree and is read by the same analysis.
-#
-# Task table (180 tasks). Per (scenario, mode) cell -- 15 tasks:
-#   random x scenario/mode-default handler (1; random has no selection
-#     pressure or sampling strategy for a handler to act on)
-#   nsga2 x the 7-handler row {h1-rejection, h2-static_penalty, h3-adaptive,
-#     h4-cdp, h5-epsilon, h6-DSR, b0-as-obj} (7)
-#   samos x the same 7-handler row (7)
-# Totals: 6 scenarios x 2 modes x 15 = 180.
-#
-# Index map: each (scenario, mode) block is 15 CONTIGUOUS tasks, blocks in
-# scenario-major, mode-minor order (S1/hard, S1/soft, S2/hard, S2/soft, ...,
-# S6/hard, S6/soft); within a block, item 0 is random:default, items 1-7 are
-# nsga2 x the 7-handler row (in HANDLER_ROW order), items 8-14 are
-# samos x the same 7-handler row:
-#
-#   block(sid, mode) = (scenario_idx * 2 + mode_idx) * 15
+# Task table (12 tasks), scenario-major, mode-minor:
+#   task = scenario_idx * 2 + mode_idx
 #     scenario_idx: S1=0, S2=1, ..., S6=5 ; mode_idx: hard=0, soft=1
-#   task = block(sid, mode) + item   (item: 0=random, 1-7=nsga2 row, 8-14=samos row)
 #
-# e.g. index   0 = S1/hard/random/h4-cdp        (block 0,  item 0)
-#      index   1 = S1/hard/nsga2/h1-rejection   (block 0,  item 1)
-#      index   7 = S1/hard/nsga2/b0-as-obj      (block 0,  item 7)
-#      index   8 = S1/hard/samos/h1-rejection   (block 0,  item 8)
-#      index  15 = S1/soft/random/h2-static_penalty (block 15, item 0)
-#      index  30 = S2/hard/random/h4-cdp        (block 30, item 0)
-#      index 150 = S6/hard/random/h4-cdp        (block 150, item 0)
-#      index 165 = S6/soft/random/h2-static_penalty (block 165, item 0)
-#      index 179 = S6/soft/samos/b0-as-obj      (block 165, item 14; last task)
+# e.g. index  0 = S1/hard    index  1 = S1/soft
+#      index  2 = S2/hard    index 10 = S6/hard
+#      index 11 = S6/soft    (last task)
 #
 # Submit everything (existing results are skipped, so this is safe):
-#   sbatch experiments2/scenario_run/SCENARIO_EVOXBENCH.sbatch
+#   sbatch experiments2/scenario_run/CTAEA_EVOXBENCH.sbatch
 #
-# Submit one (scenario, mode) cell (15-blocks per the index map above):
-#   sbatch --array=0-14    experiments2/scenario_run/SCENARIO_EVOXBENCH.sbatch   # S1 hard
-#   sbatch --array=15-29   experiments2/scenario_run/SCENARIO_EVOXBENCH.sbatch   # S1 soft
-#   sbatch --array=150-164 experiments2/scenario_run/SCENARIO_EVOXBENCH.sbatch   # S6 hard
-#   sbatch --array=165-179 experiments2/scenario_run/SCENARIO_EVOXBENCH.sbatch   # S6 soft
+# Submit one scenario (both modes):
+#   sbatch --array=0-1   experiments2/scenario_run/CTAEA_EVOXBENCH.sbatch   # S1
+#   sbatch --array=10-11 experiments2/scenario_run/CTAEA_EVOXBENCH.sbatch   # S6
 #
 # Force re-run (ignore existing pkls):
-#   sbatch --export=ALL,OVERWRITE=1 experiments2/scenario_run/SCENARIO_EVOXBENCH.sbatch
+#   sbatch --export=ALL,OVERWRITE=1 experiments2/scenario_run/CTAEA_EVOXBENCH.sbatch
 #
 # Re-run a single failed task (see array index in its log filename):
-#   sbatch --array=7 experiments2/scenario_run/SCENARIO_EVOXBENCH.sbatch
+#   sbatch --array=7 experiments2/scenario_run/CTAEA_EVOXBENCH.sbatch
 # -----------------------------------------------------------------------------------------------------------------------------------------------------------
 
-#SBATCH -J scenario_run
+#SBATCH -J scenario_ctaea
 #SBATCH -c 2
-#SBATCH --array=0-179%20              # full campaign (180 tasks total, existing results are skipped)
+#SBATCH --array=0-11%12               # full CTAEA add-on (12 tasks total, existing results are skipped)
 #SBATCH --mem=2gb
 #SBATCH --gres=gpu:0
 #SBATCH --mail-type=BEGIN,FAIL,END
@@ -82,31 +70,22 @@
 mkdir -p slurm/slurm_logs_scenario_run
 
 # --------- tunable parameters -----------------------------------------------------------------------------------------------------------------------------
+# Keep these identical to SCENARIO_EVOXBENCH.sbatch -- CTAEA is only
+# comparable to the nsga2/samos cells under the same budget.
 POP_SIZE=${POP_SIZE:-20}
 N_EVALS=${N_EVALS:-1200}
 
-# --------- (scenario, mode, method, handler) task table -----------------------------------------------------------------------------------------
-# Mirrors run_scenario.py's scenarios.SCENARIOS / HANDLERS / DEFAULT_HANDLER
-# -- keep in sync.
+# --------- (scenario, mode) task table ----------------------------------------------------------------------------------------------------------
+METHOD=ctaea
+HANDLER=h4-cdp                        # scenarios.fixed_handler('ctaea', mode), both modes
+
 SCENARIOS_LIST="S1 S2 S3 S4 S5 S6"
 MODES_LIST="hard soft"
-HANDLER_ROW="h1-rejection h2-static_penalty h3-adaptive h4-cdp h5-epsilon h6-DSR b0-as-obj"
-default_handler() {
-    case "$1" in
-        hard) echo h4-cdp ;;
-        soft) echo h2-static_penalty ;;
-    esac
-}
 
 COMBOS=()
 for SCENARIO in $SCENARIOS_LIST; do
     for MODE in $MODES_LIST; do
-        COMBOS+=("${SCENARIO}:${MODE}:random:$(default_handler "$MODE")")
-        for METHOD in nsga2 samos; do
-            for HANDLER in $HANDLER_ROW; do
-                COMBOS+=("${SCENARIO}:${MODE}:${METHOD}:${HANDLER}")
-            done
-        done
+        COMBOS+=("${SCENARIO}:${MODE}")
     done
 done
 
@@ -115,7 +94,7 @@ if [ -z "$TASK_ENTRY" ]; then
     echo "ERROR: SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID has no entry in COMBOS (size ${#COMBOS[@]})" >&2
     exit 1
 fi
-IFS=':' read -r SCENARIO MODE METHOD HANDLER <<< "$TASK_ENTRY"
+IFS=':' read -r SCENARIO MODE <<< "$TASK_ENTRY"
 
 # --------- scratch setup -----------------------------------------------------------------------------------------------------------------------------------
 SCRATCH_DIRECTORY="/local/${SLURM_JOBID}_${SLURM_ARRAY_TASK_ID}"
@@ -133,9 +112,8 @@ RSYNC_SOURCES=(
     experiments2/scenario_run
 )
 
-# Pre-copy any already-computed results for this (scenario, mode, method,
-# handler) so run_scenario.py's own skip-if-exists logic can resume
-# mid-seed-range.
+# Pre-copy any already-computed results for this (scenario, mode) so
+# run_scenario.py's own skip-if-exists logic can resume mid-seed-range.
 _SRC="results2/scenario_run/${SCENARIO}/${MODE}/${METHOD}/${HANDLER}"
 [ -d "$_SRC" ] && RSYNC_SOURCES+=("$_SRC")
 

@@ -22,6 +22,7 @@ import pandas as pd
 
 import _style as ST          # sets the Agg backend on import
 import _cache as IO
+import _fronts as FR
 import analyzers as AN
 import matplotlib.pyplot as plt
 
@@ -41,12 +42,6 @@ SCENARIOS = [
     ('GPU-latency budget', 'NB201', 'err+params', 'edgegpu_latency',
      "Moderate hardness, limited soft potential. S4's metric pair with roles "
      'swapped: the assignment, not the metrics, sets the geometry.'),
-    ('GPU-latency budget', 'MoSegNAS', 'err+params', 'h1_latency',
-     'Surrogate counterpart to S5 at matched correlation, but with no soft '
-     'potential at all.'),
-    ('GPU-latency budget', 'MoSegNAS', 'err+params', 'h2_latency',
-     'Like S6 but strongly correlated with an objective, so feasibility aligns '
-     'with optimisation pressure.'),
     ('Accelerator intensity', 'NB201', 'err+eyeriss_latency', 'eyeriss_arithmetic_intensity',
      "The suite's only lower-bound budget, a utilisation floor: hard, but the "
      'low-intensity side is already dominated.'),
@@ -94,6 +89,10 @@ BUDGET_COLOR = {'compute': '#56B4E9', 'latency': '#E69F00',
                 'accelerator intensity': '#009E73', 'energy': '#CC79A7'}
 BUDGET_ORDER = ['compute', 'latency', 'energy', 'accelerator intensity']
 
+# spaces excluded from the suite, and therefore from the candidate cloud too --
+# showing candidates that are not under consideration would misread as options.
+EXCLUDE_SPACES = {'MoSegNAS'}
+
 
 def _budget(constraint):
     c = constraint.lower()
@@ -112,15 +111,23 @@ def _disp(name):
     return DISPLAY.get(name, name.replace('_', ' '))
 
 
+def _fig_name(c):
+    return FIG_NAME.get(c, _disp(c))
+
+
 def _disp_objs(objset):
     return ', '.join(_disp(o) for o in objset.split('+'))
 
 
-def _surv(hv, objset, c, pct):
+def _hv_col(hv, objset, c, pct, col):
     if hv is None:
         return np.nan
     m = hv[(hv.objset == objset) & (hv.constraint == c) & (hv.percentile == pct)]
-    return float(m['survival_frac'].iloc[0]) if len(m) else np.nan
+    return float(m[col].iloc[0]) if len(m) else np.nan
+
+
+def _surv(hv, objset, c, pct):
+    return _hv_col(hv, objset, c, pct, 'survival_frac')
 
 
 def _val(region, objset, c, pct):
@@ -137,9 +144,32 @@ def _maybe_csv(path):
     return pd.read_csv(path) if os.path.exists(path) else None
 
 
+def _ref_front_size(full_root, space, objset, cache):
+    """Size of the unconstrained reference front |PF|, the denominator behind
+    survival_frac. Not stored by (e), so it is recomputed here along exactly
+    (e)'s path -- same normalization, and the same deterministic FRONT_CAP
+    subsample on non-exact spaces -- or the two would not be comparable."""
+    key = (space, objset)
+    if key in cache:
+        return cache[key]
+    sdir = os.path.join(full_root, space)
+    try:
+        manifest = json.load(open(os.path.join(sdir, 'manifest.json')))
+        data = IO.apply_row_filter(pd.read_parquet(os.path.join(sdir, 'samples.parquet')), space)
+    except (OSError, ValueError):
+        cache[key] = np.nan
+        return np.nan
+    cols = list(objset.split('+'))
+    Fn, _ = AN._normalize_min(data[cols].to_numpy(float), cols, manifest['families'])
+    exact = manifest.get('complete', manifest['enumerable'])
+    idx = np.arange(len(Fn)) if exact else AN._subsample(len(Fn), AN.FRONT_CAP)
+    cache[key] = int(len(FR.first_front(Fn[idx])))
+    return cache[key]
+
+
 def build(full_root, paper_dir):
     matrix = pd.read_csv(os.path.join(full_root, 'eligibility_matrix.csv'))
-    hv_cache, rg_cache = {}, {}
+    hv_cache, rg_cache, pf_cache = {}, {}, {}
     rows = []
     for i, (theme, space, objset, constraint, looking_for) in enumerate(SCENARIOS):
         hit = matrix[(matrix.space == space) & (matrix.objective_set == objset)
@@ -160,6 +190,13 @@ def build(full_root, paper_dir):
         for kind, pct, label, _ in _PCTS:
             row[label] = (1.0 - _surv(hv, objset, constraint, pct)) if kind == 'hard' \
                 else _val(rg, objset, constraint, pct)
+        # realised feasible fraction: nominally 10%, but a tied constraint
+        # sweeps in extra architectures at the threshold (S4 lands at 14%).
+        row['feas@10%'] = _hv_col(hv, objset, constraint, 10, 'feas_ratio')
+        # front sizes: |PF| also sets the granularity of hard@10%, which can
+        # only move in steps of 1/|PF|.
+        row['n_ref_front'] = _ref_front_size(full_root, space, objset, pf_cache)
+        row['n_front@10%'] = _hv_col(hv, objset, constraint, 10, 'n_front')
         row['rho'] = r['max_rho_with_objective']
         row['what_we_look_for'] = looking_for
         rows.append(row)
@@ -176,7 +213,8 @@ def build(full_root, paper_dir):
     # per-scenario headline figures (one panel per S1..S8)
     _plot_scenario_regions(df, full_root, os.path.join(paper_dir, 'headline2_region.png'))
     _plot_scenario_curves(df, full_root, os.path.join(paper_dir, 'headline2_curves.png'))
-    show = ['theme', 'kind', 'space'] + [l for _, _, l, _ in _PCTS] + ['rho']
+    show = ['theme', 'kind', 'space', 'feas@10%', 'n_ref_front', 'n_front@10%'] \
+        + [l for _, _, l, _ in _PCTS] + ['rho']
     print(df[show].to_string(index=False))
     print(f'\nWrote scenarios.{{csv,tex}} + scenarios_map{{,_context}}.png to {paper_dir}')
     return df
@@ -186,7 +224,8 @@ def _background(matrix, exclude):
     """Single-constraint, two-objective candidate scenarios not in the suite,
     placed on the same (hardness, payoff) axes for the greyed context layer."""
     m = matrix[(matrix.n_constraints == 1)
-               & (matrix.objective_set.str.count(r'\+') == 1)].copy()
+               & (matrix.objective_set.str.count(r'\+') == 1)
+               & (~matrix.space.isin(EXCLUDE_SPACES))].copy()
     keys = list(zip(m.space, m.objective_set, m.constraint))
     m = m[[k not in exclude for k in keys]]
     m['hardness'] = 1.0 - m['survival_frac_10pct']
@@ -239,7 +278,7 @@ def _plot_scenario_regions(df, full_root, path):
                 drawn = True
         if not drawn:
             ax.text(0.5, 0.5, 'no region cache', ha='center', va='center', transform=ax.transAxes)
-        ax.set_title(f"{r['sid']}: {space}\n{r['objectives_disp']} | {FIG_NAME.get(c, _disp(c))}",
+        ax.set_title(f"{r['sid']}: {space}\n{r['objectives_disp']} | {_fig_name(c)}",
                      fontsize=8.5)
     fig.suptitle('Scenario region classification at a 10% budget', fontsize=13)
     ST.apply_row_spacing(fig, nrow)
@@ -287,20 +326,25 @@ def _write_tex(df, path):
     # Theme is a column-spanning subheader row (not a column); the whole tabular
     # is wrapped in \resizebox so it fits the text width. Needs graphicx +
     # booktabs. Switch \textwidth -> \linewidth if the target is single-column.
-    metric_heads = [h for _, _, _, h in _PCTS] + [r'$\rho_{max}$']
+    metric_heads = [r'feas$_{10}$', r'$|PF|$', r'$|PF_{10}|$'] \
+        + [h for _, _, _, h in _PCTS] + [r'$\rho_{max}$']
     heads = ['', 'Kind', 'Space', 'Objectives', 'Constraint'] + metric_heads \
         + [r'Scenario description']
     ncol = len(heads)
-    colspec = 'lll' + 'p{1.2cm}p{2.6cm}' + 'r' * len(metric_heads) + 'p{6cm}'
+    colspec = 'lll' + 'p{1.2cm}p{3.4cm}' + 'r' * len(metric_heads) + 'p{6cm}'
     lines = [
         r'\begin{table*}[htbp]', r'\centering',
         r'\caption{Selected constraint handling scenarios, grouped by budget. All '
-        r'metrics are at a 10\% feasibility budget: $\mathrm{hard}_{10}$ is the '
+        r'metrics are at a 10\% feasibility budget, each constraint held at its own '
+        r'10th percentile: $\mathrm{feas}_{10}$ is the resulting share of the space '
+        r'that is actually feasible, $|PF|$ the size of the unconstrained Pareto '
+        r'front and $|PF_{10}|$ that of the constrained one (so $\mathrm{hard}_{10}$ '
+        r'moves only in steps of $1/|PF|$), $\mathrm{hard}_{10}$ the '
         r'share of the unconstrained Pareto front the constraint removes, '
         r'$\mathrm{soft}_{10}$ the share of architectures that are infeasible yet '
         r'undominated by the feasible front, and $\rho_{max}$ the largest absolute '
-        r'Spearman correlation between the constraint and an objective. For each '
-        r'scenario, a small description states what it tests.}',
+        r'Spearman correlation between a constraint and an objective. '
+        r'For each scenario, a small description states what it tests.}',
         r'\label{tab:scenarios-suite}',
         r'\resizebox{\textwidth}{!}{%',
         r'\begin{tabular}{' + colspec + '}', r'\toprule',
@@ -315,6 +359,10 @@ def _write_tex(df, path):
             prev = r['theme']
         cells = [r['sid'], _tex_escape(r['kind']), _tex_escape(r['space']),
                  _tex_escape(r['objectives_disp']), _tex_escape(r['constraint_disp'])]
+        f = r['feas@10%']
+        cells.append(f'{100 * float(f):.1f}\\%' if pd.notna(f) else '--')
+        for label in ('n_ref_front', 'n_front@10%'):
+            cells.append(f'{int(r[label])}' if pd.notna(r[label]) else '--')
         for _, _, label, _h in _PCTS:
             v = r[label]
             cells.append(f'{float(v):.2f}' if pd.notna(v) else '--')
@@ -355,7 +403,7 @@ def _plot_map(df, path, bg=None):
     pts = []
     for _, g in d.groupby(['space', '_hx', '_py'], sort=False):
         g = g.sort_values('rho')
-        cons = ' / '.join(FIG_NAME.get(c, _disp(c)) for c in g['constraint'])
+        cons = ' / '.join(_fig_name(c) for c in g['constraint'])
         pts.append(dict(space=g['space'].iloc[0], budget=_budget(g['constraint'].iloc[0]),
                         kind=g['kind'].iloc[0], x=g['hardness'].iloc[0], y=g['payoff'].iloc[0],
                         cons=cons, obj=g['objectives_disp'].iloc[0], sids=set(g['sid']),

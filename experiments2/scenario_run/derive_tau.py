@@ -1,10 +1,9 @@
 """Derive tau@10% feasibility, per-scenario HV reference points, and the h2
-static-penalty weight for S1-S8.
+static-penalty weight for S1-S6.
 
 Auditable regeneration: reads from results2/constraint_analysis/full/<space>,
-applies normalization as ConstrainedEvoXBenchProblem sees it, filters MoSegNAS
-x0!=0, and computes tau, ref_point, and penalty per scenario. Use --check to
-verify against scenarios.py.
+applies normalization as ConstrainedEvoXBenchProblem sees it, and computes tau,
+ref_point, and penalty per scenario. Use --check to verify against scenarios.py.
 """
 
 import argparse
@@ -32,9 +31,7 @@ SCENARIOS = {
     'S3': ('MobileNetV3', 'in1kmop',    9, ('err', 'flops'),           'params'),
     'S4': ('NB201',       'c10mop',     7, ('err', 'edgegpu_latency'), 'params'),
     'S5': ('NB201',       'c10mop',     7, ('err', 'params'),          'edgegpu_latency'),
-    'S6': ('MoSegNAS',    'citysegmop', 15, ('err', 'params'),         'h1_latency'),
-    'S7': ('MoSegNAS',    'citysegmop', 15, ('err', 'params'),         'h2_latency'),
-    'S8': ('NB201',       'c10mop',     7, ('err', 'eyeriss_latency'), 'eyeriss_arithmetic_intensity'),
+    'S6': ('NB201',       'c10mop',     7, ('err', 'eyeriss_latency'), 'eyeriss_arithmetic_intensity'),
 }
 
 NAME_MAP = {
@@ -44,8 +41,6 @@ NAME_MAP = {
                     'eyeriss_arithmetic_intensity': 'Eyeriss AI'},
     'ResNet-50D':  {'err': 'Err.', 'params': '#Params', 'flops': 'FLOPs'},
     'MobileNetV3': {'err': 'Err.', 'params': '#Params', 'flops': 'FLOPs'},
-    'MoSegNAS':    {'err': 'Err.', 'params': '#Params', 'h1_latency': 'H1 Lat.',
-                    'h2_latency': 'H2 Lat.'},
 }
 
 PCT = 10.0
@@ -57,8 +52,6 @@ def eval_space_frame(space):
     ConstrainedEvoXBenchProblem sees it), plus the manifest metric order."""
     mf = json.load(open(os.path.join(FULL, space, 'manifest.json')))
     df = pd.read_parquet(os.path.join(FULL, space, 'samples.parquet'))
-    if space == 'MoSegNAS':
-        df = df[df.x0 != 0].reset_index(drop=True)
     cols = list(mf['metrics'])
     F = df[cols].to_numpy(float)
     suite, pid = mf['suite_pid']

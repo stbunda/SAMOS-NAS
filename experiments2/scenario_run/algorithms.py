@@ -1,7 +1,7 @@
 """experiments2/scenario_run/algorithms.py -- algorithm builder for the
-scenario_run constrained-NAS campaign (S1-S8, scenarios.py).
+scenario_run constrained-NAS campaign (S1-S6, scenarios.py).
 
-Three methods, fully native to experiments2/ (no experiments/ import --
+Four methods, fully native to experiments2/ (no experiments/ import --
 see _problems.py for the ported problem classes):
   random : RandomGA -- pure random search, exact evaluation, no selection
            pressure. Runs only the scenario default handler
@@ -24,6 +24,13 @@ see _problems.py for the ported problem classes):
            problem would write penalized/relaxed F straight into the
            population the callback records. See the per-handler classes
            below for how each one stays survival-only.
+  ctaea  : pymoo CTAEA (Li et al.) over the same real problem. Like random it
+           runs ONE handler slot (scenarios.fixed_handler -> 'h4-cdp' in both
+           modes): its constraint handling is intrinsic -- the CA/DA archive
+           pair and the CV-first restricted-mating tournament -- with no seam
+           to swap another handler into. It is a constrained-MOEA reference
+           point for the nsga2/samos x h4-cdp cells, not a fourth row of the
+           handler grid.
 
 build(method, handler, sid, benchmark, seed, pop_size, ...) ->
     (algorithm, copy_algorithm, handler_state)
@@ -42,7 +49,7 @@ bounds_with_override, so MoSegNAS gets x0>=1
 (scenarios.SEARCH_SPACE_LB_OVERRIDE) on both the problem's xl/xu and the
 nsga2/samos operators.
 
-b0-as-obj on a floor constraint (S8, scenarios.constr_sense == -1): every
+b0-as-obj on a floor constraint (S6, scenarios.constr_sense == -1): every
 EvoXBench objective is minimized, so appending the raw constrained metric as
 an extra objective optimizes AWAY from feasibility when higher is better.
 B0ObjectiveProblem/B0SurrogateProblemEvox (_problems.py) negate that column
@@ -65,6 +72,7 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
 import numpy as np
+from pymoo.algorithms.moo.ctaea import CTAEA
 from pymoo.algorithms.moo.nsga2 import NSGA2, RankAndCrowding
 from pymoo.core.population import Population
 from pymoo.core.survival import Survival
@@ -72,6 +80,7 @@ from pymoo.operators.survival.rank_and_crowding.classes import get_crowding_func
 from pymoo.util.display.multi import MultiObjectiveOutput
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from pymoo.util.randomized_argsort import randomized_argsort
+from pymoo.util.ref_dirs import get_reference_directions
 
 import scenarios as SC
 from _problems import B0ObjectiveProblem, B0SurrogateProblemEvox, _ConstraintsAsPenaltyMO
@@ -131,7 +140,7 @@ def build_problem(sid, benchmark, mode, handler=None):
     for every handler except 'b0-as-obj' (B0ObjectiveProblem: unconstrained,
     scoring objectives + the constrained metric as an extra objective, no G
     -- mirrors run_constraint.run_single's branch). ``mode`` ('hard'/'soft')
-    sets the evaluability gate; sense comes from scenarios.constr_sense (S8
+    sets the evaluability gate; sense comes from scenarios.constr_sense (S6
     is a floor). Bounds are always overridden via bounds_with_override so a
     plain-NSGA2 run and its outer problem never disagree on MoSegNAS's
     x0>=1 floor."""
@@ -177,6 +186,33 @@ class _HardGateNSGA2(HardGateMixin, NSGA2):
     def _initialize_advance(self, infills=None, **kwargs):
         # Count the DOE too: advance_after_initial_infill routes the initial
         # population through _initialize_advance, never _advance.
+        if infills is not None:
+            self._gate_keep(infills)
+        super()._initialize_advance(infills=infills, **kwargs)
+
+    def _advance(self, infills=None, **kwargs):
+        if infills is not None:
+            self._gate_keep(infills)
+        super()._advance(infills=infills, **kwargs)
+
+
+class _HardGateCTAEA(HardGateMixin, CTAEA):
+    """pymoo CTAEA plus the same evaluated/feasible counters _HardGateNSGA2
+    adds to NSGA2, and for exactly the same reason: ``_gate_keep``'s filtered
+    return value is discarded, so the CA/DA survival dynamics are untouched
+    and only the counters (plus the hard-mode X-log the run pickles) are
+    populated. In hard mode the outer ConstrainedEvoXBenchProblem already
+    masks infeasible F to inf, which CTAEA's CADASurvival degrades to
+    CV-ordering on (its CA update splits on CV, and an all-inf F column is a
+    tie in the non-dominated sort of the CV sub-problem) -- the death-penalty
+    semantics every other method sees here.
+    """
+
+    def __init__(self, *args, hard_gate=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._init_hard_gate(hard_gate)
+
+    def _initialize_advance(self, infills=None, **kwargs):
         if infills is not None:
             self._gate_keep(infills)
         super()._initialize_advance(infills=infills, **kwargs)
@@ -478,11 +514,11 @@ def _build_delegated(method, handler, sid, benchmark, seed, pop_size, mode,
     if method == 'random':
         # Pure random search: no surrogate, no selection pressure, no
         # replacement -- runs only the scenario/mode default.
-        if handler != SC.DEFAULT_HANDLER[mode]:
+        if handler != SC.fixed_handler('random', mode):
             raise ValueError(
                 f"random has no selection pressure for a handler to act on -- it "
-                f"only runs the scenario default ({SC.DEFAULT_HANDLER[mode]!r} for "
-                f"mode={mode!r}), got handler={handler!r}")
+                f"only runs the scenario default ({SC.fixed_handler('random', mode)!r} "
+                f"for mode={mode!r}), got handler={handler!r}")
         return RandomGA(pop_size=pop_size, sampling=sampler, eliminate_duplicates=elim,
                         hard_gate=gated), True, handler_state
 
@@ -718,6 +754,50 @@ def _build_nsga2(handler, sid, benchmark, seed, pop_size, mode, n_gen,
     raise ValueError(f'Unknown handler for nsga2: {handler!r}')
 
 
+def _build_ctaea(handler, sid, benchmark, seed, pop_size, mode):
+    """pymoo CTAEA over the real ConstrainedEvoXBenchProblem, with this
+    campaign's integer operators (same sampler/crossover/mutation/dedup as
+    _build_nsga2, so ctaea searches the same space with the same variation as
+    every other method) in place of CTAEA's real-valued SBX/PM defaults.
+
+    Constraint handling is intrinsic, so only the scenarios.fixed_handler slot
+    is accepted -- passing any other handler is a wiring bug, not a
+    configuration.
+
+    Reference directions come from the Riesz s-energy generator rather than
+    Das-Dennis: CTAEA derives ``pop_size = len(ref_dirs)``, and only the
+    energy generator returns EXACTLY the requested count for any n_obj (the
+    Das-Dennis simplex lattice can only hit the counts its partition number
+    happens to produce -- 21, not 20, for 3 objectives). Seeding it off the
+    run seed keeps the directions reproducible per run.
+
+    output=MultiObjectiveOutput(): a fresh instance per build for the same
+    shared-default-argument reason documented in _build_nsga2.
+    """
+    expected = SC.fixed_handler('ctaea', mode)
+    if handler != expected:
+        raise ValueError(
+            f"ctaea's constraint handling is intrinsic (CA/DA archives + CV-first "
+            f'restricted mating) -- there is no seam for a handler to act on, so it '
+            f'only runs the {expected!r} slot, got handler={handler!r}')
+
+    scenario = SC.SCENARIOS[sid]
+    lb_override = SC.SEARCH_SPACE_LB_OVERRIDE.get(scenario['space'])
+    xl, xu = bounds_with_override(benchmark, lb_override)
+    ref_dirs = get_reference_directions('energy', len(SC.obj_indices(sid)),
+                                        n_points=pop_size, seed=seed)
+
+    algorithm = _HardGateCTAEA(
+        ref_dirs=ref_dirs, hard_gate=(mode == 'hard'),
+        sampling=EvoxBenchSampler(xl, xu),
+        crossover=IntegerUniformCrossover(prob=0.9),
+        mutation=IntegerPointMutation(xl, xu),
+        eliminate_duplicates=IntegerVectorDuplicateElimination(),
+        seed=seed, output=MultiObjectiveOutput(),
+    )
+    return algorithm, True, {}
+
+
 def build(method, handler, sid, benchmark, seed, pop_size, *,
           mode='hard', n_gen=30, n_doe=None, n_infill=None, n_gen_inner=20,
           inner_pop_size=None, penalty=1.0, resample_cap=10):
@@ -726,9 +806,9 @@ def build(method, handler, sid, benchmark, seed, pop_size, *,
 
     Parameters
     ----------
-    method : 'random' | 'nsga2' | 'samos'
+    method : 'random' | 'nsga2' | 'ctaea' | 'samos'
     handler : one of scenarios.HANDLERS
-    sid : scenario id, e.g. 'S1'..'S8' (scenarios.SCENARIOS)
+    sid : scenario id, e.g. 'S1'..'S6' (scenarios.SCENARIOS)
     benchmark : the evoxbench benchmark instance for sid's (suite, pid)
     mode : 'hard' (evaluability gate) | 'soft' (archive infeasible with real
         F/G) -- orthogonal to sid; scenarios.py shares tau across both.
@@ -750,4 +830,6 @@ def build(method, handler, sid, benchmark, seed, pop_size, *,
     if method == 'nsga2':
         return _build_nsga2(handler, sid, benchmark, seed, pop_size, mode,
                              n_gen, penalty, resample_cap)
+    if method == 'ctaea':
+        return _build_ctaea(handler, sid, benchmark, seed, pop_size, mode)
     raise ValueError(f'Unknown method: {method!r}')
