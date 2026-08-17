@@ -125,12 +125,33 @@ class ConstrainedEvoXBenchProblem(Problem):
         constraint metric of 1.0 exceeds every campaign threshold, so
         can't-even-build architectures are gated out too, not laundered into
         a plausible fitness. Default False = ungated behaviour, bit-exact.
+    gate_index, gate_threshold, gate_sense :
+        Gate on ONE metric that need not be a declared constraint. Given
+        these, ``gate`` masks F where ``sense*(metric - T)/T > 0`` for this
+        metric alone, and the violation is published as ``out['G_gate']``
+        (never as G -- nothing may select on it) alongside the unmasked
+        objectives as ``out['F_oracle']``. That separates EVALUABILITY from
+        the declared constraints: a size budget can decide what is observable
+        while a latency constraint stays an ordinary, fully-observed
+        constraint. None (default) = the gate keys on every declared
+        constraint, bit-exact.
+    flip_obj_pos : sequence[int]
+        Output-column positions holding a MAXIMIZE-better metric, mapped
+        ``v -> 1 - v`` so every F column is minimized. Only valid for metrics
+        already normalized to [0, 1] (the tabular c10mop/NB201 spaces).
+        Empty (default) = untouched.
     """
 
     def __init__(self, benchmark, obj_indices, constr_index, threshold,
-                 sense=1, no_norm: bool = False, gate: bool = False, **kwargs):
+                 sense=1, no_norm: bool = False, gate: bool = False,
+                 gate_index=None, gate_threshold=None, gate_sense=1,
+                 flip_obj_pos=(), **kwargs):
         ss = benchmark.search_space
         self.obj_indices  = list(obj_indices)
+        self.gate_index     = None if gate_index is None else int(gate_index)
+        self.gate_threshold = gate_threshold
+        self.gate_sense     = float(gate_sense)
+        self.flip_obj_pos   = list(flip_obj_pos)
         self.constr_indices, self.thresholds, self.senses = \
             _as_constraint_lists(constr_index, threshold, sense)
         # Scalar aliases for the single-constraint campaign path (existing
@@ -170,11 +191,25 @@ class ConstrainedEvoXBenchProblem(Problem):
             if sns < 0:
                 G[~finite[:, self.constr_indices[j]], j] = 1.0
         F_out = F[:, self.obj_indices]
+        for pos in self.flip_obj_pos:
+            F_out[:, pos] = 1.0 - F_out[:, pos]
+
+        if self.gate_index is None:
+            gated = G.max(axis=1) > 0
+        else:
+            g_gate = _violation(F[:, self.gate_index], self.gate_threshold,
+                                self.gate_sense)
+            if self.gate_sense < 0:   # see the floor note above
+                g_gate = np.where(finite[:, self.gate_index], g_gate, 1.0)
+            out['G_gate'] = g_gate
+            out['F_oracle'] = F_out.copy()   # unmasked: the oracle training set
+            gated = g_gate > 0
+
         if self.gate:
             # Hard gate: infeasible F is unobservable -- inf sentinel,
             # see the class docstring. Fancy indexing above returned a copy,
             # so the in-place mask never touches the shared benchmark matrix.
-            F_out[G.max(axis=1) > 0] = np.inf
+            F_out[gated] = np.inf
         out['F'] = F_out
         out['G'] = G
 

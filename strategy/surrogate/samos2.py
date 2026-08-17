@@ -148,6 +148,20 @@ class SAMOS2(Algorithm):
         population carries real G.
     gate_min_doe_feasible : int
         Gated-DOE viability floor (see ``hard_gate``). Default 2.
+    oracle_train_key : str or None
+        Sample-selection-bias counterfactual. When set (and ``hard_gate`` is
+        on), gated individuals still leave the archive, but their objective
+        values are read off this population key and APPENDED to the objective
+        surrogates' training set -- so selection stays gated while the
+        surrogates see the whole evaluated population. The key must carry the
+        unmasked F (the outer problem's own F is inf on gated rows); see
+        ``ConstrainedEvoXBenchProblem``'s ``F_oracle``. None (default) = the
+        realistic behaviour: surrogates train on feasible points only.
+    constr_observable_when_gated : iterable[int] or None
+        Constraint columns still measurable for a gated-out architecture, and
+        so allowed to train their surrogate on the rejection log. None
+        (default) = all of them, correct whenever the gate IS the declared
+        constraint set. See ``_constr_observable``.
     """
 
     _GATE_MAX_DOE_BATCHES = 10   # extra full-n_doe redraws before giving up
@@ -175,6 +189,8 @@ class SAMOS2(Algorithm):
                  hard_gate=False,
                  gate_g_fn=None,
                  gate_min_doe_feasible=2,
+                 oracle_train_key=None,
+                 constr_observable_when_gated=None,
                  **kwargs):
         super().__init__(eliminate_duplicates=False, **kwargs)
         self.sampling                  = sampling
@@ -191,6 +207,10 @@ class SAMOS2(Algorithm):
         self.hard_gate                 = bool(hard_gate)
         self.gate_g_fn                 = gate_g_fn
         self.gate_min_doe_feasible     = int(gate_min_doe_feasible)
+        self.oracle_train_key          = oracle_train_key
+        self.constr_observable_when_gated = (
+            None if constr_observable_when_gated is None
+            else set(int(j) for j in constr_observable_when_gated))
 
         # High-fidelity evaluation counters + rejection log. Counters
         # run gated or not (the callback prefers them over archive-derived
@@ -198,7 +218,9 @@ class SAMOS2(Algorithm):
         self.n_hf_evaluated = 0
         self.n_hf_feasible  = 0
         self._rejected_X    = None   # (n_rej, n_var) float or None
-        self._rejected_G    = None   # (n_rej,) violations, (n_rej, n_constr) for multi, or None
+        self._rejected_G    = None   # (n_rej,) GATE violations, (n_rej, k) for multi, or None
+        self._rejected_Gdecl = None  # (n_rej, n_constr) DECLARED-constraint violations
+        self._rejected_F    = None   # (n_rej, n_obj) unmasked F, oracle arm only
 
         if predict_obj_indices is None:
             if len(surrogates) > 1:
@@ -252,16 +274,35 @@ class SAMOS2(Algorithm):
 
     def _violations_of(self, pop):
         """Per-individual violation matrix (n, n_constr) for the
-        gate/counters: the population's own G columns when the outer problem
-        defines them, else ``gate_g_fn`` (b0 rows; may return (n,) or
-        (n, k)), else zeros (unconstrained legacy callers). Feasible <=>
-        every column <= 0."""
+        gate/counters: ``gate_g_fn`` when given, else the population's own G
+        columns, else zeros (unconstrained legacy callers). Feasible <=>
+        every column <= 0.
+
+        gate_g_fn wins over G so that EVALUABILITY and the declared
+        constraints can differ -- a run may gate on a size budget while
+        declaring a latency constraint that must NOT cost observability. The
+        b0/b1 rows that introduced gate_g_fn carry no G at all, so their
+        behaviour is unchanged by the precedence.
+        """
+        if self.gate_g_fn is not None:
+            return np.asarray(self.gate_g_fn(pop), dtype=float).reshape(len(pop), -1)
         G = pop.get('G')
         if G is not None and np.asarray(G).size > 0:
             return np.asarray(G, dtype=float).reshape(len(pop), -1)
-        if self.gate_g_fn is not None:
-            return np.asarray(self.gate_g_fn(pop), dtype=float).reshape(len(pop), -1)
         return np.zeros((len(pop), 1))
+
+    def _constr_observable(self, j):
+        """Whether constraint column ``j`` is still measurable for a GATED-OUT
+        architecture, and may therefore train its surrogate on the rejection
+        log. Default (None) = all columns, which is right whenever the gate IS
+        the declared constraint set: an architecture rejected for violating a
+        constraint has, by construction, a known violation of it. Once the
+        gate keys on a different metric that stops holding -- a model too large
+        to run has an observable size but no measurable latency -- and the
+        unmeasurable columns must be listed out, or the constraint surrogate
+        silently trains on values the run could never have seen."""
+        return (self.constr_observable_when_gated is None
+                or j in self.constr_observable_when_gated)
 
     def _gate_merge(self, infills):
         """Count every evaluated infill, then merge into the archive -- all
@@ -290,6 +331,20 @@ class SAMOS2(Algorithm):
                     rg = rg[:, 0]
                 self._rejected_X = rx if self._rejected_X is None else np.vstack([self._rejected_X, rx])
                 self._rejected_G = rg if self._rejected_G is None else np.concatenate([self._rejected_G, rg], axis=0)
+                if self.oracle_train_key is not None:
+                    rf = np.asarray(rejected.get(self.oracle_train_key), dtype=float
+                                    ).reshape(len(rejected), -1)
+                    self._rejected_F = rf if self._rejected_F is None else np.vstack([self._rejected_F, rf])
+                # Declared-constraint violations, logged separately from the
+                # gate violation above: once the gate keys on a metric that is
+                # not a declared constraint (gate_g_fn), the two have different
+                # widths and only THIS one is column-aligned with
+                # constr_surrogate.
+                gd = rejected.get('G')
+                if gd is not None and np.asarray(gd).size > 0:
+                    gd = np.asarray(gd, dtype=float).reshape(len(rejected), -1)
+                    self._rejected_Gdecl = gd if self._rejected_Gdecl is None \
+                        else np.vstack([self._rejected_Gdecl, gd])
 
         self._archive = Population.merge(self._archive, kept)
         self._add_to_archive_keys(infills)   # kept AND rejected: never re-propose
@@ -377,6 +432,13 @@ class SAMOS2(Algorithm):
         # 1. Fit one surrogate per predicted objective (matching column order
         #    with predict_obj_indices, not positionally).
         X_train, F_train = self._training_set(X_arc, F_arc)
+        # Oracle arm: append the gated-out points with their true (unmasked)
+        # objectives, so the surrogates see the whole evaluated population
+        # while the archive stays gated. This is the counterfactual the
+        # sample-selection-bias experiment measures against, never realistic.
+        if self.oracle_train_key is not None and self._rejected_F is not None:
+            X_train = np.vstack([X_train, self._rejected_X])
+            F_train = np.vstack([F_train, self._rejected_F])
         for surrogate, orig_idx in zip(self.surrogates, self.predict_obj_indices):
             surrogate.fit(X_train, F_train[:, orig_idx])
 
@@ -392,10 +454,7 @@ class SAMOS2(Algorithm):
         # failed IS observable, their objective values are not.
         if self.constr_surrogate is not None:
             G_arc = self._archive.get('G').reshape(len(self._archive), -1)
-            rej_G = None
-            if self.hard_gate and self._rejected_X is not None:
-                rej_G = np.asarray(self._rejected_G, dtype=float
-                                   ).reshape(len(self._rejected_X), -1)
+            rej_G = self._rejected_Gdecl if self.hard_gate else None
             surr_list = (self.constr_surrogate
                          if isinstance(self.constr_surrogate, (list, tuple))
                          else [self.constr_surrogate])
@@ -403,7 +462,7 @@ class SAMOS2(Algorithm):
                 if surrogate is None:
                     continue
                 X_c, g_c = X_arc, G_arc[:, j]
-                if rej_G is not None:
+                if rej_G is not None and self._constr_observable(j):
                     X_c = np.vstack([X_c, self._rejected_X])
                     g_c = np.concatenate([g_c, rej_G[:, j]])
                 surrogate.fit(X_c, g_c)

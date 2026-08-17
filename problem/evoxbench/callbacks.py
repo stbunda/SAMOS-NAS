@@ -235,7 +235,7 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
 
     def __init__(self, benchmark, obj_indices, constr_index, threshold,
                  sense=1, ref_point=None, no_norm: bool = False,
-                 compute_indicators: bool = True) -> None:
+                 compute_indicators: bool = True, flip_obj_pos=()) -> None:
         # Deliberately bypass EvoxBenchCallback.__init__: it sizes the
         # ref-point / Pareto front to benchmark.evaluator.n_objs, which is
         # wrong here since the search objectives are the *reduced*
@@ -245,6 +245,11 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
         self.no_norm            = no_norm
         self.compute_indicators = compute_indicators
         self.obj_indices        = list(obj_indices)
+        # Objective positions the outer problem minimizes as 1 - v (a
+        # maximize-better metric). The indicator must be measured in the same
+        # space the run searched, so the same flip is applied to the
+        # true-eval archive below -- and to the reference front here.
+        self.flip_obj_pos       = list(flip_obj_pos)
         self.constr_indices     = [int(i) for i in np.atleast_1d(constr_index)]
         self.thresholds         = [float(t) for t in np.atleast_1d(threshold)]
         assert len(self.constr_indices) == len(self.thresholds), \
@@ -276,6 +281,8 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
                 pf_norm = benchmark.normalize(pareto_front_raw)
                 pf_norm = np.where(np.isfinite(pf_norm), pf_norm, 1.0)
                 pf_norm = pf_norm[:, self.obj_indices]
+                for pos in self.flip_obj_pos:
+                    pf_norm[:, pos] = 1.0 - pf_norm[:, pos]
                 # Slicing to a subset of columns can un-do non-domination
                 # (a point dominated only via a dropped column re-enters the
                 # front) -- re-filter in the reduced objective space.
@@ -379,6 +386,8 @@ class FeasibilityAwareEvoxBenchCallback(EvoxBenchCallback):
                     feasible_mask &= (sns * (test_obj_full[:, idx] - thr) <= 0)
                 n_feasible    = int(feasible_mask.sum())
                 test_obj_feas = test_obj_full[feasible_mask][:, self.obj_indices]
+                for pos in self.flip_obj_pos:
+                    test_obj_feas[:, pos] = 1.0 - test_obj_feas[:, pos]
                 if len(test_obj_feas) > 0:
                     nd_idx      = NonDominatedSorting().do(test_obj_feas, only_non_dominated_front=True)
                     test_obj_nd = test_obj_feas[nd_idx]
