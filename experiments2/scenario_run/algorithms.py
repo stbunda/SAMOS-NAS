@@ -43,6 +43,12 @@ see _problems.py for the ported problem classes):
            value of handing a surrogate-assisted baseline the constraint at
            all.
 
+One method of the campaign is NOT built here at all: ioc-cobra
+(IOC-SAMO-COBRA) is not a pymoo algorithm -- it drives its own loop, so
+build() raises for it and run_scenario.py branches to _ioccobra.run_ioc_cobra.
+build_problem() below still supplies its outer problem, which is how it shares
+this campaign's single evaluation path.
+
 'b1-unconstrained' is not part of the 7-handler row (scenarios.HANDLERS), but
 nsga2 and samos DO build it on request -- an explicit --handler
 b1-unconstrained, never --all_handlers -- so the same
@@ -114,7 +120,7 @@ from _problems import (
     UnconstrainedGatedProblem,
     _ConstraintsAsPenaltyMO,
 )
-from _ssansga2 import ScenarioSSANSGA2
+from _ssansga2 import ScenarioSSANSGA2, ScenarioSSANSGA2Stock
 from problem.evoxbench.constrained_problem import (
     ConstrainedEvoXBenchProblem,
     ConstrainedSurrogateProblemEvox,
@@ -954,9 +960,16 @@ def _build_ctaea(handler, sid, benchmark, seed, pop_size, mode):
 
 
 def _build_ssansga2(handler, sid, benchmark, seed, pop_size, mode, n_doe,
-                     n_infill, n_gen_inner, inner_pop_size):
+                     n_infill, n_gen_inner, inner_pop_size, stock=False):
     """pysamoo SSA-NSGA-II (_ssansga2.ScenarioSSANSGA2) over the same real
     problem, with this campaign's integer operators and XGBoost surrogates.
+
+    ``stock=True`` builds ScenarioSSANSGA2Stock instead: pysamoo's own ezmodel
+    RBF ensemble replaces the XGBoost models and NOTHING else changes, which is
+    the whole content of method 'ssansga2-stock'. The XGBoost models are still
+    constructed and passed -- the stock subclass ignores them -- so that the
+    rng draw sequence, and therefore every other seeded decision in the run,
+    stays identical between the two methods at a given seed.
 
     Budget knobs are taken from the same defaults as method 'samos'
     (n_doe = n_infill = pop_size, inner GA of pop_size*10 for n_gen_inner
@@ -978,10 +991,11 @@ def _build_ssansga2(handler, sid, benchmark, seed, pop_size, mode, n_doe,
     order method 'samos' uses (objectives first, constraint last), so a given
     seed wires comparable models into both methods.
     """
-    expected = SC.fixed_handlers('ssansga2', mode)
+    method   = 'ssansga2-stock' if stock else 'ssansga2'
+    expected = SC.fixed_handlers(method, mode)
     if handler not in expected:
         raise ValueError(
-            f"ssansga2's seam is what its surrogate models, not how survival ranks "
+            f"{method}'s seam is what its surrogate models, not how survival ranks "
             f'-- it only runs the {expected} slots, got handler={handler!r}')
 
     scenario    = SC.SCENARIOS[sid]
@@ -998,7 +1012,8 @@ def _build_ssansga2(handler, sid, benchmark, seed, pop_size, mode, n_doe,
     constr_model = (XGBoost(100, seed=rng.randint(0, 2**31 - 1))
                     if handler == 'h4-cdp' else None)
 
-    algorithm = ScenarioSSANSGA2(
+    cls = ScenarioSSANSGA2Stock if stock else ScenarioSSANSGA2
+    algorithm = cls(
         obj_models=obj_models, constr_model=constr_model,
         hard_gate=(mode == 'hard'),
         sampling=EvoxBenchSampler(xl, xu),
@@ -1047,7 +1062,16 @@ def build(method, handler, sid, benchmark, seed, pop_size, *,
                              n_gen, penalty, resample_cap)
     if method == 'ctaea':
         return _build_ctaea(handler, sid, benchmark, seed, pop_size, mode)
-    if method == 'ssansga2':
+    if method in ('ssansga2', 'ssansga2-stock'):
         return _build_ssansga2(handler, sid, benchmark, seed, pop_size, mode,
-                                n_doe, n_infill, n_gen_inner, inner_pop_size)
+                                n_doe, n_infill, n_gen_inner, inner_pop_size,
+                                stock=(method == 'ssansga2-stock'))
+    if method == 'ioc-cobra':
+        raise ValueError(
+            "ioc-cobra is not a pymoo algorithm -- IOC-SAMO-COBRA drives its own "
+            'loop (COBYLA over an RBF infill criterion) and never reaches '
+            'minimize(), so there is nothing for build() to return. '
+            'run_scenario.run_single branches to _ioccobra.run_ioc_cobra instead; '
+            'build_problem() above is still the right way to get its outer '
+            'problem.')
     raise ValueError(f'Unknown method: {method!r}')

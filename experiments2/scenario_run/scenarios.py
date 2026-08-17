@@ -103,7 +103,8 @@ EXTRA_HANDLER_SLOTS = ['b1-unconstrained']
 
 ALL_HANDLERS = HANDLERS + EXTRA_HANDLER_SLOTS
 
-METHODS = ['random', 'nsga2', 'ctaea', 'ssansga2', 'samos']
+METHODS = ['random', 'nsga2', 'ctaea', 'ssansga2', 'ssansga2-stock', 'ioc-cobra',
+           'samos']
 
 DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-static_penalty'}
 
@@ -128,10 +129,26 @@ DEFAULT_HANDLER = {'hard': 'h4-cdp', 'soft': 'h2-static_penalty'}
 #              not modelled or seen at all). That pair is the whole point of
 #              including it -- it isolates "does handing a surrogate-assisted
 #              baseline the constraint help?" at fixed algorithm and budget.
+#   ssansga2-stock : the same two slots, same reason. It is ssansga2 with
+#              pysamoo's own ezmodel RBF ensemble in place of this campaign's
+#              XGBoost surrogate and nothing else changed, so the pair
+#              (ssansga2, ssansga2-stock) isolates that substitution.
+#   ioc-cobra : IOC-SAMO-COBRA (de Winter et al.), the RBF-surrogate
+#              constrained multi-objective optimizer vendored in
+#              strategy/algorithm/ioc_samo_cobra. Its constraint handling is
+#              intrinsic in the same sense ctaea's is -- one RBF per constraint,
+#              a self-adapting epsilon margin on the predicted violation, and a
+#              feasibility-first Pareto filter, which IS constraint domination
+#              by another name -- so it is filed under 'h4-cdp' in both modes.
+#              It is the non-evolutionary surrogate-based reference point:
+#              samos and ssansga2 wrap a GA around their surrogates, COBRA
+#              replaces the GA with a COBYLA search of an infill criterion.
 FIXED_HANDLER_METHODS = {
     'random': None,
     'ctaea': ['h4-cdp'],
     'ssansga2': ['h4-cdp', 'b1-unconstrained'],
+    'ssansga2-stock': ['h4-cdp', 'b1-unconstrained'],
+    'ioc-cobra': ['h4-cdp'],
 }
 
 SEARCH_SPACE_LB_OVERRIDE = {'MoSegNAS': {0: 1}}

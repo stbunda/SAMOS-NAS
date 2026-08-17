@@ -27,9 +27,10 @@ instance per scenario). Here the grid is scenario x mode x method x handler:
   handlers  : the 7 in scenarios.HANDLERS, run under BOTH modes (mode does
               not gate which handlers are legal, only the default), plus
               scenarios.EXTRA_HANDLER_SLOTS ('b1-unconstrained'), which is
-              deliberately NOT part of that row -- it exists only as
-              ssansga2's second slot, so it never enters the handler-pair
-              statistics or the per-handler figures' handler axis.
+              deliberately NOT part of that row but IS run by all three of
+              nsga2, samos and ssansga2 -- it is the unconstrained-search
+              floor of the grid, so it appears on the handler axis of every
+              per-handler figure and statistic alongside the seven.
 
 _metrics.py (local module)
 ---------------------------
@@ -110,10 +111,11 @@ Output
                                         diagrams, one panel per metric.
   {output_dir}/tables/critical_difference.tex  mean-rank table with CD and the
                                         Friedman p per scope.
-  {output_dir}/tables/method_comparison.tex   headline eight-row slice
-                                        (random, nsga2/samos under h4-cdp and
-                                        b0-as-obj, ctaea, ssansga2 under
-                                        h4-cdp and b1-unconstrained): final and
+  {output_dir}/tables/method_comparison.tex   headline ten-row slice
+                                        (random, nsga2/samos under h4-cdp,
+                                        b0-as-obj and b1-unconstrained, ctaea,
+                                        ssansga2 under h4-cdp and
+                                        b1-unconstrained): final and
                                         anytime feasible HV, best feasible
                                         accuracy, waste.
   stdout summary table + win/tie/loss blocks.
@@ -725,11 +727,10 @@ def compute_baseline_effect(stat_records, alpha=STATS_ALPHA, min_seeds=STATS_MIN
     per-handler numbers are all in scenario_metrics.csv for anyone who wants
     them.
 
-    ssansga2 contributes its h4-cdp slot here on the same grounds. Its second
-    slot, b1-unconstrained, has no full-row counterpart (nsga2/samos never run
-    it), so it drops out of this family by construction -- the constrained /
-    unconstrained contrast it exists for is read off the headline comparison
-    table's two ssansga2 rows, not from a slot-matched test."""
+    ssansga2 contributes BOTH of its slots here on the same grounds: nsga2 and
+    samos run b1-unconstrained too, so that slot is genuinely slot-matched --
+    the test isolates the algorithm with the constraint hidden from all three,
+    the unconstrained counterpart of the h4-cdp comparison directly above it."""
     by_cell = {}
     for r in stat_records:
         by_cell.setdefault((r['sid'], r['mode']), {}) \
@@ -992,7 +993,7 @@ def plot_trajectory_grids(trajectories, refs, plot_dir, plt):
             leg_ax = axes[len(sids)]
             leg_ax.axis('off')
             handles = [Line2D([0], [0], color=HANDLER_COLOURS.get(h, '#333333'), lw=2, label=h)
-                      for h in SC.HANDLERS if h in seen_handlers]
+                      for h in SC.ALL_HANDLERS if h in seen_handlers]
             for m, h in sorted((x for x in seen_extra if isinstance(x, tuple)),
                                key=_ref_sort_key):
                 colour, ls = _ref_style(m, h)
@@ -1061,7 +1062,7 @@ def plot_attainment_grid(sid, mode, ref, fronts_by_mh, out_png, plt):
     ssansga2) repeated in every subplot as a fixed comparison -- one curve per
     (method, slot), so ssansga2's constrained and unconstrained runs stay
     separate rather than being pooled into one front."""
-    handlers = [h for h in SC.HANDLERS
+    handlers = [h for h in SC.ALL_HANDLERS
                 if any(mh[1] == h and mh[0] in GRID_METHODS for mh in fronts_by_mh)]
     if not handlers:
         return False
@@ -1307,6 +1308,8 @@ COMPARISON_ROWS = [
     ('ssansga2', 'h4-cdp',           r'SSA-NSGA-II (CDP)'),
     ('nsga2',    'b0-as-obj',        r'NSGA-II (b0)'),
     ('samos',    'b0-as-obj',        r'SAMOS (b0)'),
+    ('nsga2',    'b1-unconstrained', r'NSGA-II (unc.)'),
+    ('samos',    'b1-unconstrained', r'SAMOS (unc.)'),
     ('ssansga2', 'b1-unconstrained', r'SSA-NSGA-II (unc.)'),
 ]
 
@@ -1315,7 +1318,9 @@ COMPARISON_ROWS = [
 # different colour in every CD panel and the colour identifies nothing. Each
 # row keeps its method's METHOD_COLOURS hue; the unconstrained rows take a
 # lighter same-family tone of their constrained counterpart, so hue reads as
-# the algorithm and shade as the constraint treatment.
+# the algorithm and shade as the constraint treatment -- and with two
+# unconstrained flavours per full-row method, b0 takes the mid tone and the
+# strictly-unconstrained b1 the lightest.
 COMPARISON_COLOURS = {
     'random':              METHOD_COLOURS['random'],
     'NSGA-II (CDP)':       METHOD_COLOURS['nsga2'],
@@ -1324,6 +1329,8 @@ COMPARISON_COLOURS = {
     'SSA-NSGA-II (CDP)':   REF_SLOT_STYLE[('ssansga2', 'h4-cdp')][0],
     'NSGA-II (b0)':        '#56B4E9',
     'SAMOS (b0)':          '#E69F00',
+    'NSGA-II (unc.)':      '#A6DAF0',
+    'SAMOS (unc.)':        '#F5D08C',
     'SSA-NSGA-II (unc.)':  REF_SLOT_STYLE[('ssansga2', 'b1-unconstrained')][0],
 }
 
@@ -1377,14 +1384,15 @@ def write_method_comparison_table(metrics_rows, tables_dir):
     COMPARISON_METRICS under each mode, cell = mean $\\pm$ std over seeds, best
     per column within a scenario block in bold.
 
-    The row set is a fixed eight-way slice of the campaign grid, not every
-    cell: random as the floor, nsga2/samos under h4-cdp (constrained) and under
-    b0-as-obj (constraint demoted to an ordinary objective), ctaea as the
-    dedicated constrained MOEA, and ssansga2 under both of its slots -- h4-cdp
-    (constraint surrogated, inner CDP) and b1-unconstrained (constraint hidden
-    outright), the campaign's only strictly-unconstrained reference. The five
-    remaining handlers answer a different question (which handler, given a
-    method) and already have their own win/loss table.
+    The row set is a fixed ten-way slice of the campaign grid, not every cell:
+    random as the floor, nsga2/samos under h4-cdp (constrained), b0-as-obj
+    (constraint demoted to an ordinary objective) and b1-unconstrained
+    (constraint hidden outright), ctaea as the dedicated constrained MOEA, and
+    ssansga2 under both of its slots -- h4-cdp (constraint surrogated, inner
+    CDP) and b1-unconstrained. All three b1 rows together are the campaign's
+    unconstrained floor, at fixed algorithm and fixed budget against their own
+    h4-cdp row. The five remaining handlers answer a different question (which
+    handler, given a method) and already have their own win/loss table.
 
     The two b0 rows do NOT respond to mode the same way, which the caption
     states rather than leaving a reader to infer a null result: build_problem
@@ -1474,7 +1482,7 @@ def write_method_comparison_table(metrics_rows, tables_dir):
         acc_true = next((r['best_acc_true'] for r in metrics_rows if r['sid'] == sid
                          and np.isfinite(r.get('best_acc_true', float('nan')))),
                         float('nan'))
-        # best per (mode, metric) column across the six rows, direction-aware
+        # best per (mode, metric) column across the comparison rows, direction-aware
         best = {}
         for mode in modes:
             for key, _hdr, dirn, _dec, _scale in COMPARISON_METRICS:
@@ -2287,10 +2295,10 @@ if __name__ == '__main__':
     p.add_argument('--methods', nargs='+', default=list(SC.METHODS), choices=SC.METHODS)
     p.add_argument('--handlers', nargs='+', default=list(SC.ALL_HANDLERS),
                    choices=SC.ALL_HANDLERS,
-                   help='Handler subset. Defaults to the 7-handler row PLUS the '
-                        'fixed-slot-only b1-unconstrained, so ssansga2 keeps both '
-                        'of its cells; the per-handler figures still key their '
-                        'handler axis off GRID_METHODS only.')
+                   help='Handler subset. Defaults to the 7-handler row PLUS '
+                        'b1-unconstrained, which nsga2, samos and ssansga2 all '
+                        'run as the unconstrained floor; the per-handler figures '
+                        'still key their handler axis off GRID_METHODS only.')
     p.add_argument('--seeds', type=int, nargs='+', default=None,
                    help='Seed subset (default: discover every seed_*.pkl present per cell).')
     p.add_argument('--enum_limit', type=int, default=200_000,

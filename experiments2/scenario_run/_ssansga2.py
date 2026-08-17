@@ -21,10 +21,28 @@ needs and the stock class does not have:
    SBX/PM defaults, which would search a continuous relaxation of the NAS
    space and round only at evaluation time -- a different variation operator
    from every other method in the campaign. ``_infill`` is therefore
-   re-implemented below (same selection logic, verbatim: fit, inner NSGA-II on
-   the surrogate problem, dedup against the archive, k-means + crowding
-   roulette down to ``n_infills``) with the operators threaded through. The
-   inner seed is threaded too, where pysamoo hardcodes ``seed=1``.
+   re-implemented below (same selection logic: fit, inner NSGA-II on the
+   surrogate problem, dedup against the archive, k-means + crowding roulette
+   down to ``n_infills``) with the operators threaded through. The inner seed
+   is threaded too, where pysamoo hardcodes ``seed=1``.
+
+   One deliberate deviation from upstream, see 4.
+
+4. A FLOOR on the infill batch, so ``n_infills`` is a batch size and not just a
+   cap. Upstream returns however many candidates survive the dedup against the
+   archive, which is routinely 1: the inner NSGA-II starts from ``_archive``
+   (``surr_sampling='current'``), and under the hard gate at this campaign's
+   ~10% feasibility that archive stays small, so the inner run collapses onto
+   points already in it. A short batch is not wrong on its own -- the run still
+   gets its full ``n_evals`` -- but it spends that budget one point at a time,
+   which turns a 60-generation run into ~1200 generations and buys up to 20x
+   more surrogate refits and inner GA runs per real evaluation than method
+   'samos'. That breaks the parity algorithms._build_ssansga2 is set up for,
+   where the two surrogate-assisted methods are meant to differ in ALGORITHM
+   and not in inner search per evaluation. The batch is therefore padded with
+   fresh random draws up to ``n_infills``, mirroring SAMOS2._select_infill,
+   which gives both methods 20 evaluations per generation and the same ~60
+   generations for a 1200-evaluation budget.
 
 3. HardGateMixin bookkeeping, with the SAME gate semantics SAMOS2 uses rather
    than the counters-only shape of _HardGateNSGA2/_HardGateCTAEA. Those two can
@@ -60,7 +78,10 @@ from pymoo.optimize import minimize
 from pymoo.util.display.multi import MultiObjectiveOutput
 from pymoo.util.normalization import normalize
 from pymoo.util.roulette import RouletteWheelSelection
+from pysamoo.core.algorithm import MyNormalization
+from pysamoo.core.defaults import DEFAULT_IEQ_CONSTR_MODELS, DEFAULT_OBJ_MODELS
 from pysamoo.core.surrogate import Surrogate
+from pysamoo.core.target import Target
 from sklearn.cluster import KMeans
 
 from _problems import HIDDEN_G_KEY
@@ -72,6 +93,24 @@ from strategy.algorithm.ssansga2 import SSANSGA2
 # that point the feasible region is too small for random initialization and a
 # silent infinite redraw loop would be the only alternative.
 _GATE_MAX_DOE_BATCHES = 20
+
+# Kriging variants dropped from pysamoo's stock objective ensemble. Target
+# model selection cross-validates every candidate on the whole archive, and
+# Kriging is O(n^3) there: measured at n_var=25, one validate is 4.8s at an
+# archive of 20 but 178s at 100, against 0.35s/2.2s for the 32 RBF variants,
+# and this campaign's archive reaches ~1200. The RBF set alone is what
+# defaults.DEFAULT_OBJ_MODELS lists uncommented anyway.
+_STOCK_DROP_MODEL_PREFIX = 'kriging'
+
+# Feasible-DOE floor for the stock ensemble, above ScenarioSSANSGA2's 2.
+# pysamoo selects its model ONCE, in _initialize_advance, by 5-fold
+# cross-validating every candidate on the DOE alone -- so the gated DOE is the
+# only training set that selection ever sees. At 2 points the folds degenerate,
+# every indicator comes back NaN, and Target.find_best filters its candidate
+# list down to nothing and raises out of np.random.choice. Measured floor is 3
+# (only the 5-var NATS space fails at 2); 5 is that with margin, and matches
+# Target's own n_folds.
+_STOCK_MIN_DOE_FEASIBLE = 5
 
 
 def _crowding(pop):
@@ -173,7 +212,8 @@ class ScenarioSSANSGA2(HardGateMixin, SSANSGA2):
 
     def _infill(self):
         """pysamoo SSANSGA2._infill with this campaign's integer operators and
-        seed threaded into the inner NSGA-II; selection logic unchanged."""
+        seed threaded into the inner NSGA-II. Selection logic is upstream's,
+        with the batch padded up to n_infills rather than returned short."""
         self.surrogate.fit(self._archive)
         problem = self.surrogate.problem()
 
@@ -193,15 +233,20 @@ class ScenarioSSANSGA2(HardGateMixin, SSANSGA2):
 
         cand = DefaultDuplicateElimination(epsilon=self.surr_eps_elim).do(res.pop, self._archive)
 
-        if len(cand) == 0:
-            # Every inner candidate already sits in the archive. Returning an
-            # empty infill set would advance a generation without consuming any
-            # budget, and n_evals termination would then never be reached --
-            # the run hangs. Fall back to fresh random draws, which also
-            # re-injects diversity, exactly the situation that emptied cand.
-            return self.initialization.do(self.problem, self.n_infills, algorithm=self)
+        if len(cand) < self.n_infills:
+            # Short batch: the inner run converged onto points the archive
+            # already holds. Pad to a full batch with fresh random draws (see 4
+            # in the module docstring) -- this keeps the per-generation budget
+            # equal to method 'samos' and re-injects the diversity whose loss
+            # emptied cand in the first place. Subsumes the len(cand) == 0 case,
+            # where an unpadded empty batch would advance a generation without
+            # consuming budget and n_evals termination would never be reached.
+            found = Population.new(X=cand.get('X')) if len(cand) > 0 else Population.empty()
+            extra = self.initialization.do(self.problem, self.n_infills - len(found),
+                                           algorithm=self)
+            return Population.merge(found, extra)
 
-        if len(cand) <= self.n_infills:
+        if len(cand) == self.n_infills:
             return Population.new(X=cand.get('X'))
 
         # Scale the k-means space to the inner front, falling back to the
@@ -240,3 +285,62 @@ class ScenarioSSANSGA2(HardGateMixin, SSANSGA2):
                 self.opt = Population.empty()
             return
         super()._set_optimum()
+
+
+def _stock_targets(problem):
+    """pysamoo's own default targets (ezmodel RBF ensembles, cross-validated
+    per fit), minus the Kriging variants -- see _STOCK_DROP_MODEL_PREFIX.
+
+    Built here rather than left to SurrogateAssistedAlgorithm._setup only
+    because that method has no seam for dropping models from the ensemble; the
+    normalisation, the per-target split and the model set are otherwise its
+    own. DEFAULT_IEQ_CONSTR_MODELS is already RBF-only, so it passes through.
+    """
+    xl, xu   = problem.bounds()
+    defaults = dict(norm_X=MyNormalization(xl, xu))
+
+    targets = []
+    for m in range(problem.n_obj):
+        models = {k: v for k, v in DEFAULT_OBJ_MODELS(**defaults).items()
+                  if not k.startswith(_STOCK_DROP_MODEL_PREFIX)}
+        targets.append(Target(('F', m), models))
+    for g in range(problem.n_ieq_constr):
+        targets.append(Target(('G', g), DEFAULT_IEQ_CONSTR_MODELS(**defaults)))
+    return targets
+
+
+class ScenarioSSANSGA2Stock(ScenarioSSANSGA2):
+    """ScenarioSSANSGA2 with pysamoo's OWN surrogate instead of this campaign's
+    XGBoost one, and nothing else changed.
+
+    The point is a one-variable ablation of item 1 in the module docstring: the
+    integer operators, the threaded inner seed, the infill pad and the hard-gate
+    bookkeeping are all inherited unchanged, so a difference in outcome against
+    method 'ssansga2' is attributable to the surrogate and not to anything else
+    in the adaptation.
+
+    The constraint surrogate comes from the ensemble too, so the h4-cdp /
+    b1-unconstrained slot pair still works exactly as it does upstream: a G
+    target exists iff the outer problem declares one. ``constr_model`` is
+    therefore ignored here -- ScenarioSSANSGA2.__init__ still takes it, and
+    algorithms._build_ssansga2 still passes it, but only its None-ness picks the
+    slot, and the stock ensemble fills the column.
+
+    One forced deviation beyond the surrogate itself: ``gate_min_doe_feasible``
+    defaults to _STOCK_MIN_DOE_FEASIBLE rather than 2, because pysamoo's model
+    selection cannot run on a 2-point DOE (see that constant). It costs this arm
+    a few more gated-DOE redraws in hard mode, charged to its evaluation budget
+    like every other draw, so hard-mode runs start from a slightly larger and
+    more expensive DOE than method 'ssansga2' does. That is a property of the
+    stock surrogate, not a free extra: report it alongside the comparison.
+    """
+
+    def __init__(self, *args, gate_min_doe_feasible=_STOCK_MIN_DOE_FEASIBLE, **kwargs):
+        super().__init__(*args, gate_min_doe_feasible=gate_min_doe_feasible, **kwargs)
+
+    def _setup(self, problem, **kwargs):
+        # Resumes the MRO one step past ScenarioSSANSGA2, whose _setup body is
+        # the XGBoost override this class exists to undo. Everything else on the
+        # chain (HardGateMixin, then pysamoo) still runs.
+        super(ScenarioSSANSGA2, self)._setup(problem, **kwargs)
+        self.surrogate = Surrogate(problem, _stock_targets(problem))

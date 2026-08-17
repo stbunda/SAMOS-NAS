@@ -35,6 +35,16 @@ deliberate differences:
    S6 is a floor constraint (feasible <=> metric >= tau), not S1-S5's
    ceiling.
 
+4. ONE METHOD DOES NOT GO THROUGH ``minimize``. ioc-cobra (IOC-SAMO-COBRA)
+   drives its own loop -- COBYLA over an RBF infill criterion -- with no pymoo
+   Algorithm, Evaluator or Callback anywhere in it. ``run_single`` branches to
+   _ioccobra.run_ioc_cobra, which runs it against the SAME outer problem,
+   notifies the SAME callback once per pop_size real evaluations, enforces the
+   same n_evals budget exactly, and returns a shim exposing the handful of
+   attributes the recording code below reads off a finished algorithm. Nothing
+   downstream of that branch is method-aware, so its pkl is structurally
+   identical to every other method's.
+
 Output layout
 -------------
   {results_root}/{sid}/{mode}/{method}/{handler}/seed_{N}.pkl
@@ -72,6 +82,7 @@ from pymoo.optimize import minimize
 
 import algorithms as ALG
 import scenarios as SC
+from _ioccobra import run_ioc_cobra
 from problem.evoxbench.callbacks import FeasibilityAwareEvoxBenchCallback
 from problem.evoxbench.utils import get_benchmark
 
@@ -82,7 +93,7 @@ DEFAULT_N_EVALS = 1200
 
 
 def run_single(sid, mode, method, handler, seed, pop_size, n_evals,
-               resample_cap=10, compute_indicators=True):
+               resample_cap=10, inner_pop_size=None, compute_indicators=True):
     """Run one (scenario, mode, method, handler, seed) cell and return the
     self-describing result dict (callback data + meta, and the hard-mode
     rejection log when applicable)."""
@@ -114,22 +125,36 @@ def run_single(sid, mode, method, handler, seed, pop_size, n_evals,
     # that waste evaluations (h1-rejection, hard-gate SAMOS2 DOE retries).
     planned_n_gen = max(1, n_evals // pop_size)
 
-    # penalty reaches h2-static_penalty's fixed weight and h3-adaptive's
-    # starting w0 inside build() -- see algorithms.py.
-    algorithm, copy_algorithm, handler_state = ALG.build(
-        method, handler, sid, benchmark, seed, pop_size, mode=mode,
-        n_gen=planned_n_gen, penalty=penalty, resample_cap=resample_cap)
+    if method == 'ioc-cobra':
+        # IOC-SAMO-COBRA drives its own optimization loop (COBYLA over an RBF
+        # infill criterion), so it never goes through pymoo's minimize /
+        # Evaluator / Callback. _ioccobra.run_ioc_cobra runs it against the same
+        # outer problem, notifies the same callback once per pop_size real
+        # evaluations, and returns a shim carrying the attributes read below --
+        # n_gen, evaluator.n_eval, the hard-gate counters and the rejection log.
+        algo = run_ioc_cobra(problem, callback, seed=seed, n_evals=n_evals,
+                              pop_size=pop_size, ref_point=ref_point,
+                              hard_gate=gated)
+        handler_state = {}
+        data = callback.data
+    else:
+        # penalty reaches h2-static_penalty's fixed weight and h3-adaptive's
+        # starting w0 inside build() -- see algorithms.py.
+        algorithm, copy_algorithm, handler_state = ALG.build(
+            method, handler, sid, benchmark, seed, pop_size, mode=mode,
+            n_gen=planned_n_gen, penalty=penalty, resample_cap=resample_cap,
+            inner_pop_size=inner_pop_size)
 
-    results = minimize(
-        problem=problem, algorithm=algorithm, termination=('n_evals', n_evals),
-        seed=seed, callback=callback, save_history=False, verbose=True,
-        copy_algorithm=copy_algorithm,
-    )
-    data = results.algorithm.callback.data
+        results = minimize(
+            problem=problem, algorithm=algorithm, termination=('n_evals', n_evals),
+            seed=seed, callback=callback, save_history=False, verbose=True,
+            copy_algorithm=copy_algorithm,
+        )
+        data = results.algorithm.callback.data
+        algo = results.algorithm
+
     if handler_state:
         data['handler_state'] = handler_state
-
-    algo = results.algorithm
 
     # Hard mode: persist the rejection log so discarded evaluations are
     # reconstructable post hoc (mirrors run_constraint.py's run_single; a
@@ -157,7 +182,8 @@ def run_single(sid, mode, method, handler, seed, pop_size, n_evals,
         penalty=penalty, mode=mode, gate=gated, method=method, handler=handler,
         seed=seed, pop_size=pop_size, n_evals=n_evals,
         n_gen=int(algo.n_gen or 0), n_eval_realised=int(algo.evaluator.n_eval),
-        resample_cap=resample_cap, config='scenario_run',
+        resample_cap=resample_cap, inner_pop_size=inner_pop_size,
+        config='scenario_run',
     )
     if handler == 'h1-rejection':
         # nsga2's H1RejectionNSGA2 tracks this live; samos/random's delegated
@@ -231,7 +257,8 @@ def main(args):
                       f'mode={mode}) method={method} handler={handler} seed={seed} '
                       f'pop={args.pop_size} n_evals={args.n_evals}')
                 data = run_single(sid, mode, method, handler, seed,
-                                   args.pop_size, args.n_evals)
+                                   args.pop_size, args.n_evals,
+                                   inner_pop_size=args.inner_pop_size)
                 with open(out_path, 'wb') as f:
                     pickle.dump(data, f)
                 print(f'  Saved -> {out_path}  '
@@ -284,6 +311,12 @@ if __name__ == '__main__':
     p.add_argument('--n_evals', type=int, default=DEFAULT_N_EVALS,
                     help='Evaluation budget -- termination is (\'n_evals\', N), '
                          'NOT (\'n_gen\', N) (see module docstring).')
+    p.add_argument('--inner_pop_size', type=int, default=None,
+                    help='Population of the surrogate-side inner GA (samos). '
+                         'Default None = pop_size * 10, i.e. it scales with the '
+                         'outer population. Pin it to hold the surrogate search '
+                         'width fixed while varying pop_size, so a population-size '
+                         'arm changes only the outer population.')
     p.add_argument('--results_root', default=_DEFAULT_RESULTS_ROOT,
                     help='Output root for per-seed pkls. Point at a dedicated '
                          'smoke-test folder when testing -- never write test '
