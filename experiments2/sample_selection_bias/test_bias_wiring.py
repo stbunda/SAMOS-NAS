@@ -29,6 +29,13 @@ from problem.evoxbench.utils import get_benchmark
 POP, N_EVALS = 8, 48
 
 
+def _hw(space, sense=1):
+    """First hardware metric on ``space`` with the given direction, or None.
+    Keeps the checks space-agnostic: NB201 has four (one a floor), the
+    surrogate space has one."""
+    return next((k for k, v in CF.hw(space).items() if v['sense'] == sense), None)
+
+
 def _run(spec, arm, benchmark, seed=0, problem=None):
     """Run one short cell and return the algorithm THE RUN USED. pymoo's
     minimize deep-copies the algorithm by default, so the instance handed in
@@ -43,13 +50,13 @@ def _run(spec, arm, benchmark, seed=0, problem=None):
     return built_problem, res.algorithm
 
 
-def check_legacy_rejection_log(benchmark):
+def check_legacy_rejection_log(benchmark, space):
     """Regression: when the gate IS the declared constraint set (no
     gate_g_fn), the new declared-constraint log must equal the old gate log,
     so every scenario_run cell trains its constraint surrogate on exactly the
     same rows as before."""
     from problem.evoxbench.constrained_problem import ConstrainedEvoXBenchProblem
-    spec = CF.cell('T2', 'constr', 'edgegpu_latency')
+    spec = CF.cell('T2', 'constr', _hw(space), space)
     # The pre-change configuration: gate keyed to the declared constraints
     # (gate_index unset), no gate_g_fn.
     legacy = ConstrainedEvoXBenchProblem(
@@ -68,11 +75,11 @@ def check_legacy_rejection_log(benchmark):
     print(f'  ok  legacy rejection log unchanged ({len(gate_log)} rejected rows)')
 
 
-def check_gate_is_size_only(benchmark):
+def check_gate_is_size_only(benchmark, space):
     """The gate must fire on #Params alone, never on the hardware constraint:
     in the 'obj' role #Params is not even a declared constraint, so a run that
     gated on G would gate on latency instead."""
-    spec = CF.cell('T3', 'obj', 'edgegpu_latency')
+    spec = CF.cell('T3', 'obj', _hw(space), space)
     problem, algorithm = _run(spec, 'feasible', benchmark)
     X = np.round(algorithm._rejected_X).astype(int)
     F = evaluate_metrics(benchmark, X)
@@ -89,10 +96,10 @@ def check_gate_is_size_only(benchmark):
     print(f'  ok  gate keys on #Params only ({len(X)} rejected, {len(arc)} archived)')
 
 
-def check_oracle_arm(benchmark):
+def check_oracle_arm(benchmark, space):
     """The oracle arm must capture finite objective values for gated points;
     the feasible arm must capture none. Nothing else may differ."""
-    spec = CF.cell('T2', 'constr', 'edgegpu_latency')
+    spec = CF.cell('T2', 'constr', _hw(space), space)
     _, feas = _run(spec, 'feasible', benchmark)
     _, orac = _run(spec, 'oracle', benchmark)
     assert feas._rejected_F is None, 'feasible arm captured oracle objectives'
@@ -106,10 +113,10 @@ def check_oracle_arm(benchmark):
           f'feasible arm sees 0')
 
 
-def check_flip(benchmark):
+def check_flip(benchmark, space, floor_hw):
     """A maximize-better objective must be minimized as 1 - v, consistently in
     the problem and in the probe set."""
-    spec = CF.cell('T4', 'constr', 'eyeriss_arithmetic_intensity')
+    spec = CF.cell('T4', 'constr', floor_hw, space)
     assert spec['flip_obj_pos'] == [1], spec['flip_obj_pos']
     problem, _ = RB.build(spec, 'feasible', benchmark, 0, POP)
     X, F_obj, gated = build_probe(benchmark, spec, problem.xl, problem.xu,
@@ -122,11 +129,22 @@ def check_flip(benchmark):
 
 
 def main():
-    benchmark = get_benchmark(CF.SUITE, CF.PID)
-    check_legacy_rejection_log(benchmark)
-    check_gate_is_size_only(benchmark)
-    check_oracle_arm(benchmark)
-    check_flip(benchmark)
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--space', nargs='+', default=list(CF.SPACES),
+                    choices=list(CF.SPACES))
+    args = ap.parse_args()
+    for space in args.space:
+        print(f'--- {space} ---')
+        benchmark = get_benchmark(*CF.suite_pid(space))
+        check_legacy_rejection_log(benchmark, space)
+        check_gate_is_size_only(benchmark, space)
+        check_oracle_arm(benchmark, space)
+        floor_hw = _hw(space, sense=-1)
+        if floor_hw is None:
+            print('  --  no floor metric on this space, flip check not applicable')
+        else:
+            check_flip(benchmark, space, floor_hw)
     print('all checks passed')
 
 

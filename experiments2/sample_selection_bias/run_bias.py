@@ -74,8 +74,6 @@ from strategy.sampler import EvoxBenchSampler
 from strategy.surrogate.models import XGBoost
 from strategy.surrogate.samos2 import SAMOS2
 
-_DEFAULT_RESULTS_ROOT = os.path.join('results2', 'sample_selection_bias')
-
 DEFAULT_POP_SIZE = 20
 DEFAULT_N_EVALS = 1200
 DEFAULT_PROBE_N = 2000
@@ -130,14 +128,14 @@ def build(spec, arm, benchmark, seed, pop_size, inner_pop_size=None):
     return problem, algorithm
 
 
-def run_single(tightness, role, hw, arm, seed, pop_size, n_evals,
+def run_single(space, tightness, role, hw, arm, seed, pop_size, n_evals,
                probe_n=DEFAULT_PROBE_N, inner_pop_size=None):
-    """Run one (tightness, role, hw, arm, seed) cell -> result dict."""
+    """Run one (space, tightness, role, hw, arm, seed) cell -> result dict."""
     np.random.seed(seed)
     random.seed(seed)
 
-    spec = CF.cell(tightness, role, hw)
-    benchmark = get_benchmark(CF.SUITE, CF.PID)
+    spec = CF.cell(tightness, role, hw, space)
+    benchmark = get_benchmark(spec['suite'], spec['pid'])
     problem, algorithm = build(spec, arm, benchmark, seed, pop_size,
                                inner_pop_size)
 
@@ -164,8 +162,8 @@ def run_single(tightness, role, hw, arm, seed, pop_size, n_evals,
                           else np.empty(0))
 
     data['meta'] = dict(
-        tightness=tightness, role=role, hw=hw, arm=arm, seed=seed,
-        space=CF.SPACE, suite=CF.SUITE, pid=CF.PID,
+        space=space, tightness=tightness, role=role, hw=hw, arm=arm, seed=seed,
+        suite=spec['suite'], pid=spec['pid'], exact=spec['exact'],
         obj_metrics=spec['obj_metrics'], constr_metrics=spec['constr_metrics'],
         obj_indices=spec['obj_indices'], constr_indices=spec['constr_indices'],
         thresholds=spec['thresholds'], senses=spec['senses'],
@@ -188,20 +186,28 @@ def run_single(tightness, role, hw, arm, seed, pop_size, n_evals,
 
 
 def main(args):
-    pairs = [(r, h, a) for r in args.role for h in args.hw for a in args.arm
-             if not CF.excluded(r, h)]
-    for r in args.role:
-        for h in args.hw:
-            if CF.excluded(r, h):
-                print(f'[SKIP] {r} x {h}: empty feasible set (see config.EXCLUDED).')
-    total = len(args.seeds) * len(args.tightness) * len(pairs)
+    space = args.space
+    tights = args.tightness or list(CF.tightness(space))
+    roles = args.role or list(CF.ROLES)
+    hws = args.hw or list(CF.hw(space))
+    arms = args.arm or list(CF.ARMS)
+    results_root = args.results_root or CF.results_root(space)
+
+    pairs = [(r, h, a) for r in roles for h in hws for a in arms
+             if not CF.excluded(r, h, space)]
+    for r in roles:
+        for h in hws:
+            if CF.excluded(r, h, space):
+                print(f'[SKIP] {r} x {h}: empty feasible set '
+                      f"(see config.SPACES['{space}']['excluded']).")
+    total = len(args.seeds) * len(tights) * len(pairs)
     summary, run_i = {}, 0
 
-    for tightness in args.tightness:
+    for tightness in tights:
         for seed in args.seeds:
             for role, hw, arm in pairs:
                 run_i += 1
-                save_dir = os.path.join(args.results_root, tightness, role, hw, arm)
+                save_dir = os.path.join(results_root, tightness, role, hw, arm)
                 os.makedirs(save_dir, exist_ok=True)
                 out_path = os.path.join(save_dir, f'seed_{seed}.pkl')
 
@@ -211,11 +217,12 @@ def main(args):
                     with open(out_path, 'rb') as f:
                         data = pickle.load(f)
                 else:
-                    print(f'\n[RUN {run_i}/{total}] tightness={tightness} '
-                          f'(size feas={CF.TIGHTNESS[tightness]["feasible_fraction"]:.1%}) '
+                    frac = CF.tightness(space)[tightness]['feasible_fraction']
+                    print(f'\n[RUN {run_i}/{total}] {space} tightness={tightness} '
+                          f'(size feas={frac:.1%}) '
                           f'role={role} hw={hw} arm={arm} seed={seed} '
                           f'pop={args.pop_size} n_evals={args.n_evals}')
-                    data = run_single(tightness, role, hw, arm, seed,
+                    data = run_single(space, tightness, role, hw, arm, seed,
                                       args.pop_size, args.n_evals,
                                       probe_n=args.probe_n,
                                       inner_pop_size=args.inner_pop_size)
@@ -247,11 +254,16 @@ def main(args):
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--tightness', nargs='+', default=list(CF.TIGHTNESS),
-                   choices=list(CF.TIGHTNESS))
-    p.add_argument('--role', nargs='+', default=list(CF.ROLES), choices=list(CF.ROLES))
-    p.add_argument('--hw', nargs='+', default=list(CF.HW), choices=list(CF.HW))
-    p.add_argument('--arm', nargs='+', default=list(CF.ARMS), choices=list(CF.ARMS))
+    p.add_argument('--space', default=CF.DEFAULT_SPACE, choices=list(CF.SPACES),
+                   help='Benchmark: NB201 (tabular, exact) or MobileNetV3 '
+                        '(surrogate, unsaturated). Sets suite/pid, thresholds '
+                        'and the default results root.')
+    # Defaults are None and resolved against --space in main(), since the
+    # legal tightness levels and hardware metrics are per-space.
+    p.add_argument('--tightness', nargs='+', default=None)
+    p.add_argument('--role', nargs='+', default=None, choices=list(CF.ROLES))
+    p.add_argument('--hw', nargs='+', default=None)
+    p.add_argument('--arm', nargs='+', default=None, choices=list(CF.ARMS))
     p.add_argument('--seeds', type=int, nargs='+', default=[0])
     p.add_argument('--pop_size', type=int, default=DEFAULT_POP_SIZE)
     p.add_argument('--n_evals', type=int, default=DEFAULT_N_EVALS,
@@ -260,8 +272,9 @@ if __name__ == '__main__':
                    help='Architectures in the fixed surrogate-diagnostic probe set.')
     p.add_argument('--inner_pop_size', type=int, default=None,
                    help='Surrogate-side inner GA population. Default pop_size * 10.')
-    p.add_argument('--results_root', default=_DEFAULT_RESULTS_ROOT,
-                   help='Point at a dedicated smoke-test folder when testing -- '
+    p.add_argument('--results_root', default=None,
+                   help="Default: the space's own root (config.results_root). "
+                        'Point at a dedicated smoke-test folder when testing -- '
                         'never write test data into results2/ (see CLAUDE.md).')
     p.add_argument('--overwrite', action='store_true')
     sys.exit(main(p.parse_args()))
