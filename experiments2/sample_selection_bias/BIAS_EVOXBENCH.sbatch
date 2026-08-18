@@ -181,6 +181,7 @@ for SEED in $(seq 0 "$SEEDS_LAST"); do
     echo "--------- $SPACE / $TIGHTNESS / $ROLE / $HW / $ARM  seed: $SEED"
 
     python experiments2/sample_selection_bias/run_bias.py \
+        --space        "$SPACE" \
         --tightness    "$TIGHTNESS" \
         --role         "$ROLE" \
         --hw           "$HW" \

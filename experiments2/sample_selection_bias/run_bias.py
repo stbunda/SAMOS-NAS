@@ -193,6 +193,19 @@ def main(args):
     arms = args.arm or list(CF.ARMS)
     results_root = args.results_root or CF.results_root(space)
 
+    # --tightness/--hw cannot be argparse choices (they are per-space), so
+    # validate here. Without this a caller that names another space's metric
+    # -- a runner script that forgets to pass --space is the realistic way in
+    # -- gets a bare KeyError from deep inside config.cell, once per seed.
+    for name, given, legal in (('tightness', tights, CF.tightness(space)),
+                               ('hw', hws, CF.hw(space))):
+        bad = [v for v in given if v not in legal]
+        if bad:
+            raise SystemExit(
+                f'ERROR: {bad} is not a valid --{name} for --space {space} '
+                f'(valid: {list(legal)}). If you meant a different benchmark, '
+                f'pass --space explicitly.')
+
     pairs = [(r, h, a) for r in roles for h in hws for a in arms
              if not CF.excluded(r, h, space)]
     for r in roles:
