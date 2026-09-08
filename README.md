@@ -209,12 +209,18 @@ SAMOS-NAS/
 ## Citation
 
 ```bibtex
-@inproceedings{samos2026ppsn,
-  title     = {TODO},
-  author    = {TODO},
-  booktitle = {Parallel Problem Solving from Nature (PPSN)},
-  year      = {2026},
+@inproceedings{bunda_empirical_2027,
+	title = {An {Empirical} {Study} on the {Realism} {Gap} of {Benchmarks} for {Multi}-{Objective} {Neural} {Architecture} {Search}},
+	isbn = {978-3-032-36223-0},
+	abstract = {Multi-objective Neural Architecture Search (MO-NAS) simultaneously optimises multiple conflicting objectives such as accuracy, model size, and inference time. Since evaluating candidate architectures is computationally expensive, cheaper proxies, such as tabular, surrogates or mathematical test functions, are used to characterise the performance of MO-NAS algorithms, each compromising on the realism of actual scenarios in different ways.},
+	booktitle = {Parallel {Problem} {Solving} from {Nature} – {PPSN} {XIX}},
+	publisher = {Springer Nature Switzerland},
+	author = {Bunda, Sebastian and Rook, Jeroen and Alachiotis, Nikolaos and Spreeuwers, Luuk},
+	editor = {Iacca, Giovanni and Nadizar, Giorgia and Yaman, Anil and Bucur, Doina and Della Cioppa, Antonio and Hu, Ting and Medvet, Eric and Thomson, Sarah L.},
+	year = {2027},
+	pages = {69--86},
 }
+
 ```
 
 ## Key Dependencies
